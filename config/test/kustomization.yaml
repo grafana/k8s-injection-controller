@@ -1,0 +1,23 @@
+# Test overlay: production deploy + a sample SDK config and the manager patch
+# that mounts it. `make deploy-test` applies this and then applies the
+# example selector ConfigMap from examples/test_config_map.yaml separately
+# (it lives in the user-workload namespace, not the controller namespace).
+
+namespace: beyla-k8s-injector
+
+resources:
+  - ../default
+
+# The ConfigMap is regenerated on every `make deploy-test`; the suffix hash
+# changes whenever sdk-inject.yaml does, which kustomize threads through into
+# the volume reference, triggering a rollout of the manager pod.
+configMapGenerator:
+  - name: beyla-sdk-config
+    files:
+      - sdk-inject.yaml
+
+patches:
+  - path: manager_sdk_config_patch.yaml
+    target:
+      kind: Deployment
+      name: controller-manager

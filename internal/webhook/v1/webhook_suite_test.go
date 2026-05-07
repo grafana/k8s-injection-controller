@@ -110,7 +110,7 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupPodWebhookWithManager(mgr, registry.New(), mgr.GetAPIReader())
+	err = SetupPodWebhookWithManager(mgr, registry.New(), mgr.GetAPIReader(), nil)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:webhook

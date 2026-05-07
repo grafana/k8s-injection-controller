@@ -32,6 +32,7 @@ import (
 
 	"github.com/grafana/beyla-k8s-injector/internal/podinfo"
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
+	webhookv1 "github.com/grafana/beyla-k8s-injector/internal/webhook/v1"
 )
 
 // SelectorAnnotation marks a ConfigMap as a Beyla injection selector. Its
@@ -193,7 +194,10 @@ func (r *ConfigMapReconciler) evictMatching(ctx context.Context, targets []resta
 			if !r.Registry.Match(info) {
 				continue
 			}
-			if podHasInjection(pod) {
+			if webhookv1.AlreadyInstrumentedByOther(&pod.Spec, &pod.ObjectMeta) {
+				continue
+			}
+			if webhookv1.PreloadsSomethingElse(pod) {
 				continue
 			}
 			eviction := &policyv1.Eviction{
@@ -250,27 +254,6 @@ func matchesTarget(info podinfoMatcher, t restartCriterion) bool {
 		return t.Name == "" || t.Name == info.OwnerName
 	}
 	return false
-}
-
-// podHasInjection avoids evicting pods that already carry our env var across
-// every container — there's nothing for the webhook to add.
-func podHasInjection(pod *corev1.Pod) bool {
-	check := func(cs []corev1.Container) bool {
-		for _, c := range cs {
-			found := false
-			for _, e := range c.Env {
-				if e.Name == "FOO" && e.Value == "bar" {
-					found = true
-					break
-				}
-			}
-			if !found {
-				return false
-			}
-		}
-		return true
-	}
-	return check(pod.Spec.Containers) && check(pod.Spec.InitContainers)
 }
 
 // hasSelectorAnnotation is the predicate filter we apply to the ConfigMap

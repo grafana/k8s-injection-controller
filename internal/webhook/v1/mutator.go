@@ -86,23 +86,26 @@ func init() {
 	_ = admissionv1.AddToScheme(runtimeScheme)
 }
 
-func preloadsSomethingElse(info *corev1.Pod) bool {
-	// If there's an LD_PRELOAD on this process, don't touch it if it's not us
-	// used only to avoid pod being restarted
-	// [CLAUDE PLZ]
+// PreloadsSomethingElse reports whether any container or initContainer in the
+// pod already has an LD_PRELOAD set to a value other than our injector path.
+// We use this to skip both injection (would clobber the user's preload) and
+// eviction (a pod we couldn't safely instrument shouldn't be restarted).
+func PreloadsSomethingElse(pod *corev1.Pod) bool {
+	for i := range pod.Spec.Containers {
+		if isLDPreloadConflict(&pod.Spec.Containers[i]) {
+			return true
+		}
+	}
+	for i := range pod.Spec.InitContainers {
+		if isLDPreloadConflict(&pod.Spec.InitContainers[i]) {
+			return true
+		}
+	}
 	return false
 }
 
 type PodMutator struct {
 	Cfg config.SDKInject
-}
-
-func (pm *PodMutator) alreadyInstrumented(spec *corev1.PodSpec, meta *metav1.ObjectMeta) bool {
-	if alreadyInstrumentedByOther(spec, meta) {
-		logger.Info("pod already instrumented, ignoring...")
-		return true
-	}
-	return false
 }
 
 func (pm *PodMutator) buildVolumeDefinition() corev1.Volume {
@@ -634,10 +637,10 @@ func (pm *PodMutator) CanInstrument(kind svc.InstrumentableType) bool {
 	return false
 }
 
-// alreadyInstrumentedByOther returns true when a pod shows signs of instrumentation
-// by another tool: the operator's config file env var, or our label from a previous
-// webhook invocation.
-func alreadyInstrumentedByOther(spec *corev1.PodSpec, meta *metav1.ObjectMeta) bool {
+// AlreadyInstrumentedByOther returns true when a pod shows signs of instrumentation
+// by another tool: the operator's config file env var, or our annotation from a
+// previous webhook invocation.
+func AlreadyInstrumentedByOther(spec *corev1.PodSpec, meta *metav1.ObjectMeta) bool {
 	for i := range spec.Containers {
 		for _, env := range spec.Containers[i].Env {
 			if env.Name == envOtelInjectorConfigFileName {

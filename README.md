@@ -94,6 +94,15 @@ make deploy IMG=<registry>/beyla-k8s-injector:<tag>
 make undeploy
 ```
 
+For a quick end-to-end smoke test there's `make deploy-test`, which uses the
+overlay in `config/test/`: same as `deploy`, plus a sample SDK config
+(`config/test/sdk-inject.yaml`) mounted as a ConfigMap at
+`/etc/beyla-injector/sdk-inject.yaml` with `--config` wired in, plus the
+example selector ConfigMap from `examples/test_config_map.yaml`. Tear down
+with `make undeploy-test`. Production users provide their own SDK config —
+`make deploy` stays generic (the webhook still selects pods but doesn't
+mutate them when no `--config` is given).
+
 `make deploy` runs `kustomize build config/default | kubectl apply -f -`. If
 you prefer to inspect the manifests first:
 

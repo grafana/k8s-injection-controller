@@ -36,7 +36,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/yaml"
 
+	"github.com/grafana/beyla-k8s-injector/internal/config"
 	"github.com/grafana/beyla-k8s-injector/internal/controller"
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 	webhookv1 "github.com/grafana/beyla-k8s-injector/internal/webhook/v1"
@@ -82,6 +84,10 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	var configPath string
+	flag.StringVar(&configPath, "config", "",
+		"Path to a YAML file with the SDK injection configuration (config.SDKInject). "+
+			"If empty, the webhook still selects pods but does not mutate them.")
 	opts := zap.Options{
 		Development: true,
 	}
@@ -183,6 +189,24 @@ func main() {
 
 	reg := registry.New()
 
+	var podMutator *webhookv1.PodMutator
+	if configPath != "" {
+		raw, err := os.ReadFile(configPath)
+		if err != nil {
+			setupLog.Error(err, "Failed to read SDK config file", "path", configPath)
+			os.Exit(1)
+		}
+		var cfg config.SDKInject
+		if err := yaml.Unmarshal(raw, &cfg); err != nil {
+			setupLog.Error(err, "Failed to parse SDK config file", "path", configPath)
+			os.Exit(1)
+		}
+		podMutator = &webhookv1.PodMutator{Cfg: cfg}
+		setupLog.Info("loaded SDK injection config", "path", configPath)
+	} else {
+		setupLog.Info("no --config provided; webhook will not mutate matched pods")
+	}
+
 	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
 	if err != nil {
 		setupLog.Error(err, "Failed to build clientset")
@@ -199,7 +223,7 @@ func main() {
 
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1.SetupPodWebhookWithManager(mgr, reg, mgr.GetAPIReader()); err != nil {
+		if err := webhookv1.SetupPodWebhookWithManager(mgr, reg, mgr.GetAPIReader(), podMutator); err != nil {
 			setupLog.Error(err, "Failed to create webhook", "webhook", "Pod")
 			os.Exit(1)
 		}

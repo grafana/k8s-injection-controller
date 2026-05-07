@@ -22,23 +22,24 @@ import (
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 )
 
-// InjectedEnvName / InjectedEnvValue and the InjectedAnnotation are exported
-// so the controller's "already injected" check stays in sync with the webhook.
+// InjectedAnnotation is the marker we set on every pod we mutate. It's used
+// both as an idempotency check inside the webhook and by the controller to
+// avoid evicting already-injected pods.
 const (
-	InjectedEnvName     = "FOO"
-	InjectedEnvValue    = "bar"
-	InjectedAnnotation  = "beyla.grafana.com/inject"
-	InjectedAnnotValue  = "true"
+	InjectedAnnotation = "beyla.grafana.com/inject"
+	InjectedAnnotValue = "true"
 )
 
 var podlog = logf.Log.WithName("pod-webhook")
 
 // SetupPodWebhookWithManager registers the mutating webhook for Pod. The
 // reader is used to walk pod -> ReplicaSet -> Deployment when a criterion
-// targets a Deployment; an APIReader is appropriate (no cache wiring required).
-func SetupPodWebhookWithManager(mgr ctrl.Manager, reg *registry.Registry, reader client.Reader) error {
+// targets a Deployment. mutator may be nil — in that case the webhook only
+// records a match log line and does not mutate (useful when no SDK config
+// has been provided).
+func SetupPodWebhookWithManager(mgr ctrl.Manager, reg *registry.Registry, reader client.Reader, mutator *PodMutator) error {
 	return ctrl.NewWebhookManagedBy(mgr, &corev1.Pod{}).
-		WithDefaulter(&PodCustomDefaulter{Registry: reg, Reader: reader}).
+		WithDefaulter(&PodCustomDefaulter{Registry: reg, Reader: reader, Mutator: mutator}).
 		Complete()
 }
 
@@ -49,11 +50,14 @@ func SetupPodWebhookWithManager(mgr ctrl.Manager, reg *registry.Registry, reader
 //
 // +kubebuilder:webhook:path=/mutate--v1-pod,mutating=true,failurePolicy=ignore,sideEffects=None,groups="",resources=pods,verbs=create,versions=v1,name=mpod-v1.beyla.grafana.com,admissionReviewVersions=v1
 
-// PodCustomDefaulter injects the configured env var into pods that match any
-// criterion in the Registry.
+// PodCustomDefaulter applies the OTel SDK auto-instrumentation to pods that
+// match a registry criterion.
 type PodCustomDefaulter struct {
 	Registry *registry.Registry
 	Reader   client.Reader
+	// Mutator is nil when the operator runs without an SDK config; in that
+	// mode the webhook is a no-op even for matching pods.
+	Mutator *PodMutator
 }
 
 func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error {
@@ -61,43 +65,33 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	if !d.Registry.Match(info) {
 		return nil
 	}
-	mutated := injectInto(obj.Spec.Containers)
-	if injectInto(obj.Spec.InitContainers) {
-		mutated = true
+	if d.Mutator == nil {
+		podlog.Info("pod matches but no SDK config loaded; skipping injection",
+			"namespace", obj.Namespace, "name", obj.Name)
+		return nil
 	}
+	if AlreadyInstrumentedByOther(&obj.Spec, &obj.ObjectMeta) {
+		return nil
+	}
+	if PreloadsSomethingElse(obj) {
+		podlog.Info("skipping injection: pod has a conflicting LD_PRELOAD",
+			"namespace", obj.Namespace, "name", obj.Name)
+		return nil
+	}
+
+	d.Mutator.mountVolume(&obj.Spec, &obj.ObjectMeta)
+	for i := range obj.Spec.Containers {
+		d.Mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i])
+	}
+	for i := range obj.Spec.InitContainers {
+		d.Mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.InitContainers[i])
+	}
+
 	if obj.Annotations == nil {
 		obj.Annotations = map[string]string{}
 	}
-	if obj.Annotations[InjectedAnnotation] != InjectedAnnotValue {
-		obj.Annotations[InjectedAnnotation] = InjectedAnnotValue
-		mutated = true
-	}
-	if mutated {
-		podlog.Info("injected env var", "namespace", obj.Namespace, "name", obj.Name)
-	}
+	obj.Annotations[InjectedAnnotation] = InjectedAnnotValue
+
+	podlog.Info("instrumented pod", "namespace", obj.Namespace, "name", obj.Name)
 	return nil
-}
-
-// injectInto appends the env var to every container that doesn't already have
-// it. Returns true if at least one container was modified.
-func injectInto(containers []corev1.Container) bool {
-	mutated := false
-	for i := range containers {
-		c := &containers[i]
-		if hasEnv(c.Env) {
-			continue
-		}
-		c.Env = append(c.Env, corev1.EnvVar{Name: InjectedEnvName, Value: InjectedEnvValue})
-		mutated = true
-	}
-	return mutated
-}
-
-func hasEnv(env []corev1.EnvVar) bool {
-	for _, e := range env {
-		if e.Name == InjectedEnvName {
-			return true
-		}
-	}
-	return false
 }
