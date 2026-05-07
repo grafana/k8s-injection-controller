@@ -43,16 +43,31 @@ const (
 	// SelectionCriteriaKey holds a YAML list of namespaces eligible for
 	// injection by the webhook. Schema: `- k8s_namespace: <name>`.
 	SelectionCriteriaKey = "selection_criteria.yaml"
-	// EligibleForRestartKey holds a YAML list of container images whose
-	// running pods are eligible for eviction so the webhook can re-intercept
-	// them. Schema: `- image: <ref>` (the `language` attribute is parsed but
-	// currently ignored).
-	EligibleForRestartKey = "eligible_for_restart.yml"
+	// EligibleForRestartKey holds a YAML list of restart targets. Each entry
+	// names a workload whose pods should be evicted so the webhook can
+	// re-intercept them on recreation. Schema:
+	//   - namespace: foo        # required
+	//     kind: Deployment      # required: Deployment | ReplicaSet | StatefulSet | DaemonSet
+	//     name: frontend        # optional; empty means "any of that kind in the namespace"
+	//     language: nodejs      # parsed but currently unused
+	EligibleForRestartKey = "eligible_for_restart.yaml"
 )
 
+// restartCriterion is one entry in eligible_for_restart.yaml.
 type restartCriterion struct {
-	Image    string `json:"image,omitempty"`
-	Language string `json:"language,omitempty"` // currently unused
+	Namespace string `json:"namespace,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Language  string `json:"language,omitempty"` // currently unused
+}
+
+// restartKinds is the set of workload kinds we know how to match against a
+// pod's owner chain.
+var restartKinds = map[string]struct{}{
+	"Deployment":  {},
+	"ReplicaSet":  {},
+	"StatefulSet": {},
+	"DaemonSet":   {},
 }
 
 // ConfigMapReconciler watches ConfigMaps carrying the SelectorAnnotation and
@@ -90,15 +105,15 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
-	criteria, eligibleImages, err := parseConfigMap(cm.Data)
+	criteria, restartTargets, err := parseConfigMap(cm.Data)
 	if err != nil {
 		logger.Error(err, "ignoring ConfigMap with invalid payload")
 		r.Registry.Delete(cmKey)
 		return ctrl.Result{}, nil
 	}
 	r.Registry.Set(cmKey, criteria)
-	if len(criteria) > 0 {
-		if err := r.evictMatching(ctx, criteria, eligibleImages); err != nil {
+	if len(restartTargets) > 0 {
+		if err := r.evictMatching(ctx, restartTargets); err != nil {
 			logger.Error(err, "failed to evict pre-existing pods")
 		}
 	}
@@ -106,9 +121,10 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 }
 
 // parseConfigMap extracts the selection criteria (from selection_criteria.yaml)
-// and the set of eligible-for-restart container images (from
-// eligible_for_restart.yml). Either key may be absent.
-func parseConfigMap(data map[string]string) ([]registry.SelectionCriterion, map[string]struct{}, error) {
+// and the eligible-for-restart targets (from eligible_for_restart.yaml).
+// Either key may be absent. Restart entries missing the required namespace
+// or kind, or naming an unknown kind, are dropped with no error.
+func parseConfigMap(data map[string]string) ([]registry.SelectionCriterion, []restartCriterion, error) {
 	var criteria []registry.SelectionCriterion
 	if raw, ok := data[SelectionCriteriaKey]; ok {
 		if err := yaml.Unmarshal([]byte(raw), &criteria); err != nil {
@@ -124,142 +140,114 @@ func parseConfigMap(data map[string]string) ([]registry.SelectionCriterion, map[
 		}
 		criteria = filtered
 	}
-	eligibleImages := map[string]struct{}{}
+	var restartTargets []restartCriterion
 	if raw, ok := data[EligibleForRestartKey]; ok {
-		var crit []restartCriterion
-		if err := yaml.Unmarshal([]byte(raw), &crit); err != nil {
+		var parsed []restartCriterion
+		if err := yaml.Unmarshal([]byte(raw), &parsed); err != nil {
 			return nil, nil, fmt.Errorf("parse %s: %w", EligibleForRestartKey, err)
 		}
-		for _, c := range crit {
-			if c.Image == "" {
+		for _, c := range parsed {
+			if c.Namespace == "" || c.Kind == "" {
 				continue
 			}
-			eligibleImages[c.Image] = struct{}{}
+			if _, ok := restartKinds[c.Kind]; !ok {
+				continue
+			}
+			restartTargets = append(restartTargets, c)
 		}
 	}
-	return criteria, eligibleImages, nil
+	return criteria, restartTargets, nil
 }
 
-// evictMatching lists candidate pods and submits an Eviction for each that
-// (a) has an OwnerReference, (b) runs an image in eligibleImages, and
-// (c) matches any criterion currently in the registry.
-//
-// Pods require an owner reference because bare pods have no controller to recreate them.
-//
-// Listing scope: if every criterion in the just-reconciled CM has a literal
-// k8s_namespace, list only those namespaces; otherwise list cluster-wide.
-// The image filter and registry.Match further narrow the eviction set, so
-// "cluster-wide" is bounded by what the operator actually selected.
-func (r *ConfigMapReconciler) evictMatching(ctx context.Context, criteria []registry.SelectionCriterion, eligibleImages map[string]struct{}) error {
+// evictMatching processes the restart targets from a single ConfigMap. For
+// each target it lists pods in target.Namespace and evicts those whose owner
+// chain matches target.Kind (and optionally target.Name) AND that match a
+// selection criterion in the registry — no point evicting pods the webhook
+// won't inject anyway. Bare pods are skipped (no controller to recreate them).
+func (r *ConfigMapReconciler) evictMatching(ctx context.Context, targets []restartCriterion) error {
 	logger := log.FromContext(ctx)
-	if len(eligibleImages) == 0 {
-		logger.Info("no eligible-for-restart images declared; skipping pre-existing pods")
-		return nil
+
+	// One LIST per distinct namespace, regardless of how many entries name it.
+	byNamespace := map[string][]restartCriterion{}
+	for _, t := range targets {
+		byNamespace[t.Namespace] = append(byNamespace[t.Namespace], t)
 	}
 
-	pods, err := r.collectCandidatePods(ctx, criteria)
-	if err != nil {
-		return err
-	}
-
-	for i := range pods {
-		pod := &pods[i]
-		if pod.DeletionTimestamp != nil {
-			continue
+	for namespace, nsTargets := range byNamespace {
+		var pods corev1.PodList
+		if err := r.List(ctx, &pods, client.InNamespace(namespace)); err != nil {
+			return fmt.Errorf("list pods in %s: %w", namespace, err)
 		}
-		if len(pod.OwnerReferences) == 0 {
-			continue
-		}
-		if !podMatchesImage(pod, eligibleImages) {
-			continue
-		}
-		info := podinfo.Resolve(ctx, r.Client, pod)
-		if !r.Registry.Match(info) {
-			continue
-		}
-		if podHasInjection(pod) {
-			continue
-		}
-		eviction := &policyv1.Eviction{
-			ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace},
-		}
-		err := r.Clientset.CoreV1().Pods(pod.Namespace).EvictV1(ctx, eviction)
-		switch {
-		case err == nil:
-			logger.Info("evicted pod for re-injection", "namespace", pod.Namespace, "pod", pod.Name)
-		case apierrors.IsNotFound(err):
-			// already gone
-		case apierrors.IsTooManyRequests(err):
-			// PDB blocked it; log and move on. The pod will be picked up by the
-			// webhook whenever it's eventually replaced.
-			logger.Info("eviction blocked by PDB; leaving pod in place", "namespace", pod.Namespace, "pod", pod.Name)
-		default:
-			logger.Error(err, "eviction failed", "namespace", pod.Namespace, "pod", pod.Name)
+		for i := range pods.Items {
+			pod := &pods.Items[i]
+			if pod.DeletionTimestamp != nil {
+				continue
+			}
+			if len(pod.OwnerReferences) == 0 {
+				continue
+			}
+			info := podinfo.Resolve(ctx, r.Client, pod)
+			if !matchesAnyTarget(info, nsTargets) {
+				continue
+			}
+			if !r.Registry.Match(info) {
+				continue
+			}
+			if podHasInjection(pod) {
+				continue
+			}
+			eviction := &policyv1.Eviction{
+				ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace},
+			}
+			err := r.Clientset.CoreV1().Pods(pod.Namespace).EvictV1(ctx, eviction)
+			switch {
+			case err == nil:
+				logger.Info("evicted pod for re-injection", "namespace", pod.Namespace, "pod", pod.Name)
+			case apierrors.IsNotFound(err):
+				// already gone
+			case apierrors.IsTooManyRequests(err):
+				// PDB blocked it; log and move on. The pod will be picked up
+				// by the webhook whenever it's eventually replaced.
+				logger.Info("eviction blocked by PDB; leaving pod in place", "namespace", pod.Namespace, "pod", pod.Name)
+			default:
+				logger.Error(err, "eviction failed", "namespace", pod.Namespace, "pod", pod.Name)
+			}
 		}
 	}
 	return nil
 }
 
-// collectCandidatePods lists pods within the smallest namespace scope that
-// could contain matches: the union of literal namespaces in the criteria
-// when every criterion specifies one, otherwise cluster-wide.
-func (r *ConfigMapReconciler) collectCandidatePods(ctx context.Context, criteria []registry.SelectionCriterion) ([]corev1.Pod, error) {
-	logger := log.FromContext(ctx)
-	namespaces, allLiteral := literalNamespaces(criteria)
-	if !allLiteral {
-		logger.Info("listing pods cluster-wide for eviction sweep (criteria include non-literal or absent namespaces)")
-		var list corev1.PodList
-		if err := r.List(ctx, &list); err != nil {
-			return nil, fmt.Errorf("list pods cluster-wide: %w", err)
-		}
-		return list.Items, nil
-	}
-	var out []corev1.Pod
-	for _, ns := range namespaces {
-		var list corev1.PodList
-		if err := r.List(ctx, &list, client.InNamespace(ns)); err != nil {
-			return nil, fmt.Errorf("list pods in %s: %w", ns, err)
-		}
-		out = append(out, list.Items...)
-	}
-	return out, nil
-}
-
-// literalNamespaces returns the deduplicated set of literal k8s_namespace
-// values across the criteria, plus a flag indicating whether every criterion
-// had a literal namespace. If even one criterion is missing or uses a glob,
-// allLiteral is false and the caller must list cluster-wide.
-func literalNamespaces(criteria []registry.SelectionCriterion) (out []string, allLiteral bool) {
-	seen := map[string]struct{}{}
-	allLiteral = true
-	for _, c := range criteria {
-		if !c.K8sNamespace.IsLiteral() {
-			allLiteral = false
-			continue
-		}
-		ns := c.K8sNamespace.Pattern()
-		if _, dup := seen[ns]; dup {
-			continue
-		}
-		seen[ns] = struct{}{}
-		out = append(out, ns)
-	}
-	return out, allLiteral
-}
-
-// podMatchesImage reports whether any container or initContainer in the pod
-// runs an image present in the eligible set. Image matching is exact on the
-// reference string as it appears in the PodSpec.
-func podMatchesImage(pod *corev1.Pod, eligible map[string]struct{}) bool {
-	for _, c := range pod.Spec.Containers {
-		if _, ok := eligible[c.Image]; ok {
+// matchesAnyTarget reports whether the pod's owner chain satisfies any of the
+// supplied restart targets. All targets here have already been validated to
+// share the pod's namespace.
+func matchesAnyTarget(info podinfoMatcher, targets []restartCriterion) bool {
+	for _, t := range targets {
+		if matchesTarget(info, t) {
 			return true
 		}
 	}
-	for _, c := range pod.Spec.InitContainers {
-		if _, ok := eligible[c.Image]; ok {
-			return true
+	return false
+}
+
+// podinfoMatcher decouples matchesTarget from the registry.PodInfo concrete
+// type so it stays trivially testable.
+type podinfoMatcher = registry.PodInfo
+
+func matchesTarget(info podinfoMatcher, t restartCriterion) bool {
+	switch t.Kind {
+	case "Deployment":
+		// Pod is owned (transitively) by a Deployment when podinfo.Resolve
+		// populates DeploymentName via the RS chain — or directly, if the
+		// pod's controller ref is itself a Deployment.
+		if info.DeploymentName == "" {
+			return false
 		}
+		return t.Name == "" || t.Name == info.DeploymentName
+	case "ReplicaSet", "StatefulSet", "DaemonSet":
+		if info.OwnerKind != t.Kind {
+			return false
+		}
+		return t.Name == "" || t.Name == info.OwnerName
 	}
 	return false
 }

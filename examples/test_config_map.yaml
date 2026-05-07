@@ -8,14 +8,12 @@ metadata:
 data:
   selection_criteria.yaml: |
     # AND within an entry, OR across entries.
-    # Match every pod in the "demo" namespace owned (transitively) by the
-    # "hello" Deployment.
     - k8s_namespace: demo
-      k8s_deployment_name: hello
-    # Cluster-wide: match any pod whose owner (RS, STS, DS, or resolved
-    # Deployment) is named "standalone-cron". Cluster-wide criteria do not
-    # trigger eviction of pre-existing pods.
-    - k8s_owner_name: standalone-cron
-  eligible_for_restart.yml: |
-    - image: foo/bar:dev
+  eligible_for_restart.yaml: |
+    # Restart all pods in namespace "demo" owned (transitively) by the
+    # Deployment "hello" — name is optional; omit it to target every
+    # Deployment in the namespace. language is parsed but currently unused.
+    - namespace: demo
+      kind: Deployment
+      name: worker
       language: nodejs

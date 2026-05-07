@@ -30,24 +30,28 @@ into pods running in namespaces selected by annotated ConfigMaps. Built with
    do not trigger eviction of pre-existing pods. Multiple ConfigMaps are
    merged.
 
-   **`eligible_for_restart.yml`** — list of `{image: <ref>, language: <id>}`
-   entries (the `language` field is parsed but currently unused). Used as an
-   image filter when deciding which pre-existing pods to evict.
+   **`eligible_for_restart.yaml`** — list of restart targets. Each entry:
+
+   ```yaml
+   - namespace: foo        # required
+     kind: Deployment      # required: Deployment | ReplicaSet | StatefulSet | DaemonSet
+     name: frontend        # optional; empty means "any of that kind in the namespace"
+     language: nodejs      # parsed but currently unused
+   ```
+
+   For each entry, the controller lists pods in `namespace` and evicts those
+   whose owner chain matches the kind (and name, if set). `kind: Deployment`
+   walks pod → ReplicaSet → Deployment.
 3. The **mutating webhook** intercepts pod CREATE requests. If the pod
    matches any criterion, the env var `FOO=bar` is appended to every
    container and initContainer (idempotent — already-set vars are left alone).
-4. **Pre-existing pods**: on every reconcile of a selector ConfigMap with
-   non-empty criteria, the controller submits an `Eviction` for every pod
-   that (a) has an `OwnerReference`, (b) matches a criterion in the
-   registry, and (c) runs at least one image listed in
-   `eligible_for_restart.yml`. PDBs are honored. Bare pods are skipped.
-
-   Listing scope: if every criterion in the just-updated ConfigMap names a
-   literal `k8s_namespace`, only those namespaces are listed; otherwise the
-   controller lists pods cluster-wide. The image filter and criterion match
-   keep the eviction set bounded, so cluster-wide just means "any pod in
-   the cluster that the operator actually selected." ReplicaSets are kept
-   in the manager cache so the pod → RS → Deployment lookup is local.
+4. **Pre-existing pods**: on every reconcile of a selector ConfigMap, the
+   controller groups its `eligible_for_restart.yaml` entries by namespace,
+   lists pods in each, and evicts pods whose owner chain matches an entry
+   AND whose `PodInfo` matches a selection criterion in the registry (no
+   point evicting pods the webhook wouldn't inject). PDBs are honored;
+   bare pods are skipped. ReplicaSets are kept in the manager cache so the
+   pod → RS → Deployment lookup is local.
 
 ## Prerequisites
 
@@ -127,8 +131,10 @@ data:
   selection_criteria.yaml: |
     - k8s_namespace: my-app
       k8s_deployment_name: hello
-  eligible_for_restart.yml: |
-    - image: nginx
+  eligible_for_restart.yaml: |
+    - namespace: my-app
+      kind: Deployment
+      name: hello
       language: nodejs
 EOF
 
