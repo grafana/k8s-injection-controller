@@ -22,11 +22,13 @@ import (
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 )
 
-// InjectedEnvName / InjectedEnvValue are intentionally exported so the
-// controller's "already injected" check stays in sync with the webhook.
+// InjectedEnvName / InjectedEnvValue and the InjectedAnnotation are exported
+// so the controller's "already injected" check stays in sync with the webhook.
 const (
-	InjectedEnvName  = "FOO"
-	InjectedEnvValue = "bar"
+	InjectedEnvName     = "FOO"
+	InjectedEnvValue    = "bar"
+	InjectedAnnotation  = "beyla.grafana.com/inject"
+	InjectedAnnotValue  = "true"
 )
 
 var podlog = logf.Log.WithName("pod-webhook")
@@ -61,6 +63,13 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	}
 	mutated := injectInto(obj.Spec.Containers)
 	if injectInto(obj.Spec.InitContainers) {
+		mutated = true
+	}
+	if obj.Annotations == nil {
+		obj.Annotations = map[string]string{}
+	}
+	if obj.Annotations[InjectedAnnotation] != InjectedAnnotValue {
+		obj.Annotations[InjectedAnnotation] = InjectedAnnotValue
 		mutated = true
 	}
 	if mutated {

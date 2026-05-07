@@ -1,0 +1,684 @@
+package v1
+
+import (
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
+	"strings"
+
+	"github.com/distribution/reference"
+	"github.com/grafana/beyla-k8s-injector/internal/config"
+	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
+	"go.opentelemetry.io/obi/pkg/appolly/services"
+	"go.opentelemetry.io/obi/pkg/kube/kubecache/informer"
+	"go.opentelemetry.io/otel/attribute"
+	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
+	admissionv1 "k8s.io/api/admission/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+)
+
+var (
+	runtimeScheme     = runtime.NewScheme()
+	codecFactory      = serializer.NewCodecFactory(runtimeScheme)
+	deserializer      = codecFactory.UniversalDeserializer()
+	supportedSDKLangs = []svc.InstrumentableType{svc.InstrumentableDotnet, svc.InstrumentableJava, svc.InstrumentableNodejs, svc.InstrumentablePython}
+)
+
+const (
+	ResourceAttributeAnnotationPrefix = "resource.opentelemetry.io/"
+)
+
+var (
+	LabelAppName = []string{
+		"app.kubernetes.io/instance",
+		"app.kubernetes.io/name",
+	}
+	LabelAppVersion = []string{"app.kubernetes.io/version"}
+)
+
+const (
+	injectVolumeName = "otel-inject-instrumentation"
+	// this value is hardcoded in the config file
+	internalMountPath = "/__otel_sdk_auto_instrumentation__"
+
+	envVarLdPreloadName               = "LD_PRELOAD"
+	envVarLdPreloadValue              = internalMountPath + "/dist/injector/libotelinject.so"
+	envOtelInjectorConfigFileName     = "OTEL_INJECTOR_CONFIG_FILE"
+	envOtelInjectorConfigFileValue    = internalMountPath + "/dist/injector/otelinject.conf"
+	envOtelExporterOtlpEndpointName   = "OTEL_EXPORTER_OTLP_ENDPOINT"
+	envOtelExporterOtlpProtocolName   = "OTEL_EXPORTER_OTLP_PROTOCOL"
+	envOtelSemConvStabilityName       = "OTEL_SEMCONV_STABILITY_OPT_IN"
+	envInjectorOtelExtraResourceAttrs = "OTEL_INJECTOR_RESOURCE_ATTRIBUTES"
+	envInjectorOtelServiceName        = "OTEL_INJECTOR_SERVICE_NAME"
+	envInjectorOtelServiceVersion     = "OTEL_INJECTOR_SERVICE_VERSION"
+	envInjectorOtelServiceNamespace   = "OTEL_INJECTOR_SERVICE_NAMESPACE"
+	envInjectorOtelK8sNamespaceName   = "OTEL_INJECTOR_K8S_NAMESPACE_NAME"
+	envInjectorOtelK8sPodName         = "OTEL_INJECTOR_K8S_POD_NAME"
+	envInjectorOtelK8sPodUID          = "OTEL_INJECTOR_K8S_POD_UID"
+	envInjectorOtelK8sContainerName   = "OTEL_INJECTOR_K8S_CONTAINER_NAME"
+	envInjectorDebugName              = "OTEL_INJECTOR_LOG_LEVEL"
+	envOtelK8sNodeName                = "OTEL_RESOURCE_ATTRIBUTES_NODE_NAME" // stored in OTEL_INJECTOR_RESOURCE_ATTRIBUTES, since there's no individual OTEL_INJECTOR_K8S_NODE_NAME
+	envOtelK8sPodIP                   = "OTEL_RESOURCE_ATTRIBUTES_POD_IP"
+	envVarSDKVersion                  = "BEYLA_INJECTOR_SDK_PKG_VERSION"
+	envOtelTracesSamplerName          = "OTEL_TRACES_SAMPLER"
+	envOtelTracesSamplerArgName       = "OTEL_TRACES_SAMPLER_ARG"
+	envOtelPropagatorsName            = "OTEL_PROPAGATORS"
+	envOtelMetricsExporterName        = "OTEL_METRICS_EXPORTER"
+	envOtelTracesExporterName         = "OTEL_TRACES_EXPORTER"
+	envOtelLogsExporterName           = "OTEL_LOGS_EXPORTER"
+
+	// Enabling/disabling of language specific SDKs
+	envDotnetEnabledName = "DOTNET_AUTO_INSTRUMENTATION_AGENT_PATH_PREFIX"
+	envJavaEnabledName   = "JVM_AUTO_INSTRUMENTATION_AGENT_PATH"
+	envNodejsEnabledName = "NODEJS_AUTO_INSTRUMENTATION_AGENT_PATH"
+	envPythonEnabledName = "PYTHON_AUTO_INSTRUMENTATION_AGENT_PATH_PREFIX"
+)
+
+var logger = logf.Log.WithName("pod-mutator")
+
+func init() {
+	_ = corev1.AddToScheme(runtimeScheme)
+	_ = admissionv1.AddToScheme(runtimeScheme)
+}
+
+func preloadsSomethingElse(info *corev1.Pod) bool {
+	// If there's an LD_PRELOAD on this process, don't touch it if it's not us
+	// used only to avoid pod being restarted
+	// [CLAUDE PLZ]
+	return false
+}
+
+type PodMutator struct {
+	Cfg config.SDKInject
+}
+
+func (pm *PodMutator) alreadyInstrumented(spec *corev1.PodSpec, meta *metav1.ObjectMeta) bool {
+	if alreadyInstrumentedByOther(spec, meta) {
+		logger.Info("pod already instrumented, ignoring...")
+		return true
+	}
+	return false
+}
+
+func (pm *PodMutator) buildVolumeDefinition() corev1.Volume {
+	if pm.Cfg.UsesImageVolume() {
+		// Use image volume path directly if the configuration
+		// specifies this mode. Supported on k8s 1.31+
+		return corev1.Volume{
+			Name: injectVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				Image: &corev1.ImageVolumeSource{
+					Reference:  pm.Cfg.ImageVolumePath,
+					PullPolicy: corev1.PullIfNotPresent,
+				},
+			},
+		}
+	} else {
+		// Use hostPath volume shared across all pods on the node
+		// The Beyla DaemonSet deployment populates this directory once per node
+		// and it must be setup before Beyla launches
+		return corev1.Volume{
+			Name: injectVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: strings.Join([]string{pm.Cfg.HostPathVolumeDir, pm.Cfg.SDKPkgVersion}, "/"),
+					Type: func() *corev1.HostPathType {
+						t := corev1.HostPathDirectoryOrCreate
+						return &t
+					}(),
+				},
+			},
+		}
+	}
+}
+
+func (pm *PodMutator) mountVolume(spec *corev1.PodSpec, meta *metav1.ObjectMeta) {
+	if spec.Volumes == nil {
+		spec.Volumes = make([]corev1.Volume, 0)
+	}
+
+	v := pm.buildVolumeDefinition()
+
+	pos := slices.IndexFunc(spec.Volumes, func(c corev1.Volume) bool {
+		return c.Name == injectVolumeName
+	})
+
+	if pos < 0 {
+		spec.Volumes = append(spec.Volumes, v)
+	} else {
+		spec.Volumes[pos] = v
+	}
+}
+
+func (pm *PodMutator) instrumentContainer(meta *metav1.ObjectMeta, c *corev1.Container) {
+	pm.addMount(c)
+	pm.addEnvVars(meta, c)
+}
+
+func (pm *PodMutator) addMount(c *corev1.Container) {
+	if c.VolumeMounts == nil {
+		c.VolumeMounts = make([]corev1.VolumeMount, 0)
+	}
+	idx := slices.IndexFunc(c.VolumeMounts, func(c corev1.VolumeMount) bool {
+		return c.Name == injectVolumeName
+	})
+
+	volume := &corev1.VolumeMount{
+		Name:      injectVolumeName,
+		MountPath: internalMountPath,
+		ReadOnly:  true,
+	}
+	if idx < 0 {
+		c.VolumeMounts = append(c.VolumeMounts, *volume)
+	} else {
+		c.VolumeMounts[idx] = *volume
+	}
+}
+
+func (pm *PodMutator) addLabel(meta *metav1.ObjectMeta, key string, value string) {
+	if meta.Labels == nil {
+		meta.Labels = make(map[string]string, 1)
+	}
+	meta.Labels[key] = value
+}
+
+func (pm *PodMutator) getLabel(meta *metav1.ObjectMeta, key string) (string, bool) {
+	if meta.Labels == nil {
+		return "", false
+	}
+	if value, ok := meta.Labels[key]; ok {
+		return value, true
+	}
+	return "", false
+}
+
+// isLDPreloadConflict returns true only when LD_PRELOAD is set to a non-empty
+// value that is not Beyla's own injector path. An empty LD_PRELOAD or one
+// already set to our value is not a conflict.
+// Unlike preloadsSomethingElse,
+func isLDPreloadConflict(c *corev1.Container) bool {
+	pos, ok := findEnvVar(c, envVarLdPreloadName)
+	if !ok {
+		return false
+	}
+	val := c.Env[pos].Value
+	return val != "" && val != envVarLdPreloadValue
+}
+
+func findEnvVar(c *corev1.Container, name string) (int, bool) {
+	pos := slices.IndexFunc(c.Env, func(c corev1.EnvVar) bool {
+		return c.Name == name
+	})
+
+	return pos, pos >= 0
+}
+
+// setEnvVar is a helper function that sets an environment variable only if the value is not empty
+func setEnvVarEvenIfEmpty(c *corev1.Container, envVarName, value string) {
+	if pos, ok := findEnvVar(c, envVarName); !ok {
+		c.Env = append(c.Env, corev1.EnvVar{
+			Name:  envVarName,
+			Value: value,
+		})
+	} else {
+		c.Env[pos].ValueFrom = nil
+		c.Env[pos].Value = value
+	}
+}
+
+// setEnvVar is a helper function that sets an environment variable only if the value is not empty
+func setEnvVar(c *corev1.Container, envVarName, value string) {
+	if value != "" {
+		setEnvVarEvenIfEmpty(c, envVarName, value)
+	}
+}
+
+func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container) {
+	if c.Env == nil {
+		c.Env = []corev1.EnvVar{}
+	}
+
+	// we set the SDK version on the environment variable so that
+	// we can tell on start, when we scan the processes of the oldest
+	// SDK version in use.
+	setEnvVar(c, envVarSDKVersion, pm.Cfg.PackageVersion())
+	setEnvVar(c, envVarLdPreloadName, envVarLdPreloadValue)
+	setEnvVar(c, envOtelInjectorConfigFileName, envOtelInjectorConfigFileValue)
+	setEnvVar(c, envOtelExporterOtlpEndpointName, pm.Cfg.OTELEndpoint)
+	setEnvVar(c, envOtelExporterOtlpProtocolName, pm.Cfg.OTELProtocol)
+	setEnvVar(c, envOtelSemConvStabilityName, "http")
+	if pm.Cfg.Debug {
+		setEnvVar(c, envInjectorDebugName, "debug")
+	}
+
+	pm.configureContainerEnvVars(meta, c)
+	pm.disableUndesiredSDKs(c)
+
+	// TODO: how do we safely pass it from Beyla to here?
+	//for k, v := range pm.exportHeaders {
+	//	setEnvVar(c, k, v)
+	//}
+
+	logger.Info("env vars", "vars", c.Env)
+}
+
+// configureContainerEnvVars sets all environment variables for the container including
+// resource attributes, sampler configuration, and service identification.
+// nolint:gocritic
+func (pm *PodMutator) configureContainerEnvVars(meta *metav1.ObjectMeta, container *corev1.Container) {
+	extraResAttrs := pm.setResourceAttributes(meta, container)
+
+	// Configure propagators from default config
+	if len(pm.Cfg.Propagators) > 0 {
+		pm.configurePropagators(container, pm.Cfg.Propagators)
+	}
+
+	// Configure sampler with priority: selector > default
+	var samplerConfig *services.SamplerConfig
+	//TODO: find a way to safely pass connection info per selector
+	//if selector != nil {
+	//	samplerConfig = selector.GetSamplerConfig()
+	//}
+	if samplerConfig == nil {
+		samplerConfig = pm.Cfg.DefaultSampler
+	}
+	if samplerConfig != nil {
+		pm.configureSampler(container, samplerConfig)
+	}
+
+	// Configure exporters: start with SDK export config, then override with selector's export modes
+	// Use SDK-specific export settings which are independent from global Beyla export config
+	tracesEnabled := pm.Cfg.Export.TracesEnabled()
+	metricsEnabled := pm.Cfg.Export.MetricsEnabled()
+	logsEnabled := pm.Cfg.Export.LogsEnabled()
+
+	// Start with a new ExportModes (all blocked by default)
+	exportModes := services.NewExportModes()
+
+	// Enable based on SDK export configuration
+	if tracesEnabled {
+		exportModes.AllowTraces()
+	}
+	if metricsEnabled {
+		exportModes.AllowMetrics()
+	}
+	if logsEnabled {
+		exportModes.AllowLogs()
+	}
+
+	// If selector has export modes, override the global ones
+	//if selector != nil {
+	//	if selectorModes := selector.GetExportModes(); selectorModes != services.ExportModeUnset {
+	//		exportModes = selectorModes
+	//	}
+	//}
+
+	pm.configureExporters(container, exportModes)
+
+	//todo
+	//if pm.cfg.Metrics.Features.AnySpanMetrics() {
+	//	extraResAttrs[attr.SkipSpanMetrics.OTEL()] = "true"
+	//}
+
+	pm.injectEnvVars(extraResAttrs, container)
+}
+
+func (pm *PodMutator) injectEnvVars(extraResAttrs map[attribute.Key]string, container *corev1.Container) {
+	// Set extra resource attributes if any exist
+	if len(extraResAttrs) > 0 {
+		var resourceAttributeList []string
+		for _, resourceAttributeKey := range slices.Sorted(maps.Keys(extraResAttrs)) {
+			resourceAttributeList = append(
+				resourceAttributeList,
+				fmt.Sprintf("%s=%s", resourceAttributeKey, extraResAttrs[resourceAttributeKey]))
+		}
+		setEnvVar(container, envInjectorOtelExtraResourceAttrs, strings.Join(resourceAttributeList, ","))
+	}
+}
+
+func (pm *PodMutator) setResourceAttributes(meta *metav1.ObjectMeta, container *corev1.Container) map[attribute.Key]string {
+	cfg := pm.Cfg.Resources
+
+	// entries from the CRD have the lowest precedence - they are overridden by later values
+	extraResAttrs := map[attribute.Key]string{}
+	for k, v := range cfg.Attributes {
+		extraResAttrs[attribute.Key(k)] = v
+	}
+
+	setEnvVar(container, envInjectorOtelK8sContainerName, container.Name)
+
+	pm.addParentResourceLabels(meta, extraResAttrs, cfg.AddK8sUIDAttributes)
+
+	namespace := setEnvVarFromFieldPath(container, envInjectorOtelK8sNamespaceName, "metadata.namespace")
+	podName := setEnvVarFromFieldPath(container, envInjectorOtelK8sPodName, "metadata.name")
+	// node name has to be added to extra attributes as there is no dedicated OTEL_INJECTOR_* variable
+	extraResAttrs[semconv.K8SNodeNameKey] =
+		setEnvVarFromFieldPath(container, envOtelK8sNodeName, "spec.nodeName")
+
+	if cfg.AddK8sIPAttribute {
+		extraResAttrs[semconv.K8SPodIPKey] =
+			setEnvVarFromFieldPath(container, envOtelK8sPodIP, "status.podIP")
+	}
+
+	if cfg.AddK8sUIDAttributes {
+		setEnvVarFromFieldPath(container, envInjectorOtelK8sPodUID, "metadata.uid")
+	}
+
+	// Set service attributes using dedicated env vars
+	setEnvVar(container, envInjectorOtelServiceNamespace, chooseServiceNamespace(meta, cfg.UseLabelsForResourceAttributes, namespace))
+	setEnvVar(container, envInjectorOtelServiceName, chooseServiceName(meta, cfg.UseLabelsForResourceAttributes, podName, extraResAttrs))
+	setEnvVar(container, envInjectorOtelServiceVersion, chooseServiceVersion(meta, cfg.UseLabelsForResourceAttributes, container))
+
+	// Service instance ID is added to extra attributes since it uses pod name reference
+	serviceInstanceId := createServiceInstanceId(meta, namespace, podName, container.Name)
+	if serviceInstanceId != "" {
+		extraResAttrs[semconv.ServiceInstanceIDKey] = serviceInstanceId
+	}
+
+	// attributes from the pod annotations have the highest precedence
+	for k, v := range meta.GetAnnotations() {
+		if strings.HasPrefix(k, ResourceAttributeAnnotationPrefix) {
+			extraResAttrs[attribute.Key(strings.TrimPrefix(k, ResourceAttributeAnnotationPrefix))] = v
+		}
+	}
+	return extraResAttrs
+}
+
+// configureSampler sets sampler environment variables from the provided sampler configuration.
+// The samplerConfig parameter must be non-nil.
+// Respects existing environment variables (won't override user settings).
+func (pm *PodMutator) configureSampler(container *corev1.Container, samplerConfig *services.SamplerConfig) {
+	// Use existing setEnvVar helper (handles empty values and duplicates)
+	setEnvVar(container, envOtelTracesSamplerName, string(samplerConfig.Name))
+	setEnvVar(container, envOtelTracesSamplerArgName, samplerConfig.Arg)
+}
+
+// configurePropagators sets propagators environment variable from the provided list.
+// The propagators parameter must be non-empty.
+// Respects existing environment variables (won't override user settings).
+func (pm *PodMutator) configurePropagators(container *corev1.Container, propagators []string) {
+	// Join propagators with comma separator as per OTEL spec
+	setEnvVar(container, envOtelPropagatorsName, strings.Join(propagators, ","))
+}
+
+// configureExporters sets exporter environment variables based on the export modes.
+// Sets OTEL_METRICS_EXPORTER to "otlp" or "none" based on CanExportMetrics().
+// Sets OTEL_TRACES_EXPORTER to "otlp" or "none" based on CanExportTraces().
+// Sets OTEL_LOGS_EXPORTER to "otlp" or "none" based on CanExportLogs().
+func (pm *PodMutator) configureExporters(container *corev1.Container, exportModes services.ExportModes) {
+	// Set metrics exporter
+	if exportModes.CanExportMetrics() {
+		setEnvVar(container, envOtelMetricsExporterName, "otlp")
+	} else {
+		setEnvVar(container, envOtelMetricsExporterName, "none")
+	}
+
+	// Set traces exporter
+	if exportModes.CanExportTraces() {
+		setEnvVar(container, envOtelTracesExporterName, "otlp")
+	} else {
+		setEnvVar(container, envOtelTracesExporterName, "none")
+	}
+
+	// Set logs exporter
+	if exportModes.CanExportLogs() {
+		setEnvVar(container, envOtelLogsExporterName, "otlp")
+	} else {
+		setEnvVar(container, envOtelLogsExporterName, "none")
+	}
+}
+
+// chooseServiceName returns the service name to be used in the instrumentation.
+// See https://opentelemetry.io/docs/specs/semconv/non-normative/k8s-attributes/#how-servicename-should-be-calculated
+func chooseServiceName(meta *metav1.ObjectMeta, useLabelsForResourceAttributes bool, podName string, resources map[attribute.Key]string) string {
+	if name := chooseLabelOrAnnotation(meta, useLabelsForResourceAttributes, semconv.ServiceNameKey, LabelAppName); name != "" {
+		return name
+	}
+	if name := resources[semconv.K8SDeploymentNameKey]; name != "" {
+		return name
+	}
+	if name := resources[semconv.K8SReplicaSetNameKey]; name != "" {
+		return name
+	}
+	if name := resources[semconv.K8SStatefulSetNameKey]; name != "" {
+		return name
+	}
+	if name := resources[semconv.K8SDaemonSetNameKey]; name != "" {
+		return name
+	}
+	if name := resources[semconv.K8SCronJobNameKey]; name != "" {
+		return name
+	}
+	if name := resources[semconv.K8SJobNameKey]; name != "" {
+		return name
+	}
+	return podName
+}
+
+// chooseLabelOrAnnotation returns the value of the label or annotation with the given key.
+// The precedence is as follows:
+// 1. annotation with key resource.opentelemetry.io/<resource>.
+// 2. label with key labelKey.
+func chooseLabelOrAnnotation(meta *metav1.ObjectMeta, useLabelsForResourceAttributes bool, resource attribute.Key, labelKeys []string) string {
+	if v := meta.GetAnnotations()[(ResourceAttributeAnnotationPrefix + string(resource))]; v != "" {
+		return v
+	}
+	if useLabelsForResourceAttributes {
+		for _, labelKey := range labelKeys {
+			if v := meta.GetLabels()[labelKey]; v != "" {
+				return v
+			}
+		}
+	}
+	return ""
+}
+
+// chooseServiceVersion returns the service version to be used in the instrumentation.
+// See https://opentelemetry.io/docs/specs/semconv/non-normative/k8s-attributes/#how-serviceversion-should-be-calculated
+func chooseServiceVersion(meta *metav1.ObjectMeta, useLabelsForResourceAttributes bool, container *corev1.Container) string {
+	v := chooseLabelOrAnnotation(meta, useLabelsForResourceAttributes, semconv.ServiceVersionKey, LabelAppVersion)
+	if v != "" {
+		return v
+	}
+	var err error
+	v, err = parseServiceVersionFromImage(container.Image)
+	if err != nil {
+		return ""
+	}
+	return v
+}
+
+// chooseServiceNamespace returns the service.namespace to be used in the instrumentation.
+// See https://opentelemetry.io/docs/specs/semconv/non-normative/k8s-attributes/#how-servicenamespace-should-be-calculated
+func chooseServiceNamespace(meta *metav1.ObjectMeta, useLabelsForResourceAttributes bool, namespaceName string) string {
+	namespace := chooseLabelOrAnnotation(meta, useLabelsForResourceAttributes, semconv.ServiceNamespaceKey, nil)
+	if namespace != "" {
+		return namespace
+	}
+	return namespaceName
+}
+
+var errCannotRetrieveImage = errors.New("cannot retrieve image name")
+
+// parseServiceVersionFromImage parses the service version for differently-formatted image names
+// according to https://opentelemetry.io/docs/specs/semconv/non-normative/k8s-attributes/#how-serviceversion-should-be-calculated
+func parseServiceVersionFromImage(image string) (string, error) {
+	ref, err := reference.Parse(image)
+	if err != nil {
+		return "", err
+	}
+
+	namedRef, ok := ref.(reference.Named)
+	if !ok {
+		return "", errCannotRetrieveImage
+	}
+	var tag, digest string
+	if taggedRef, ok := namedRef.(reference.Tagged); ok {
+		tag = taggedRef.Tag()
+	}
+	if digestedRef, ok := namedRef.(reference.Digested); ok {
+		digest = digestedRef.Digest().String()
+	}
+	if digest != "" {
+		if tag != "" {
+			return fmt.Sprintf("%s@%s", tag, digest), nil
+		}
+		return digest, nil
+	}
+	if tag != "" {
+		return tag, nil
+	}
+
+	return "", errCannotRetrieveImage
+}
+
+// chooseServiceInstanceId returns the service.instance.id to be used in the instrumentation.
+// See https://opentelemetry.io/docs/specs/semconv/non-normative/k8s-attributes/#how-serviceinstanceid-should-be-calculated
+func createServiceInstanceId(meta *metav1.ObjectMeta, namespaceName, podName, containerName string) string {
+	// Do not use labels for service instance id,
+	// because multiple containers in the same pod would get the same service instance id,
+	// which violates the uniqueness requirement of service instance id -
+	// see https://opentelemetry.io/docs/specs/semconv/resource/#service-experimental.
+	// We still allow the user to set the service instance id via annotation, because this is explicitly set by the user.
+	serviceInstanceId := chooseLabelOrAnnotation(meta, false, semconv.ServiceInstanceIDKey, nil)
+	if serviceInstanceId != "" {
+		return serviceInstanceId
+	}
+
+	if namespaceName != "" && podName != "" && containerName != "" {
+		resNames := []string{namespaceName, podName, containerName}
+		return strings.Join(resNames, ".")
+	}
+	return ""
+}
+
+// setEnvVarFromFieldPath is a helper function that sets an environment variable from a Kubernetes downwards API field path
+func setEnvVarFromFieldPath(container *corev1.Container, envVarName, fieldPath string) string {
+	container.Env = append(container.Env, corev1.EnvVar{
+		Name: envVarName,
+		ValueFrom: &corev1.EnvVarSource{
+			FieldRef: &corev1.ObjectFieldSelector{
+				FieldPath: fieldPath,
+			},
+		},
+	})
+	return fmt.Sprintf("$(%s)", envVarName)
+}
+
+func (pm *PodMutator) addParentResourceLabels(meta *metav1.ObjectMeta, resources map[attribute.Key]string, includeUID bool) {
+	for _, owner := range ownersFrom(meta) {
+		resourceAttribute := getResourceAttribute(owner.Kind)
+		if resourceAttribute != "" {
+			resources[resourceAttribute] = owner.Name
+		}
+	}
+	if includeUID {
+		for _, owner := range meta.OwnerReferences {
+			resourceAttribute := getResourceAttribute(owner.Kind)
+			if resourceAttribute != "" {
+				resources[resourceAttribute] = string(owner.UID)
+			}
+		}
+	}
+}
+
+func getResourceAttribute(kind string) attribute.Key {
+	switch strings.ToLower(kind) {
+	case "replicaset":
+		return semconv.K8SReplicaSetNameKey
+	case "deployment":
+		return semconv.K8SDeploymentNameKey
+	case "statefulset":
+		return semconv.K8SStatefulSetNameKey
+	case "daemonset":
+		return semconv.K8SDaemonSetNameKey
+	case "job":
+		return semconv.K8SJobNameKey
+	case "cronjob":
+		return semconv.K8SCronJobNameKey
+	default:
+		return ""
+	}
+}
+
+// Setting an empty environment variable is picked up by the
+// injector as disabled instrumentation for that language.
+func (pm *PodMutator) disableUndesiredSDKs(c *corev1.Container) {
+	for _, supported := range supportedSDKLangs {
+		if !pm.CanInstrument(supported) {
+			switch supported {
+			case svc.InstrumentableDotnet:
+				setEnvVarEvenIfEmpty(c, envDotnetEnabledName, "")
+			case svc.InstrumentableJava:
+				setEnvVarEvenIfEmpty(c, envJavaEnabledName, "")
+			case svc.InstrumentableNodejs:
+				setEnvVarEvenIfEmpty(c, envNodejsEnabledName, "")
+			case svc.InstrumentablePython:
+				setEnvVarEvenIfEmpty(c, envPythonEnabledName, "")
+			}
+		}
+	}
+}
+
+func (pm *PodMutator) CanInstrument(kind svc.InstrumentableType) bool {
+	for _, k := range pm.Cfg.EnabledSDKs {
+		if k.InstrumentableType == kind {
+			return true
+		}
+	}
+	return false
+}
+
+// alreadyInstrumentedByOther returns true when a pod shows signs of instrumentation
+// by another tool: the operator's config file env var, or our label from a previous
+// webhook invocation.
+func alreadyInstrumentedByOther(spec *corev1.PodSpec, meta *metav1.ObjectMeta) bool {
+	for i := range spec.Containers {
+		for _, env := range spec.Containers[i].Env {
+			if env.Name == envOtelInjectorConfigFileName {
+				return true
+			}
+		}
+	}
+	if val, ok := meta.Annotations[InjectedAnnotation]; ok && val != "" {
+		return true
+	}
+	return false
+}
+
+func ownersFrom(meta *metav1.ObjectMeta) []*informer.Owner {
+	if len(meta.OwnerReferences) == 0 {
+		// If no owner references' found, return itself as owner
+		return []*informer.Owner{{Kind: "Pod", Name: meta.Name}}
+	}
+	owners := make([]*informer.Owner, 0, len(meta.OwnerReferences))
+	for i := range meta.OwnerReferences {
+		or := &meta.OwnerReferences[i]
+		owners = append(owners, &informer.Owner{Kind: or.Kind, Name: or.Name})
+		// ReplicaSets usually have a Deployment as owner too. Returning it as well
+		if or.APIVersion == "apps/v1" && or.Kind == "ReplicaSet" {
+			// we heuristically extract the Deployment name from the replicaset name
+			if idx := strings.LastIndexByte(or.Name, '-'); idx > 0 {
+				owners = append(owners, &informer.Owner{Kind: "Deployment", Name: or.Name[:idx]})
+				// we already have what we need for decoration and selection. Ignoring any other owner
+				// it might hypothetically have (it would be a rare case)
+				return owners
+			}
+		}
+		if or.APIVersion == "batch/v1" && or.Kind == "Job" {
+			// we heuristically extract the CronJob name from the Job name
+			if idx := strings.LastIndexByte(or.Name, '-'); idx > 0 {
+				owners = append(owners, &informer.Owner{Kind: "CronJob", Name: or.Name[:idx]})
+				// we already have what we need for decoration and selection. Ignoring any other owner
+				// it might hypothetically have (it would be a rare case)
+				return owners
+			}
+		}
+	}
+	return owners
+}
