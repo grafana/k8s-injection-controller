@@ -12,7 +12,9 @@ package controller
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
+	"net"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -81,11 +83,18 @@ type ConfigMapReconciler struct {
 	// typed client does not expose.
 	Clientset kubernetes.Interface
 	Registry  *registry.Registry
-	// WebhookReady gates the eviction sweep so it doesn't run before our own
-	// webhook server is listening. The apiserver's admission call would
-	// otherwise hit `connection refused` and (with failurePolicy: Ignore)
-	// silently admit the recreated pod un-instrumented. Optional.
+	// WebhookReady gates the eviction sweep on the local listener being bound.
+	// Necessary but not sufficient — see WebhookServiceAddr below. Optional.
 	WebhookReady healthz.Checker
+	// WebhookServiceAddr is "<service>.<ns>.svc:443" for our own webhook
+	// Service. We TCP-dial it before each eviction sweep: a successful dial
+	// means kube-proxy has programmed the Service VIP and the apiserver can
+	// reach us. Without this, the first sweep on startup races kube-proxy:
+	// our listener is up locally (WebhookReady is green) but the Service has
+	// no ready endpoints yet, so apiserver admissions get refused and (with
+	// failurePolicy=Ignore) admit pods un-instrumented. Optional; if empty,
+	// the dial check is skipped.
+	WebhookServiceAddr string
 }
 
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
@@ -120,18 +129,30 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 	r.Registry.Set(cmKey, criteria)
-	if len(restartTargets) > 0 {
-		if r.WebhookReady != nil {
-			if err := r.WebhookReady(nil); err != nil {
-				logger.Info("webhook server not yet ready; deferring eviction sweep", "reason", err.Error())
-				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
-			}
-		}
-		if err := r.evictMatching(ctx, restartTargets); err != nil {
-			logger.Error(err, "failed to evict pre-existing pods")
+	if len(restartTargets) == 0 {
+		return ctrl.Result{}, nil
+	}
+	if r.WebhookReady != nil {
+		if err := r.WebhookReady(nil); err != nil {
+			logger.Info("webhook server not yet ready; deferring eviction sweep", "reason", err.Error())
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 		}
 	}
-	return ctrl.Result{}, nil
+	if r.WebhookServiceAddr != "" {
+		if err := dialWebhookService(r.WebhookServiceAddr); err != nil {
+			logger.Info("webhook Service not yet routable; deferring eviction sweep",
+				"addr", r.WebhookServiceAddr, "reason", err.Error())
+			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+		}
+	}
+	if err := r.evictMatching(ctx, restartTargets); err != nil {
+		logger.Error(err, "failed to evict pre-existing pods")
+	}
+	// Re-sweep periodically. With failurePolicy=Ignore, a pod created while
+	// our webhook was briefly unreachable (e.g. our own restart) is admitted
+	// un-mutated. AlreadyInstrumentedByOther skips already-injected pods, so
+	// steady state has no churn — only un-mutated matches get re-evicted.
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
 // parseConfigMap extracts the selection criteria (from selection_criteria.yaml)
@@ -291,5 +312,19 @@ func (r *ConfigMapReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func noEnqueue(_ context.Context, _ client.Object) []reconcile.Request {
+	return nil
+}
+
+// dialWebhookService TCP-dials our own webhook Service. A successful TLS
+// handshake (the apiserver speaks HTTPS to us) confirms kube-proxy has
+// programmed the Service VIP and the cert is being served. We tolerate any
+// cert (InsecureSkipVerify) — we're not validating identity, only routability.
+func dialWebhookService(addr string) error {
+	d := &net.Dialer{Timeout: 2 * time.Second}
+	conn, err := tls.DialWithDialer(d, "tcp", addr, &tls.Config{InsecureSkipVerify: true}) //nolint:gosec
+	if err != nil {
+		return err
+	}
+	_ = conn.Close()
 	return nil
 }

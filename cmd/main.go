@@ -213,10 +213,11 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.ConfigMapReconciler{
-		Client:       mgr.GetClient(),
-		Clientset:    clientset,
-		Registry:     reg,
-		WebhookReady: mgr.GetWebhookServer().StartedChecker(),
+		Client:             mgr.GetClient(),
+		Clientset:          clientset,
+		Registry:           reg,
+		WebhookReady:       mgr.GetWebhookServer().StartedChecker(),
+		WebhookServiceAddr: os.Getenv("WEBHOOK_SERVICE_ADDR"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up controller", "controller", "ConfigMap")
 		os.Exit(1)

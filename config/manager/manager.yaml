@@ -65,6 +65,14 @@ spec:
           - --health-probe-bind-address=:8081
         image: controller:latest
         name: manager
+        env:
+        # Used by the controller to TCP-dial its own webhook Service before
+        # evicting pods, so the first eviction sweep on startup waits for
+        # kube-proxy to program the Service VIP. Otherwise apiserver
+        # admissions for recreated pods race the endpoint propagation and,
+        # with failurePolicy=Ignore, admit them un-instrumented.
+        - name: WEBHOOK_SERVICE_ADDR
+          value: beyla-k8s-injector-webhook-service.beyla-k8s-injector.svc:443
         ports:
         - containerPort: 8081
           name: health
