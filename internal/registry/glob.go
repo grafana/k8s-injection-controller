@@ -63,8 +63,32 @@ func (p *GlobAttr) UnmarshalText(text []byte) error {
 	if err != nil {
 		return fmt.Errorf("invalid regular expression %q: %w", string(text), err)
 	}
+	p.str = string(text)
 	p.glob = re
 	return nil
+}
+
+// Pattern returns the original glob source string (e.g. "prod-*").
+func (p *GlobAttr) Pattern() string {
+	if p == nil {
+		return ""
+	}
+	return p.str
+}
+
+// IsLiteral reports whether the pattern contains no glob metacharacters,
+// i.e. it would only ever match itself.
+func (p *GlobAttr) IsLiteral() bool {
+	if p == nil || p.str == "" {
+		return false
+	}
+	for _, r := range p.str {
+		switch r {
+		case '*', '?', '[', '{', '\\':
+			return false
+		}
+	}
+	return true
 }
 
 func (p *GlobAttr) MatchString(input string) bool {

@@ -36,12 +36,18 @@ into pods running in namespaces selected by annotated ConfigMaps. Built with
 3. The **mutating webhook** intercepts pod CREATE requests. If the pod
    matches any criterion, the env var `FOO=bar` is appended to every
    container and initContainer (idempotent — already-set vars are left alone).
-4. **Pre-existing pods**: when a namespace becomes newly watched, the
-   controller submits an `Eviction` for every pod in that namespace that
-   (a) has an `OwnerReference`, (b) matches a selection criterion, and
-   (c) runs at least one image listed in `eligible_for_restart.yml`. PDBs
-   are honored. Bare pods are logged and skipped — deleting them would lose
-   the workload with no controller to bring them back.
+4. **Pre-existing pods**: on every reconcile of a selector ConfigMap with
+   non-empty criteria, the controller submits an `Eviction` for every pod
+   that (a) has an `OwnerReference`, (b) matches a criterion in the
+   registry, and (c) runs at least one image listed in
+   `eligible_for_restart.yml`. PDBs are honored. Bare pods are skipped.
+
+   Listing scope: if every criterion in the just-updated ConfigMap names a
+   literal `k8s_namespace`, only those namespaces are listed; otherwise the
+   controller lists pods cluster-wide. The image filter and criterion match
+   keep the eviction set bounded, so cluster-wide just means "any pod in
+   the cluster that the operator actually selected." ReplicaSets are kept
+   in the manager cache so the pod → RS → Deployment lookup is local.
 
 ## Prerequisites
 

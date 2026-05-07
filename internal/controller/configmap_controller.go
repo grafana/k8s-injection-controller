@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,8 +24,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/yaml"
 
 	"github.com/grafana/beyla-k8s-injector/internal/podinfo"
@@ -93,21 +96,10 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		r.Registry.Delete(cmKey)
 		return ctrl.Result{}, nil
 	}
-	hasClusterWide := false
-	for _, c := range criteria {
-		if c.K8sNamespace == "" {
-			hasClusterWide = true
-			break
-		}
-	}
-	if hasClusterWide {
-		logger.Info("ConfigMap has cluster-wide criteria; pre-existing pods outside named namespaces will not be evicted")
-	}
-
-	newlyWatched := r.Registry.Set(cmKey, criteria)
-	for _, ns := range newlyWatched {
-		if err := r.evictExisting(ctx, ns, eligibleImages); err != nil {
-			logger.Error(err, "failed to evict pre-existing pods", "namespace", ns)
+	r.Registry.Set(cmKey, criteria)
+	if len(criteria) > 0 {
+		if err := r.evictMatching(ctx, criteria, eligibleImages); err != nil {
+			logger.Error(err, "failed to evict pre-existing pods")
 		}
 	}
 	return ctrl.Result{}, nil
@@ -148,27 +140,34 @@ func parseConfigMap(data map[string]string) ([]registry.SelectionCriterion, map[
 	return criteria, eligibleImages, nil
 }
 
-// evictExisting walks pods in the given namespace and submits an Eviction for
-// each one that (a) has an OwnerReference (so something will recreate it) and
-// (b) runs at least one container whose image is listed in eligibleImages.
-// Bare pods and pods that don't match the image filter are skipped.
-func (r *ConfigMapReconciler) evictExisting(ctx context.Context, namespace string, eligibleImages map[string]struct{}) error {
-	logger := log.FromContext(ctx).WithValues("namespace", namespace)
+// evictMatching lists candidate pods and submits an Eviction for each that
+// (a) has an OwnerReference, (b) runs an image in eligibleImages, and
+// (c) matches any criterion currently in the registry.
+//
+// Pods require an owner reference because bare pods have no controller to recreate them.
+//
+// Listing scope: if every criterion in the just-reconciled CM has a literal
+// k8s_namespace, list only those namespaces; otherwise list cluster-wide.
+// The image filter and registry.Match further narrow the eviction set, so
+// "cluster-wide" is bounded by what the operator actually selected.
+func (r *ConfigMapReconciler) evictMatching(ctx context.Context, criteria []registry.SelectionCriterion, eligibleImages map[string]struct{}) error {
+	logger := log.FromContext(ctx)
 	if len(eligibleImages) == 0 {
 		logger.Info("no eligible-for-restart images declared; skipping pre-existing pods")
 		return nil
 	}
-	var pods corev1.PodList
-	if err := r.List(ctx, &pods, client.InNamespace(namespace)); err != nil {
-		return fmt.Errorf("list pods: %w", err)
+
+	pods, err := r.collectCandidatePods(ctx, criteria)
+	if err != nil {
+		return err
 	}
-	for i := range pods.Items {
-		pod := &pods.Items[i]
+
+	for i := range pods {
+		pod := &pods[i]
 		if pod.DeletionTimestamp != nil {
 			continue
 		}
 		if len(pod.OwnerReferences) == 0 {
-			logger.Info("skipping bare pod (no owner to recreate it)", "pod", pod.Name)
 			continue
 		}
 		if !podMatchesImage(pod, eligibleImages) {
@@ -187,18 +186,65 @@ func (r *ConfigMapReconciler) evictExisting(ctx context.Context, namespace strin
 		err := r.Clientset.CoreV1().Pods(pod.Namespace).EvictV1(ctx, eviction)
 		switch {
 		case err == nil:
-			logger.Info("evicted pod for re-injection", "pod", pod.Name)
+			logger.Info("evicted pod for re-injection", "namespace", pod.Namespace, "pod", pod.Name)
 		case apierrors.IsNotFound(err):
 			// already gone
 		case apierrors.IsTooManyRequests(err):
 			// PDB blocked it; log and move on. The pod will be picked up by the
 			// webhook whenever it's eventually replaced.
-			logger.Info("eviction blocked by PDB; leaving pod in place", "pod", pod.Name)
+			logger.Info("eviction blocked by PDB; leaving pod in place", "namespace", pod.Namespace, "pod", pod.Name)
 		default:
-			logger.Error(err, "eviction failed", "pod", pod.Name)
+			logger.Error(err, "eviction failed", "namespace", pod.Namespace, "pod", pod.Name)
 		}
 	}
 	return nil
+}
+
+// collectCandidatePods lists pods within the smallest namespace scope that
+// could contain matches: the union of literal namespaces in the criteria
+// when every criterion specifies one, otherwise cluster-wide.
+func (r *ConfigMapReconciler) collectCandidatePods(ctx context.Context, criteria []registry.SelectionCriterion) ([]corev1.Pod, error) {
+	logger := log.FromContext(ctx)
+	namespaces, allLiteral := literalNamespaces(criteria)
+	if !allLiteral {
+		logger.Info("listing pods cluster-wide for eviction sweep (criteria include non-literal or absent namespaces)")
+		var list corev1.PodList
+		if err := r.List(ctx, &list); err != nil {
+			return nil, fmt.Errorf("list pods cluster-wide: %w", err)
+		}
+		return list.Items, nil
+	}
+	var out []corev1.Pod
+	for _, ns := range namespaces {
+		var list corev1.PodList
+		if err := r.List(ctx, &list, client.InNamespace(ns)); err != nil {
+			return nil, fmt.Errorf("list pods in %s: %w", ns, err)
+		}
+		out = append(out, list.Items...)
+	}
+	return out, nil
+}
+
+// literalNamespaces returns the deduplicated set of literal k8s_namespace
+// values across the criteria, plus a flag indicating whether every criterion
+// had a literal namespace. If even one criterion is missing or uses a glob,
+// allLiteral is false and the caller must list cluster-wide.
+func literalNamespaces(criteria []registry.SelectionCriterion) (out []string, allLiteral bool) {
+	seen := map[string]struct{}{}
+	allLiteral = true
+	for _, c := range criteria {
+		if !c.K8sNamespace.IsLiteral() {
+			allLiteral = false
+			continue
+		}
+		ns := c.K8sNamespace.Pattern()
+		if _, dup := seen[ns]; dup {
+			continue
+		}
+		seen[ns] = struct{}{}
+		out = append(out, ns)
+	}
+	return out, allLiteral
 }
 
 // podMatchesImage reports whether any container or initContainer in the pod
@@ -248,10 +294,18 @@ func hasSelectorAnnotation(obj client.Object) bool {
 
 func (r *ConfigMapReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	annotated := predicate.NewPredicateFuncs(hasSelectorAnnotation)
+	// The Watches on ReplicaSets exists purely to hydrate the manager cache so
+	// podinfo.Resolve (called per pod during eviction) reads RSes from the
+	// informer instead of making per-pod API calls. The handler returns no
+	// reconcile requests — RS events do not trigger ConfigMap reconciles.
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("configmap-selector").
 		For(&corev1.ConfigMap{}, builder.WithPredicates(annotated)).
+		Watches(&appsv1.ReplicaSet{}, handler.EnqueueRequestsFromMapFunc(noEnqueue)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
 		Complete(r)
 }
 
+func noEnqueue(_ context.Context, _ client.Object) []reconcile.Request {
+	return nil
+}
