@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: beyla-selector-demo
+  namespace: default
+  annotations:
+    beyla.grafana.com/node: ""
+data:
+  selection_criteria.yaml: |
+    - k8s_namespace: demo
+  eligible_for_restart.yml: |
+    - image: mariomac/ds-example:frontend
+      language: nodejs
+    - image: mariomac/ds-example:loadgen
+      language: nodejs

@@ -30,16 +30,29 @@ import (
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 )
 
-// SelectorAnnotation is the annotation that marks a ConfigMap as a Beyla
-// injection selector. Its value is ignored — presence is what matters.
+// SelectorAnnotation marks a ConfigMap as a Beyla injection selector. Its
+// value is ignored — presence is what matters.
 const SelectorAnnotation = "beyla.grafana.com/node"
 
-// configMapPayload is the YAML schema we expect inside the ConfigMap's data
-// values. We accept either a single namespace or a list to make multi-target
-// selection ergonomic.
-type configMapPayload struct {
-	K8sNamespace  string   `json:"k8s_namespace,omitempty"`
-	K8sNamespaces []string `json:"k8s_namespaces,omitempty"`
+// Keys we read from ConfigMap.Data. Anything else is ignored.
+const (
+	// SelectionCriteriaKey holds a YAML list of namespaces eligible for
+	// injection by the webhook. Schema: `- k8s_namespace: <name>`.
+	SelectionCriteriaKey = "selection_criteria.yaml"
+	// EligibleForRestartKey holds a YAML list of container images whose
+	// running pods are eligible for eviction so the webhook can re-intercept
+	// them. Schema: `- image: <ref>` (the `language` attribute is parsed but
+	// currently ignored).
+	EligibleForRestartKey = "eligible_for_restart.yml"
+)
+
+type selectionCriterion struct {
+	K8sNamespace string `json:"k8s_namespace,omitempty"`
+}
+
+type restartCriterion struct {
+	Image    string `json:"image,omitempty"`
+	Language string `json:"language,omitempty"` // currently unused
 }
 
 // ConfigMapReconciler watches ConfigMaps carrying the SelectorAnnotation and
@@ -76,7 +89,7 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
-	namespaces, err := parseNamespaces(cm.Data)
+	namespaces, eligibleImages, err := parseConfigMap(cm.Data)
 	if err != nil {
 		logger.Error(err, "ignoring ConfigMap with invalid payload")
 		r.Registry.Delete(cmKey)
@@ -85,44 +98,63 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	newlyWatched := r.Registry.Set(cmKey, namespaces)
 	for _, ns := range newlyWatched {
-		if err := r.evictExisting(ctx, ns); err != nil {
+		if err := r.evictExisting(ctx, ns, eligibleImages); err != nil {
 			logger.Error(err, "failed to evict pre-existing pods", "namespace", ns)
 		}
 	}
 	return ctrl.Result{}, nil
 }
 
-func parseNamespaces(data map[string]string) ([]string, error) {
-	seen := map[string]struct{}{}
-	var out []string
-	add := func(ns string) {
-		if ns == "" {
-			return
+// parseConfigMap extracts the watched namespaces (from selection_criteria.yaml)
+// and the set of eligible-for-restart container images (from
+// eligible_for_restart.yml). Either key may be absent: a missing
+// selection_criteria.yaml just means this CM contributes no namespaces; a
+// missing eligible_for_restart.yml means no pre-existing pods will be evicted
+// (new pods in selected namespaces are still injected by the webhook).
+func parseConfigMap(data map[string]string) (namespaces []string, eligibleImages map[string]struct{}, err error) {
+	if raw, ok := data[SelectionCriteriaKey]; ok {
+		var crit []selectionCriterion
+		if err := yaml.Unmarshal([]byte(raw), &crit); err != nil {
+			return nil, nil, fmt.Errorf("parse %s: %w", SelectionCriteriaKey, err)
 		}
-		if _, ok := seen[ns]; ok {
-			return
+		seen := map[string]struct{}{}
+		for _, c := range crit {
+			if c.K8sNamespace == "" {
+				continue
+			}
+			if _, dup := seen[c.K8sNamespace]; dup {
+				continue
+			}
+			seen[c.K8sNamespace] = struct{}{}
+			namespaces = append(namespaces, c.K8sNamespace)
 		}
-		seen[ns] = struct{}{}
-		out = append(out, ns)
 	}
-	for _, raw := range data {
-		var p configMapPayload
-		if err := yaml.Unmarshal([]byte(raw), &p); err != nil {
-			return nil, fmt.Errorf("unmarshal: %w", err)
+	eligibleImages = map[string]struct{}{}
+	if raw, ok := data[EligibleForRestartKey]; ok {
+		var crit []restartCriterion
+		if err := yaml.Unmarshal([]byte(raw), &crit); err != nil {
+			return nil, nil, fmt.Errorf("parse %s: %w", EligibleForRestartKey, err)
 		}
-		add(p.K8sNamespace)
-		for _, ns := range p.K8sNamespaces {
-			add(ns)
+		for _, c := range crit {
+			if c.Image == "" {
+				continue
+			}
+			eligibleImages[c.Image] = struct{}{}
 		}
 	}
-	return out, nil
+	return namespaces, eligibleImages, nil
 }
 
 // evictExisting walks pods in the given namespace and submits an Eviction for
-// each one that has an OwnerReference (so something will recreate it). Bare
-// pods are skipped — deleting them would lose the workload.
-func (r *ConfigMapReconciler) evictExisting(ctx context.Context, namespace string) error {
+// each one that (a) has an OwnerReference (so something will recreate it) and
+// (b) runs at least one container whose image is listed in eligibleImages.
+// Bare pods and pods that don't match the image filter are skipped.
+func (r *ConfigMapReconciler) evictExisting(ctx context.Context, namespace string, eligibleImages map[string]struct{}) error {
 	logger := log.FromContext(ctx).WithValues("namespace", namespace)
+	if len(eligibleImages) == 0 {
+		logger.Info("no eligible-for-restart images declared; skipping pre-existing pods")
+		return nil
+	}
 	var pods corev1.PodList
 	if err := r.List(ctx, &pods, client.InNamespace(namespace)); err != nil {
 		return fmt.Errorf("list pods: %w", err)
@@ -134,6 +166,9 @@ func (r *ConfigMapReconciler) evictExisting(ctx context.Context, namespace strin
 		}
 		if len(pod.OwnerReferences) == 0 {
 			logger.Info("skipping bare pod (no owner to recreate it)", "pod", pod.Name)
+			continue
+		}
+		if !podMatchesImage(pod, eligibleImages) {
 			continue
 		}
 		if podHasInjection(pod) {
@@ -157,6 +192,23 @@ func (r *ConfigMapReconciler) evictExisting(ctx context.Context, namespace strin
 		}
 	}
 	return nil
+}
+
+// podMatchesImage reports whether any container or initContainer in the pod
+// runs an image present in the eligible set. Image matching is exact on the
+// reference string as it appears in the PodSpec.
+func podMatchesImage(pod *corev1.Pod, eligible map[string]struct{}) bool {
+	for _, c := range pod.Spec.Containers {
+		if _, ok := eligible[c.Image]; ok {
+			return true
+		}
+	}
+	for _, c := range pod.Spec.InitContainers {
+		if _, ok := eligible[c.Image]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // podHasInjection avoids evicting pods that already carry our env var across
