@@ -9,29 +9,39 @@ into pods running in namespaces selected by annotated ConfigMaps. Built with
 1. The **ConfigMap controller** watches every `ConfigMap` carrying the
    annotation `beyla.grafana.com/node` (the value is ignored — presence is
    what matters).
-2. Each selector ConfigMap holds a YAML payload in its `.data` values. Either
-   form is accepted:
+2. Each selector ConfigMap carries two files in its `.data`:
+
+   **`selection_criteria.yaml`** — list of pod selectors. Each entry may set
+   any combination of:
+
    ```yaml
-   k8s_namespace: my-app
+   - k8s_pod_name: my-pod
+     k8s_namespace: my-app
+     k8s_deployment_name: hello       # walks pod -> ReplicaSet -> Deployment
+     k8s_replicaset_name: hello-abc
+     k8s_statefulset_name: db
+     k8s_daemonset_name: agent
+     k8s_owner_name: hello            # any owner kind, including resolved Deployment
    ```
-   or
-   ```yaml
-   k8s_namespaces:
-     - my-app
-     - other-app
-   ```
-   Multiple ConfigMaps targeting the same namespace are merged (refcounted), so
-   removing one ConfigMap will not "unwatch" a namespace another still selects.
-3. The **mutating webhook** intercepts pod CREATE requests. If the pod's
-   namespace appears in the in-memory registry, the env var `FOO=bar` is
-   appended to every container and initContainer (idempotent — already-set vars
-   are left alone).
-4. **Pre-existing pods**: when a namespace becomes newly watched, the controller
-   submits an `Eviction` for every pod in that namespace that has an
-   `OwnerReference` (so a Deployment/StatefulSet/DaemonSet/etc. will recreate
-   it through the webhook). PDBs are honored. Bare pods (no owner) are logged
-   and skipped — deleting them would lose the workload with no controller to
-   bring them back.
+
+   Within one entry, all populated fields must match (**AND**); empty fields
+   are wildcards. Across entries the registry applies **OR**. `k8s_namespace`
+   is optional — entries without one match cluster-wide in the webhook, but
+   do not trigger eviction of pre-existing pods. Multiple ConfigMaps are
+   merged.
+
+   **`eligible_for_restart.yml`** — list of `{image: <ref>, language: <id>}`
+   entries (the `language` field is parsed but currently unused). Used as an
+   image filter when deciding which pre-existing pods to evict.
+3. The **mutating webhook** intercepts pod CREATE requests. If the pod
+   matches any criterion, the env var `FOO=bar` is appended to every
+   container and initContainer (idempotent — already-set vars are left alone).
+4. **Pre-existing pods**: when a namespace becomes newly watched, the
+   controller submits an `Eviction` for every pod in that namespace that
+   (a) has an `OwnerReference`, (b) matches a selection criterion, and
+   (c) runs at least one image listed in `eligible_for_restart.yml`. PDBs
+   are honored. Bare pods are logged and skipped — deleting them would lose
+   the workload with no controller to bring them back.
 
 ## Prerequisites
 
@@ -108,8 +118,12 @@ metadata:
   annotations:
     beyla.grafana.com/node: ""
 data:
-  config.yaml: |
-    k8s_namespace: my-app
+  selection_criteria.yaml: |
+    - k8s_namespace: my-app
+      k8s_deployment_name: hello
+  eligible_for_restart.yml: |
+    - image: nginx
+      language: nodejs
 EOF
 
 # 3. Pre-existing pods get evicted and recreated; verify the injection

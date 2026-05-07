@@ -8,86 +8,187 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Package registry tracks which namespaces should have the injection webhook
-// applied. Multiple ConfigMaps may select the same namespace; we refcount by
-// the set of ConfigMap keys (namespace/name) that requested it so removing one
-// ConfigMap does not unwatch a namespace another still wants.
+// Package registry holds the in-memory model of which pods should be touched
+// by the injector. Selector ConfigMaps contribute lists of SelectionCriterion;
+// the webhook and controller test pods against the union via Match.
 package registry
 
 import "sync"
 
+// SelectionCriterion is one entry from a selector ConfigMap's
+// selection_criteria.yaml. Within a criterion all populated fields must
+// match (AND); empty fields are wildcards. Across criteria the registry
+// applies OR.
+//
+// JSON tags double as the YAML schema: sigs.k8s.io/yaml decodes through JSON.
+type SelectionCriterion struct {
+	K8sPodName         string `json:"k8s_pod_name,omitempty"`
+	K8sNamespace       string `json:"k8s_namespace,omitempty"`
+	K8sDeploymentName  string `json:"k8s_deployment_name,omitempty"`
+	K8sReplicaSetName  string `json:"k8s_replicaset_name,omitempty"`
+	K8sStatefulSetName string `json:"k8s_statefulset_name,omitempty"`
+	K8sDaemonSetName   string `json:"k8s_daemonset_name,omitempty"`
+	// K8sOwnerName matches the pod's direct owner name (RS / STS / DS) or
+	// the resolved Deployment name reached via the RS chain. Combinable with
+	// the typed fields above (AND).
+	K8sOwnerName string `json:"k8s_owner_name,omitempty"`
+}
+
+// IsEmpty reports whether no field is populated. An empty criterion would
+// match every pod, which is almost always a misconfiguration; the parser
+// rejects these.
+func (c SelectionCriterion) IsEmpty() bool {
+	return c == SelectionCriterion{}
+}
+
+// PodInfo is the projection of a Pod that Match consumes. The caller is
+// responsible for resolving DeploymentName by walking the pod's RS owner
+// (see internal/podinfo).
+type PodInfo struct {
+	Name      string
+	Namespace string
+	// OwnerKind is the kind of the controller OwnerReference on the pod, if
+	// any. Expected values: "ReplicaSet", "StatefulSet", "DaemonSet",
+	// "Deployment", or "".
+	OwnerKind string
+	OwnerName string
+	// DeploymentName is set if the pod's RS owner is itself owned by a
+	// Deployment (or if the pod is directly owned by a Deployment).
+	DeploymentName string
+}
+
 // Registry is safe for concurrent use.
 type Registry struct {
 	mu sync.RWMutex
-	// namespace -> set of configmap keys ("ns/name") that selected it
-	refs map[string]map[string]struct{}
+	// criteria holds the parsed selection_criteria.yaml of each tracked CM,
+	// keyed by "namespace/name".
+	criteria map[string][]SelectionCriterion
+	// nsRefs counts which ConfigMaps mention each namespace. Only used to
+	// drive the eviction step (newly-watched namespaces); cluster-wide
+	// criteria don't appear here.
+	nsRefs map[string]map[string]struct{}
 }
 
 func New() *Registry {
-	return &Registry{refs: map[string]map[string]struct{}{}}
+	return &Registry{
+		criteria: map[string][]SelectionCriterion{},
+		nsRefs:   map[string]map[string]struct{}{},
+	}
 }
 
-// Set records that the given ConfigMap selects the given namespaces, replacing
-// any previous selection from the same ConfigMap. Returns the namespaces that
-// became newly watched (had no refs before this call) so the caller can
-// reconcile pre-existing pods in them.
-func (r *Registry) Set(cmKey string, namespaces []string) []string {
+// Set replaces this CM's contribution with the supplied criteria. It returns
+// the namespaces that became newly watched (had no nsRefs before this call)
+// so the caller can reconcile pre-existing pods in them.
+func (r *Registry) Set(cmKey string, criteria []SelectionCriterion) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	desired := make(map[string]struct{}, len(namespaces))
-	for _, ns := range namespaces {
-		if ns == "" {
-			continue
+	desiredNS := map[string]struct{}{}
+	for _, c := range criteria {
+		if c.K8sNamespace != "" {
+			desiredNS[c.K8sNamespace] = struct{}{}
 		}
-		desired[ns] = struct{}{}
 	}
 
-	// Remove stale references from this CM.
-	for ns, owners := range r.refs {
-		if _, want := desired[ns]; want {
+	// Drop stale namespace refs from this CM.
+	for ns, owners := range r.nsRefs {
+		if _, want := desiredNS[ns]; want {
 			continue
 		}
 		if _, had := owners[cmKey]; had {
 			delete(owners, cmKey)
 			if len(owners) == 0 {
-				delete(r.refs, ns)
+				delete(r.nsRefs, ns)
 			}
 		}
 	}
 
 	var newlyWatched []string
-	for ns := range desired {
-		owners, exists := r.refs[ns]
+	for ns := range desiredNS {
+		owners, exists := r.nsRefs[ns]
 		if !exists {
 			owners = map[string]struct{}{}
-			r.refs[ns] = owners
+			r.nsRefs[ns] = owners
 			newlyWatched = append(newlyWatched, ns)
 		}
 		owners[cmKey] = struct{}{}
 	}
+
+	if len(criteria) == 0 {
+		delete(r.criteria, cmKey)
+	} else {
+		r.criteria[cmKey] = criteria
+	}
 	return newlyWatched
 }
 
-// Delete drops all references owned by the given ConfigMap.
+// Delete drops all of this CM's criteria and namespace refs.
 func (r *Registry) Delete(cmKey string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for ns, owners := range r.refs {
+	delete(r.criteria, cmKey)
+	for ns, owners := range r.nsRefs {
 		if _, had := owners[cmKey]; !had {
 			continue
 		}
 		delete(owners, cmKey)
 		if len(owners) == 0 {
-			delete(r.refs, ns)
+			delete(r.nsRefs, ns)
 		}
 	}
 }
 
-// Has reports whether the namespace is currently selected by any ConfigMap.
-func (r *Registry) Has(namespace string) bool {
+// Match reports whether any criterion across any tracked ConfigMap matches the
+// given pod.
+func (r *Registry) Match(p PodInfo) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	_, ok := r.refs[namespace]
-	return ok
+	for _, list := range r.criteria {
+		for _, c := range list {
+			if criterionMatches(c, p) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func criterionMatches(c SelectionCriterion, p PodInfo) bool {
+	if c.K8sPodName != "" && c.K8sPodName != p.Name {
+		return false
+	}
+	if c.K8sNamespace != "" && c.K8sNamespace != p.Namespace {
+		return false
+	}
+	if c.K8sReplicaSetName != "" && (p.OwnerKind != "ReplicaSet" || c.K8sReplicaSetName != p.OwnerName) {
+		return false
+	}
+	if c.K8sStatefulSetName != "" && (p.OwnerKind != "StatefulSet" || c.K8sStatefulSetName != p.OwnerName) {
+		return false
+	}
+	if c.K8sDaemonSetName != "" && (p.OwnerKind != "DaemonSet" || c.K8sDaemonSetName != p.OwnerName) {
+		return false
+	}
+	if c.K8sDeploymentName != "" && c.K8sDeploymentName != p.DeploymentName {
+		return false
+	}
+	if c.K8sOwnerName != "" && !ownerNameMatches(c.K8sOwnerName, p) {
+		return false
+	}
+	// An entirely empty criterion (no field set) matches every pod by design;
+	// callers are expected to validate at parse time if they want to forbid that.
+	return true
+}
+
+func ownerNameMatches(name string, p PodInfo) bool {
+	switch p.OwnerKind {
+	case "ReplicaSet", "StatefulSet", "DaemonSet", "Deployment":
+		if p.OwnerName == name {
+			return true
+		}
+	}
+	if p.DeploymentName != "" && p.DeploymentName == name {
+		return true
+	}
+	return false
 }

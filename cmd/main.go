@@ -199,7 +199,7 @@ func main() {
 
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1.SetupPodWebhookWithManager(mgr, reg); err != nil {
+		if err := webhookv1.SetupPodWebhookWithManager(mgr, reg, mgr.GetAPIReader()); err != nil {
 			setupLog.Error(err, "Failed to create webhook", "webhook", "Pod")
 			os.Exit(1)
 		}

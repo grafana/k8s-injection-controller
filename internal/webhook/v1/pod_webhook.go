@@ -15,8 +15,10 @@ import (
 
 	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
+	"github.com/grafana/beyla-k8s-injector/internal/podinfo"
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 )
 
@@ -29,10 +31,12 @@ const (
 
 var podlog = logf.Log.WithName("pod-webhook")
 
-// SetupPodWebhookWithManager registers the mutating webhook for Pod.
-func SetupPodWebhookWithManager(mgr ctrl.Manager, reg *registry.Registry) error {
+// SetupPodWebhookWithManager registers the mutating webhook for Pod. The
+// reader is used to walk pod -> ReplicaSet -> Deployment when a criterion
+// targets a Deployment; an APIReader is appropriate (no cache wiring required).
+func SetupPodWebhookWithManager(mgr ctrl.Manager, reg *registry.Registry, reader client.Reader) error {
 	return ctrl.NewWebhookManagedBy(mgr, &corev1.Pod{}).
-		WithDefaulter(&PodCustomDefaulter{Registry: reg}).
+		WithDefaulter(&PodCustomDefaulter{Registry: reg, Reader: reader}).
 		Complete()
 }
 
@@ -43,14 +47,16 @@ func SetupPodWebhookWithManager(mgr ctrl.Manager, reg *registry.Registry) error 
 //
 // +kubebuilder:webhook:path=/mutate--v1-pod,mutating=true,failurePolicy=ignore,sideEffects=None,groups="",resources=pods,verbs=create,versions=v1,name=mpod-v1.beyla.grafana.com,admissionReviewVersions=v1
 
-// PodCustomDefaulter injects the configured env var into pods in registered
-// namespaces.
+// PodCustomDefaulter injects the configured env var into pods that match any
+// criterion in the Registry.
 type PodCustomDefaulter struct {
 	Registry *registry.Registry
+	Reader   client.Reader
 }
 
-func (d *PodCustomDefaulter) Default(_ context.Context, obj *corev1.Pod) error {
-	if !d.Registry.Has(obj.Namespace) {
+func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error {
+	info := podinfo.Resolve(ctx, d.Reader, obj)
+	if !d.Registry.Match(info) {
 		return nil
 	}
 	mutated := injectInto(obj.Spec.Containers)
