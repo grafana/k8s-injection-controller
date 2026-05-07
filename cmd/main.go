@@ -213,9 +213,10 @@ func main() {
 		os.Exit(1)
 	}
 	if err := (&controller.ConfigMapReconciler{
-		Client:    mgr.GetClient(),
-		Clientset: clientset,
-		Registry:  reg,
+		Client:       mgr.GetClient(),
+		Clientset:    clientset,
+		Registry:     reg,
+		WebhookReady: mgr.GetWebhookServer().StartedChecker(),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up controller", "controller", "ConfigMap")
 		os.Exit(1)
@@ -236,6 +237,13 @@ func main() {
 	}
 	if err := mgr.AddReadyzCheck("readyz", healthz.Ping); err != nil {
 		setupLog.Error(err, "Failed to set up ready check")
+		os.Exit(1)
+	}
+	// Block readiness until the webhook listener is up. kube-proxy keeps the
+	// pod out of the Service endpoints until /readyz returns 200, so the
+	// apiserver won't get "connection refused" admissions during boot.
+	if err := mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()); err != nil {
+		setupLog.Error(err, "Failed to set up webhook ready check")
 		os.Exit(1)
 	}
 

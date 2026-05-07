@@ -61,16 +61,19 @@ type PodCustomDefaulter struct {
 }
 
 func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error {
+	podlog.Info("admission received", "namespace", obj.Namespace, "name", obj.Name, "generateName", obj.GenerateName)
 	info := podinfo.Resolve(ctx, d.Reader, obj)
 	if !d.Registry.Match(info) {
+		podlog.Info("no criterion matched; skipping", "namespace", obj.Namespace, "name", obj.Name)
+		return nil
+	}
+	if AlreadyInstrumentedByOther(&obj.Spec, &obj.ObjectMeta) {
+		podlog.Info("already instrumented; skipping", "namespace", obj.Namespace, "name", obj.Name)
 		return nil
 	}
 	if d.Mutator == nil {
 		podlog.Info("pod matches but no SDK config loaded; skipping injection",
 			"namespace", obj.Namespace, "name", obj.Name)
-		return nil
-	}
-	if AlreadyInstrumentedByOther(&obj.Spec, &obj.ObjectMeta) {
 		return nil
 	}
 	if PreloadsSomethingElse(obj) {

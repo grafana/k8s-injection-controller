@@ -13,6 +13,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -25,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -79,6 +81,11 @@ type ConfigMapReconciler struct {
 	// typed client does not expose.
 	Clientset kubernetes.Interface
 	Registry  *registry.Registry
+	// WebhookReady gates the eviction sweep so it doesn't run before our own
+	// webhook server is listening. The apiserver's admission call would
+	// otherwise hit `connection refused` and (with failurePolicy: Ignore)
+	// silently admit the recreated pod un-instrumented. Optional.
+	WebhookReady healthz.Checker
 }
 
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
@@ -114,6 +121,12 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 	r.Registry.Set(cmKey, criteria)
 	if len(restartTargets) > 0 {
+		if r.WebhookReady != nil {
+			if err := r.WebhookReady(nil); err != nil {
+				logger.Info("webhook server not yet ready; deferring eviction sweep", "reason", err.Error())
+				return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
+			}
+		}
 		if err := r.evictMatching(ctx, restartTargets); err != nil {
 			logger.Error(err, "failed to evict pre-existing pods")
 		}
