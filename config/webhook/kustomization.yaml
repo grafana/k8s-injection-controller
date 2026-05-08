@@ -1,0 +1,9 @@
+resources:
+- manifests.yaml
+- service.yaml
+
+patches:
+- path: namespace_selector_patch.yaml
+  target:
+    kind: MutatingWebhookConfiguration
+    name: mutating-webhook-configuration
