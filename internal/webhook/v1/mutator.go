@@ -18,14 +18,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/serializer"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 var (
 	runtimeScheme     = runtime.NewScheme()
-	codecFactory      = serializer.NewCodecFactory(runtimeScheme)
-	deserializer      = codecFactory.UniversalDeserializer()
 	supportedSDKLangs = []svc.InstrumentableType{svc.InstrumentableDotnet, svc.InstrumentableJava, svc.InstrumentableNodejs, svc.InstrumentablePython}
 )
 
@@ -140,7 +137,7 @@ func (pm *PodMutator) buildVolumeDefinition() corev1.Volume {
 	}
 }
 
-func (pm *PodMutator) mountVolume(spec *corev1.PodSpec, meta *metav1.ObjectMeta) {
+func (pm *PodMutator) mountVolume(spec *corev1.PodSpec) {
 	if spec.Volumes == nil {
 		spec.Volumes = make([]corev1.Volume, 0)
 	}
@@ -181,23 +178,6 @@ func (pm *PodMutator) addMount(c *corev1.Container) {
 	} else {
 		c.VolumeMounts[idx] = *volume
 	}
-}
-
-func (pm *PodMutator) addLabel(meta *metav1.ObjectMeta, key string, value string) {
-	if meta.Labels == nil {
-		meta.Labels = make(map[string]string, 1)
-	}
-	meta.Labels[key] = value
-}
-
-func (pm *PodMutator) getLabel(meta *metav1.ObjectMeta, key string) (string, bool) {
-	if meta.Labels == nil {
-		return "", false
-	}
-	if value, ok := meta.Labels[key]; ok {
-		return value, true
-	}
-	return "", false
 }
 
 // isLDPreloadConflict returns true only when LD_PRELOAD is set to a non-empty
@@ -263,9 +243,9 @@ func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container) {
 	pm.disableUndesiredSDKs(c)
 
 	// TODO: how do we safely pass it from Beyla to here?
-	//for k, v := range pm.exportHeaders {
+	// for k, v := range pm.exportHeaders {
 	//	setEnvVar(c, k, v)
-	//}
+	// }
 
 	logger.Info("env vars", "vars", c.Env)
 }
@@ -283,10 +263,10 @@ func (pm *PodMutator) configureContainerEnvVars(meta *metav1.ObjectMeta, contain
 
 	// Configure sampler with priority: selector > default
 	var samplerConfig *services.SamplerConfig
-	//TODO: find a way to safely pass connection info per selector
-	//if selector != nil {
+	// ODO: find a way to safely pass connection info per selector
+	// if selector != nil {
 	//	samplerConfig = selector.GetSamplerConfig()
-	//}
+	// }
 	if samplerConfig == nil {
 		samplerConfig = pm.Cfg.DefaultSampler
 	}
@@ -315,18 +295,18 @@ func (pm *PodMutator) configureContainerEnvVars(meta *metav1.ObjectMeta, contain
 	}
 
 	// If selector has export modes, override the global ones
-	//if selector != nil {
+	// if selector != nil {
 	//	if selectorModes := selector.GetExportModes(); selectorModes != services.ExportModeUnset {
 	//		exportModes = selectorModes
 	//	}
-	//}
+	// }
 
 	pm.configureExporters(container, exportModes)
 
-	//todo
-	//if pm.cfg.Metrics.Features.AnySpanMetrics() {
+	// todo
+	// if pm.cfg.Metrics.Features.AnySpanMetrics() {
 	//	extraResAttrs[attr.SkipSpanMetrics.OTEL()] = "true"
-	//}
+	// }
 
 	pm.injectEnvVars(extraResAttrs, container)
 }
@@ -334,7 +314,7 @@ func (pm *PodMutator) configureContainerEnvVars(meta *metav1.ObjectMeta, contain
 func (pm *PodMutator) injectEnvVars(extraResAttrs map[attribute.Key]string, container *corev1.Container) {
 	// Set extra resource attributes if any exist
 	if len(extraResAttrs) > 0 {
-		var resourceAttributeList []string
+		resourceAttributeList := make([]string, 0, len(extraResAttrs))
 		for _, resourceAttributeKey := range slices.Sorted(maps.Keys(extraResAttrs)) {
 			resourceAttributeList = append(
 				resourceAttributeList,
@@ -385,8 +365,8 @@ func (pm *PodMutator) setResourceAttributes(meta *metav1.ObjectMeta, container *
 
 	// attributes from the pod annotations have the highest precedence
 	for k, v := range meta.GetAnnotations() {
-		if strings.HasPrefix(k, ResourceAttributeAnnotationPrefix) {
-			extraResAttrs[attribute.Key(strings.TrimPrefix(k, ResourceAttributeAnnotationPrefix))] = v
+		if attr, ok := strings.CutPrefix(k, ResourceAttributeAnnotationPrefix); ok {
+			extraResAttrs[attribute.Key(attr)] = v
 		}
 	}
 	return extraResAttrs

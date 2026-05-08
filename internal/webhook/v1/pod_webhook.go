@@ -82,7 +82,7 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 		return nil
 	}
 
-	d.Mutator.mountVolume(&obj.Spec, &obj.ObjectMeta)
+	d.Mutator.mountVolume(&obj.Spec)
 	for i := range obj.Spec.Containers {
 		d.Mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i])
 	}

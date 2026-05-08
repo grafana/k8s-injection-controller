@@ -104,7 +104,7 @@ type ConfigMapReconciler struct {
 
 func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-	cmKey := req.NamespacedName.String()
+	cmKey := req.String()
 
 	var cm corev1.ConfigMap
 	if err := r.Get(ctx, req.NamespacedName, &cm); err != nil {
