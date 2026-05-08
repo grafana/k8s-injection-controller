@@ -21,6 +21,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	webhookv1 "github.com/grafana/beyla-k8s-injector/internal/webhook/v1"
 )
 
 // This suite spins up a real apiserver+etcd via envtest and the
@@ -106,5 +108,155 @@ var _ = Describe("ConfigMap controller eviction sweep", func() {
 			return apierrors.IsNotFound(err)
 		}, 30*time.Second, 50*time.Millisecond).Should(BeTrue(),
 			"pod %s/%s was not evicted within the timeout", ns, podName)
+	})
+})
+
+// Negative cases: situations in which the controller must NOT evict the
+// matched pod. Each spec uses its own namespace because the in-memory
+// Registry is package-global from the suite and persists across tests.
+var _ = Describe("ConfigMap controller eviction skip cases", func() {
+	ensureNS := func(ns string) {
+		err := k8sClient.Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: ns},
+		})
+		if err != nil && !apierrors.IsAlreadyExists(err) {
+			Expect(err).NotTo(HaveOccurred())
+		}
+	}
+
+	mkRS := func(ns, name string) *appsv1.ReplicaSet {
+		rs := &appsv1.ReplicaSet{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: appsv1.ReplicaSetSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "worker"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "worker"}},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "app", Image: "nginx"}},
+					},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, rs)).To(Succeed())
+		return rs
+	}
+
+	mkPod := func(ns, name string, rs *appsv1.ReplicaSet, mutate func(*corev1.Pod)) {
+		ctrlTrue := true
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: ns,
+				Labels:    map[string]string{"app": "worker"},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: "apps/v1",
+					Kind:       "ReplicaSet",
+					Name:       rs.Name,
+					UID:        rs.UID,
+					Controller: &ctrlTrue,
+				}},
+			},
+			Spec: corev1.PodSpec{
+				RestartPolicy: corev1.RestartPolicyAlways,
+				Containers:    []corev1.Container{{Name: "app", Image: "nginx"}},
+			},
+		}
+		if mutate != nil {
+			mutate(pod)
+		}
+		Expect(k8sClient.Create(ctx, pod)).To(Succeed())
+	}
+
+	mkCM := func(ns, name, selectionYAML, restartYAML string) {
+		cm := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        name,
+				Namespace:   ns,
+				Annotations: map[string]string{SelectorAnnotation: ""},
+			},
+			Data: map[string]string{
+				SelectionCriteriaKey:  selectionYAML,
+				EligibleForRestartKey: restartYAML,
+			},
+		}
+		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
+	}
+
+	// expectKept asserts the pod stays present for `window`. Any eviction
+	// the controller decides to do happens within a single Reconcile pass
+	// (the positive test confirms that takes well under a second), so 3s
+	// is plenty of margin without slowing the suite down.
+	expectKept := func(ns, name string) {
+		Consistently(func() error {
+			return k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &corev1.Pod{})
+		}, 3*time.Second, 100*time.Millisecond).Should(Succeed(),
+			"pod %s/%s was unexpectedly evicted", ns, name)
+	}
+
+	It("does not evict when only eligible_for_restart matches (selection_criteria misses)", func() {
+		const ns = "evict-skip-1"
+		ensureNS(ns)
+		rs := mkRS(ns, "worker-1")
+		mkPod(ns, "worker-1-001", rs, nil)
+
+		// Selection criterion targets a different namespace, so Registry.Match
+		// returns false and the pod is skipped despite the restart-target match.
+		mkCM(ns, "cm-1",
+			"- k8s_namespace: somewhere-else\n",
+			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: worker-1\n")
+
+		expectKept(ns, "worker-1-001")
+	})
+
+	It("does not evict when only selection_criteria matches (eligible_for_restart misses)", func() {
+		const ns = "evict-skip-2"
+		ensureNS(ns)
+		rs := mkRS(ns, "worker-2")
+		mkPod(ns, "worker-2-001", rs, nil)
+
+		// Restart target names a different RS in the same namespace, so
+		// matchesAnyTarget returns false. Selection criterion would have
+		// matched — but the dual gate blocks the eviction.
+		mkCM(ns, "cm-2",
+			"- k8s_namespace: "+ns+"\n",
+			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: some-other-rs\n")
+
+		expectKept(ns, "worker-2-001")
+	})
+
+	It("does not evict pods that already declare a foreign LD_PRELOAD", func() {
+		const ns = "evict-skip-3"
+		ensureNS(ns)
+		rs := mkRS(ns, "worker-3")
+		mkPod(ns, "worker-3-001", rs, func(p *corev1.Pod) {
+			p.Spec.Containers[0].Env = []corev1.EnvVar{
+				{Name: "LD_PRELOAD", Value: "/opt/other.so"},
+			}
+		})
+
+		// Both gates would pass; PreloadsSomethingElse is the skip reason.
+		mkCM(ns, "cm-3",
+			"- k8s_namespace: "+ns+"\n",
+			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: worker-3\n")
+
+		expectKept(ns, "worker-3-001")
+	})
+
+	It("does not evict pods already annotated with our injection marker", func() {
+		const ns = "evict-skip-4"
+		ensureNS(ns)
+		rs := mkRS(ns, "worker-4")
+		mkPod(ns, "worker-4-001", rs, func(p *corev1.Pod) {
+			p.Annotations = map[string]string{
+				webhookv1.InjectedAnnotation: webhookv1.InjectedAnnotValue,
+			}
+		})
+
+		// Both gates would pass; AlreadyInstrumentedByOther is the skip reason.
+		mkCM(ns, "cm-4",
+			"- k8s_namespace: "+ns+"\n",
+			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: worker-4\n")
+
+		expectKept(ns, "worker-4-001")
 	})
 })
