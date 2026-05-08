@@ -8,7 +8,7 @@ require (
 	github.com/grafana/beyla/v3 v3.14.0
 	github.com/invopop/jsonschema v0.13.0
 	github.com/onsi/ginkgo/v2 v2.27.2
-	github.com/onsi/gomega v1.38.2
+	github.com/onsi/gomega v1.40.0
 	go.opentelemetry.io/obi v0.8.0
 	go.opentelemetry.io/otel v1.43.0
 	gopkg.in/yaml.v3 v3.0.1
