@@ -78,7 +78,11 @@ var _ = BeforeSuite(func() {
 		ErrorIfCRDPathMissing: false,
 
 		WebhookInstallOptions: envtest.WebhookInstallOptions{
-			Paths: []string{filepath.Join("..", "..", "..", "config", "webhook")},
+			// Point at the manifest file directly. Pointing at the whole
+			// config/webhook/ directory makes envtest try to install
+			// namespace_selector_patch.yaml — a kustomize strategic-merge
+			// patch fragment that fails apiserver validation on its own.
+			Paths: []string{filepath.Join("..", "..", "..", "config", "webhook", "manifests.yaml")},
 		},
 	}
 
