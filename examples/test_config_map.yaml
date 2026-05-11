@@ -6,11 +6,13 @@ metadata:
   annotations:
     beyla.grafana.com/node: "some-node"
 data:
-  selection_criteria.yaml: |
-    
+  instrumentation.yaml: |
     discovery:
       # AND within an entry, OR across entries.
       - k8s_namespace: demo
+    otel_export:
+      endpoint: http://otel-collector.observability.svc.cluster.local:4318
+      protocol: http/protobuf
   eligible_for_restart.yaml: |
     # Restart all pods in namespace "demo" owned (transitively) by the
     # Deployment "hello" — name is optional; omit it to target every

@@ -177,8 +177,8 @@ func TestMatch(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			r := New()
-			r.Set("test/cm", tc.criteria)
-			if got := r.Match(tc.pod); got != tc.want {
+			r.Set("test/cm", Instrumentation{Criteria: tc.criteria})
+			if _, got := r.Match(tc.pod); got != tc.want {
 				t.Fatalf("Match(%+v) = %v, want %v", tc.pod, got, tc.want)
 			}
 		})
@@ -190,26 +190,26 @@ func TestSetAndDelete(t *testing.T) {
 	pod := PodInfo{Name: "p", Namespace: "demo"}
 
 	// Initial set: matches.
-	r.Set("a/cm1", []SelectionCriterion{{K8sNamespace: g("demo")}})
-	if !r.Match(pod) {
+	r.Set("a/cm1", Instrumentation{Criteria: []SelectionCriterion{{K8sNamespace: g("demo")}}})
+	if _, ok := r.Match(pod); !ok {
 		t.Fatalf("expected match after Set")
 	}
 
 	// Update with empty criteria == delete.
-	r.Set("a/cm1", nil)
-	if r.Match(pod) {
+	r.Set("a/cm1", Instrumentation{})
+	if _, ok := r.Match(pod); ok {
 		t.Fatalf("expected no match after empty Set")
 	}
 
 	// Two CMs cover the same pod; deleting one keeps the match alive.
-	r.Set("a/cm1", []SelectionCriterion{{K8sNamespace: g("demo")}})
-	r.Set("a/cm2", []SelectionCriterion{{K8sNamespace: g("demo")}})
+	r.Set("a/cm1", Instrumentation{Criteria: []SelectionCriterion{{K8sNamespace: g("demo")}}})
+	r.Set("a/cm2", Instrumentation{Criteria: []SelectionCriterion{{K8sNamespace: g("demo")}}})
 	r.Delete("a/cm1")
-	if !r.Match(pod) {
+	if _, ok := r.Match(pod); !ok {
 		t.Fatalf("expected match still covered by cm2")
 	}
 	r.Delete("a/cm2")
-	if r.Match(pod) {
+	if _, ok := r.Match(pod); ok {
 		t.Fatalf("expected no match after deleting all CMs")
 	}
 }

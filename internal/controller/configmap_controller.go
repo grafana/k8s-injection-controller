@@ -45,12 +45,15 @@ const SelectorAnnotation = "beyla.grafana.com/node"
 
 // Keys we read from ConfigMap.Data. Anything else is ignored.
 const (
-	// SelectionCriteriaKey holds the selection-criteria document. Schema:
+	// InstrumentationKey holds the injection document. Schema:
 	//   discovery:
 	//     - k8s_namespace: <name>
 	//     - k8s_deployment_name: <name>
-	// AND within an entry, OR across entries. See selectionCriteriaDoc.
-	SelectionCriteriaKey = "selection_criteria.yaml"
+	//   otel_export:
+	//     endpoint: http://otel-collector:4318
+	//     protocol: http/protobuf
+	// AND within an entry, OR across entries. See instrumentationDoc.
+	InstrumentationKey = "instrumentation.yaml"
 	// EligibleForRestartKey holds a YAML list of restart targets. Each entry
 	// names a workload whose pods should be evicted so the webhook can
 	// re-intercept them on recreation. Schema:
@@ -125,13 +128,13 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		return ctrl.Result{}, nil
 	}
 
-	criteria, restartTargets, err := parseConfigMap(cm.Data)
+	inst, restartTargets, err := parseConfigMap(cm.Data)
 	if err != nil {
 		logger.Error(err, "ignoring ConfigMap with invalid payload")
 		r.Registry.Delete(cmKey)
 		return ctrl.Result{}, nil
 	}
-	r.Registry.Set(cmKey, criteria)
+	r.Registry.Set(cmKey, inst)
 	if len(restartTargets) == 0 {
 		return ctrl.Result{}, nil
 	}
@@ -158,25 +161,27 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
-// selectionCriteriaDoc is the on-disk shape of selection_criteria.yaml. The
-// list of criteria lives under a `discovery:` key so the file can grow other
-// top-level sections later without a breaking change.
-type selectionCriteriaDoc struct {
-	Discovery []registry.SelectionCriterion `json:"discovery,omitempty"`
+// instrumentationDoc is the on-disk shape of instrumentation.yaml. Criteria
+// live under `discovery:` and the OTLP destination under `otel_export:` so
+// the file can grow other top-level sections later without a breaking change.
+type instrumentationDoc struct {
+	Discovery  []registry.SelectionCriterion `json:"discovery,omitempty"`
+	OtelExport registry.OtelExport           `json:"otel_export,omitempty"`
 }
 
-// parseConfigMap extracts the selection criteria (from selection_criteria.yaml)
+// parseConfigMap extracts the injection record (from instrumentation.yaml)
 // and the eligible-for-restart targets (from eligible_for_restart.yaml).
 // Either key may be absent. Restart entries missing the required namespace
 // or kind, or naming an unknown kind, are dropped with no error.
-func parseConfigMap(data map[string]string) ([]registry.SelectionCriterion, []restartCriterion, error) {
-	var criteria []registry.SelectionCriterion
-	if raw, ok := data[SelectionCriteriaKey]; ok {
-		var doc selectionCriteriaDoc
+func parseConfigMap(data map[string]string) (registry.Instrumentation, []restartCriterion, error) {
+	var inst registry.Instrumentation
+	if raw, ok := data[InstrumentationKey]; ok {
+		var doc instrumentationDoc
 		if err := yaml.Unmarshal([]byte(raw), &doc); err != nil {
-			return nil, nil, fmt.Errorf("parse %s: %w", SelectionCriteriaKey, err)
+			return registry.Instrumentation{}, nil, fmt.Errorf("parse %s: %w", InstrumentationKey, err)
 		}
-		criteria = doc.Discovery
+		inst.OtelExport = doc.OtelExport
+		criteria := doc.Discovery
 		// Drop blank entries: a fully-empty criterion would match every pod.
 		filtered := criteria[:0]
 		for _, c := range criteria {
@@ -185,13 +190,13 @@ func parseConfigMap(data map[string]string) ([]registry.SelectionCriterion, []re
 			}
 			filtered = append(filtered, c)
 		}
-		criteria = filtered
+		inst.Criteria = filtered
 	}
 	var restartTargets []restartCriterion
 	if raw, ok := data[EligibleForRestartKey]; ok {
 		var parsed []restartCriterion
 		if err := yaml.Unmarshal([]byte(raw), &parsed); err != nil {
-			return nil, nil, fmt.Errorf("parse %s: %w", EligibleForRestartKey, err)
+			return registry.Instrumentation{}, nil, fmt.Errorf("parse %s: %w", EligibleForRestartKey, err)
 		}
 		for _, c := range parsed {
 			if c.Namespace == "" || c.Kind == "" {
@@ -203,7 +208,7 @@ func parseConfigMap(data map[string]string) ([]registry.SelectionCriterion, []re
 			restartTargets = append(restartTargets, c)
 		}
 	}
-	return criteria, restartTargets, nil
+	return inst, restartTargets, nil
 }
 
 // evictMatching processes the restart targets from a single ConfigMap. For
@@ -237,7 +242,7 @@ func (r *ConfigMapReconciler) evictMatching(ctx context.Context, targets []resta
 			if !matchesAnyTarget(info, nsTargets) {
 				continue
 			}
-			if !r.Registry.Match(info) {
+			if _, ok := r.Registry.Match(info); !ok {
 				continue
 			}
 			if webhookv1.AlreadyInstrumentedByOther(&pod.Spec, &pod.ObjectMeta) {

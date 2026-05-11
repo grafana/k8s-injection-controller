@@ -13,7 +13,26 @@ You may obtain a copy of the License at
 // the webhook and controller test pods against the union via Match.
 package registry
 
-import "sync"
+import (
+	"sort"
+	"sync"
+)
+
+// OtelExport is the per-ConfigMap OTLP destination applied to matched pods.
+// Both fields are optional: empty means "don't set this env var", and the
+// mutator's setEnvVar helper already skips empty values.
+type OtelExport struct {
+	Endpoint string `json:"endpoint,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+}
+
+// Instrumentation is one selector ConfigMap's contribution to the registry:
+// the criteria that decide which pods to touch, and the export config the
+// webhook should stamp onto those pods.
+type Instrumentation struct {
+	Criteria   []SelectionCriterion
+	OtelExport OtelExport
+}
 
 // SelectionCriterion is one entry from a selector ConfigMap's
 // selection_criteria.yaml. Within a criterion all populated fields must
@@ -68,47 +87,55 @@ type PodInfo struct {
 // Registry is safe for concurrent use.
 type Registry struct {
 	mu sync.RWMutex
-	// criteria holds the parsed selection_criteria.yaml of each tracked CM,
+	// instruments holds the parsed instrumentation.yaml of each tracked CM,
 	// keyed by "namespace/name".
-	criteria map[string][]SelectionCriterion
+	instruments map[string]Instrumentation
 }
 
 func New() *Registry {
-	return &Registry{criteria: map[string][]SelectionCriterion{}}
+	return &Registry{instruments: map[string]Instrumentation{}}
 }
 
-// Set replaces this CM's contribution with the supplied criteria. An empty
-// criteria slice is equivalent to Delete.
-func (r *Registry) Set(cmKey string, criteria []SelectionCriterion) {
+// Set replaces this CM's contribution. An empty Criteria slice is equivalent
+// to Delete: a CM with no criteria can't match anything regardless of its
+// OtelExport config.
+func (r *Registry) Set(cmKey string, inst Instrumentation) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(criteria) == 0 {
-		delete(r.criteria, cmKey)
+	if len(inst.Criteria) == 0 {
+		delete(r.instruments, cmKey)
 		return
 	}
-	r.criteria[cmKey] = criteria
+	r.instruments[cmKey] = inst
 }
 
-// Delete drops all of this CM's criteria.
+// Delete drops all of this CM's contribution.
 func (r *Registry) Delete(cmKey string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.criteria, cmKey)
+	delete(r.instruments, cmKey)
 }
 
-// Match reports whether any criterion across any tracked ConfigMap matches the
-// given pod.
-func (r *Registry) Match(p PodInfo) bool {
+// Match returns the first injection record whose criteria match the pod, plus
+// a boolean indicating any match. Iteration is in sorted cmKey order so when
+// multiple CMs select the same pod, the chosen OtelExport is deterministic.
+func (r *Registry) Match(p PodInfo) (Instrumentation, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	for _, list := range r.criteria {
-		for _, c := range list {
+	keys := make([]string, 0, len(r.instruments))
+	for k := range r.instruments {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		inst := r.instruments[k]
+		for _, c := range inst.Criteria {
 			if criterionMatches(c, p) {
-				return true
+				return inst, true
 			}
 		}
 	}
-	return false
+	return Instrumentation{}, false
 }
 
 func criterionMatches(c SelectionCriterion, p PodInfo) bool {

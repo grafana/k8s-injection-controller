@@ -94,7 +94,7 @@ var _ = Describe("ConfigMap controller eviction sweep", func() {
 			Data: map[string]string{
 				// Selection criterion is the dual gate: without it, evictMatching
 				// would skip the pod even if the restart target matched.
-				SelectionCriteriaKey: "discovery:\n  - k8s_namespace: " + ns + "\n",
+				InstrumentationKey: "discovery:\n  - k8s_namespace: " + ns + "\n",
 				EligibleForRestartKey: "- namespace: " + ns + "\n" +
 					"  kind: ReplicaSet\n" +
 					"  name: " + rsName + "\n",
@@ -175,7 +175,7 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 				Annotations: map[string]string{SelectorAnnotation: ""},
 			},
 			Data: map[string]string{
-				SelectionCriteriaKey:  selectionYAML,
+				InstrumentationKey:    selectionYAML,
 				EligibleForRestartKey: restartYAML,
 			},
 		}

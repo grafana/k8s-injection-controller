@@ -30,9 +30,7 @@ type SDKInject struct {
 	// language instrumentations.
 	EnabledSDKs []bservices.InstrumentableType `yaml:"enabled_sdks"`
 	// Enables injection debugging
-	Debug        bool   `yaml:"debug"`
-	OTELEndpoint string `yaml:"otel_endpoint"`
-	OTELProtocol string `yaml:"otel_protocol"`
+	Debug bool `yaml:"debug"`
 }
 
 // PackageVersion returns a stable, label-safe identifier derived from the

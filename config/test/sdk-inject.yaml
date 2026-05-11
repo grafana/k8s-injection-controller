@@ -1,8 +1,9 @@
 # Sample config.SDKInject loaded by `make deploy-test`. Tweak to match your
 # cluster — the values here are just placeholders that exercise every field.
 
-otel_endpoint: http://otel-collector.observability.svc.cluster.local:4318
-otel_protocol: http/protobuf
+# The OTLP endpoint / protocol no longer live here — they're per-ConfigMap,
+# under `otel_export:` inside each selector's instrumentation.yaml.
+
 debug: false
 
 # OCI image mounted into pods via Kubernetes ImageVolumeSource. Requires k8s 1.31+.
