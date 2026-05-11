@@ -5,15 +5,8 @@ otel_endpoint: http://otel-collector.observability.svc.cluster.local:4318
 otel_protocol: http/protobuf
 debug: false
 
-# Volume strategy — pick ONE.
-# (a) image_volume_path uses Kubernetes ImageVolumeSource (k8s 1.31+):
-# image_volume_path: ghcr.io/grafana/beyla-otel-sdks:v0.1.0
-#
-# (b) host_path_volume requires a DaemonSet to populate the per-node directory.
-host_path_volume: /var/lib/beyla-sdk
-sdk_package_version: v0.1.0
-host_mount_path: /var/lib/beyla-sdk
-manage_sdk_versions: true
+# OCI image mounted into pods via Kubernetes ImageVolumeSource. Requires k8s 1.31+.
+image_volume_path: ghcr.io/grafana/beyla/inject-sdk-image:0.0.9
 
 propagators:
   - tracecontext

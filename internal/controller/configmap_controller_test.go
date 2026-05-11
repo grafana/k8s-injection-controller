@@ -94,7 +94,7 @@ var _ = Describe("ConfigMap controller eviction sweep", func() {
 			Data: map[string]string{
 				// Selection criterion is the dual gate: without it, evictMatching
 				// would skip the pod even if the restart target matched.
-				SelectionCriteriaKey: "- k8s_namespace: " + ns + "\n",
+				SelectionCriteriaKey: "discovery:\n  - k8s_namespace: " + ns + "\n",
 				EligibleForRestartKey: "- namespace: " + ns + "\n" +
 					"  kind: ReplicaSet\n" +
 					"  name: " + rsName + "\n",
@@ -202,7 +202,7 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 		// Selection criterion targets a different namespace, so Registry.Match
 		// returns false and the pod is skipped despite the restart-target match.
 		mkCM(ns, "cm-1",
-			"- k8s_namespace: somewhere-else\n",
+			"discovery:\n  - k8s_namespace: somewhere-else\n",
 			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: worker-1\n")
 
 		expectKept(ns, "worker-1-001")
@@ -218,7 +218,7 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 		// matchesAnyTarget returns false. Selection criterion would have
 		// matched — but the dual gate blocks the eviction.
 		mkCM(ns, "cm-2",
-			"- k8s_namespace: "+ns+"\n",
+			"discovery:\n  - k8s_namespace: "+ns+"\n",
 			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: some-other-rs\n")
 
 		expectKept(ns, "worker-2-001")
@@ -236,7 +236,7 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 
 		// Both gates would pass; PreloadsSomethingElse is the skip reason.
 		mkCM(ns, "cm-3",
-			"- k8s_namespace: "+ns+"\n",
+			"discovery:\n  - k8s_namespace: "+ns+"\n",
 			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: worker-3\n")
 
 		expectKept(ns, "worker-3-001")
@@ -254,7 +254,7 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 
 		// Both gates would pass; AlreadyInstrumentedByOther is the skip reason.
 		mkCM(ns, "cm-4",
-			"- k8s_namespace: "+ns+"\n",
+			"discovery:\n  - k8s_namespace: "+ns+"\n",
 			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: worker-4\n")
 
 		expectKept(ns, "worker-4-001")
