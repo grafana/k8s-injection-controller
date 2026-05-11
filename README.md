@@ -11,17 +11,18 @@ into pods running in namespaces selected by annotated ConfigMaps. Built with
    what matters).
 2. Each selector ConfigMap carries two files in its `.data`:
 
-   **`selection_criteria.yaml`** — list of pod selectors. Each entry may set
-   any combination of:
+   **`selection_criteria.yaml`** — pod selectors under a top-level
+   `discovery:` key. Each entry may set any combination of:
 
    ```yaml
-   - k8s_pod_name: my-pod
-     k8s_namespace: my-app
-     k8s_deployment_name: hello       # walks pod -> ReplicaSet -> Deployment
-     k8s_replicaset_name: hello-abc
-     k8s_statefulset_name: db
-     k8s_daemonset_name: agent
-     k8s_owner_name: hello            # any owner kind, including resolved Deployment
+   discovery:
+     - k8s_pod_name: my-pod
+       k8s_namespace: my-app
+       k8s_deployment_name: hello       # walks pod -> ReplicaSet -> Deployment
+       k8s_replicaset_name: hello-abc
+       k8s_statefulset_name: db
+       k8s_daemonset_name: agent
+       k8s_owner_name: hello            # any owner kind, including resolved Deployment
    ```
 
    Within one entry, all populated fields must match (**AND**); empty fields
@@ -138,8 +139,9 @@ metadata:
     beyla.grafana.com/node: ""
 data:
   selection_criteria.yaml: |
-    - k8s_namespace: my-app
-      k8s_deployment_name: hello
+    discovery:
+      - k8s_namespace: my-app
+        k8s_deployment_name: hello
   eligible_for_restart.yaml: |
     - namespace: my-app
       kind: Deployment
