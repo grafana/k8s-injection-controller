@@ -45,8 +45,11 @@ const SelectorAnnotation = "beyla.grafana.com/node"
 
 // Keys we read from ConfigMap.Data. Anything else is ignored.
 const (
-	// SelectionCriteriaKey holds a YAML list of namespaces eligible for
-	// injection by the webhook. Schema: `- k8s_namespace: <name>`.
+	// SelectionCriteriaKey holds the selection-criteria document. Schema:
+	//   discovery:
+	//     - k8s_namespace: <name>
+	//     - k8s_deployment_name: <name>
+	// AND within an entry, OR across entries. See selectionCriteriaDoc.
 	SelectionCriteriaKey = "selection_criteria.yaml"
 	// EligibleForRestartKey holds a YAML list of restart targets. Each entry
 	// names a workload whose pods should be evicted so the webhook can
@@ -155,6 +158,13 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
+// selectionCriteriaDoc is the on-disk shape of selection_criteria.yaml. The
+// list of criteria lives under a `discovery:` key so the file can grow other
+// top-level sections later without a breaking change.
+type selectionCriteriaDoc struct {
+	Discovery []registry.SelectionCriterion `json:"discovery,omitempty"`
+}
+
 // parseConfigMap extracts the selection criteria (from selection_criteria.yaml)
 // and the eligible-for-restart targets (from eligible_for_restart.yaml).
 // Either key may be absent. Restart entries missing the required namespace
@@ -162,9 +172,11 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 func parseConfigMap(data map[string]string) ([]registry.SelectionCriterion, []restartCriterion, error) {
 	var criteria []registry.SelectionCriterion
 	if raw, ok := data[SelectionCriteriaKey]; ok {
-		if err := yaml.Unmarshal([]byte(raw), &criteria); err != nil {
+		var doc selectionCriteriaDoc
+		if err := yaml.Unmarshal([]byte(raw), &doc); err != nil {
 			return nil, nil, fmt.Errorf("parse %s: %w", SelectionCriteriaKey, err)
 		}
+		criteria = doc.Discovery
 		// Drop blank entries: a fully-empty criterion would match every pod.
 		filtered := criteria[:0]
 		for _, c := range criteria {

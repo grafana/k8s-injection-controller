@@ -52,11 +52,11 @@ var _ = Describe("Pod Webhook", func() {
 			// no-op here.
 			Reader: k8sClient,
 			Mutator: &PodMutator{Cfg: config.SDKInject{
-				HostPathVolumeDir: "/var/beyla",
-				SDKPkgVersion:     "test-1.0",
-				OTELEndpoint:      "http://otel-collector:4318",
-				OTELProtocol:      "http/protobuf",
-				Propagators:       []string{"tracecontext"},
+				// TODO: replace from some auto-updating source
+				ImageVolumePath: "ghcr.io/grafana/beyla/inject-sdk-image:0.0.9",
+				OTELEndpoint:    "http://otel-collector:4318",
+				OTELProtocol:    "http/protobuf",
+				Propagators:     []string{"tracecontext"},
 			}},
 		}
 
@@ -86,8 +86,9 @@ var _ = Describe("Pod Webhook", func() {
 			))
 			Expect(envValue(obj.Spec.Containers[0].Env, "OTEL_EXPORTER_OTLP_ENDPOINT")).
 				To(Equal("http://otel-collector:4318"))
+			// PackageVersion is a SHA-224 hex digest of the image reference: 56 chars.
 			Expect(envValue(obj.Spec.Containers[0].Env, "BEYLA_INJECTOR_SDK_PKG_VERSION")).
-				To(Equal("test-1.0"))
+				To(HaveLen(56))
 		})
 
 		It("Should mount the volume with the injectors", func() {
@@ -95,8 +96,9 @@ var _ = Describe("Pod Webhook", func() {
 
 			Expect(obj.Spec.Volumes).To(HaveLen(1))
 			Expect(obj.Spec.Volumes[0].Name).To(Equal(injectVolumeName))
-			Expect(obj.Spec.Volumes[0].HostPath).NotTo(BeNil(),
-				"expected a hostPath volume since ImageVolumePath is unset")
+			Expect(obj.Spec.Volumes[0].Image).NotTo(BeNil(),
+				"expected an ImageVolumeSource since that's the only supported mode")
+			Expect(obj.Spec.Volumes[0].Image.Reference).To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.9"))
 
 			mounts := obj.Spec.Containers[0].VolumeMounts
 			Expect(mounts).To(HaveLen(1))
