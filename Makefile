@@ -121,7 +121,12 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
+	# Vendor first so the `replace … => ../beyla` directive is fully resolved
+	# inside vendor/. Without this, `go mod download` inside the Docker build
+	# fails because ../beyla is outside the build context.
+	go mod vendor
 	$(CONTAINER_TOOL) build -t ${IMG} .
+	rm -rf vendor
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
