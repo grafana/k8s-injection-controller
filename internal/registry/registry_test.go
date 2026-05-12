@@ -4,11 +4,15 @@ Copyright 2026.
 
 package registry
 
-import "testing"
+import (
+	"testing"
 
-// g is a small helper to build a *GlobAttr in test struct literals.
-func g(pattern string) *GlobAttr {
-	a := NewGlob(pattern)
+	"go.opentelemetry.io/obi/pkg/appolly/services"
+)
+
+// g is a small helper to build a *services.GlobAttr in test struct literals.
+func g(pattern string) *services.GlobAttr {
+	a := services.NewGlob(pattern)
 	return &a
 }
 

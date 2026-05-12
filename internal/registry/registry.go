@@ -16,22 +16,19 @@ package registry
 import (
 	"sort"
 	"sync"
-)
 
-// OtelExport is the per-ConfigMap OTLP destination applied to matched pods.
-// Both fields are optional: empty means "don't set this env var", and the
-// mutator's setEnvVar helper already skips empty values.
-type OtelExport struct {
-	Endpoint string `json:"endpoint,omitempty"`
-	Protocol string `json:"protocol,omitempty"`
-}
+	"go.opentelemetry.io/obi/pkg/appolly/services"
+
+	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
+)
 
 // Instrumentation is one selector ConfigMap's contribution to the registry:
 // the criteria that decide which pods to touch, and the export config the
-// webhook should stamp onto those pods.
+// webhook should stamp onto those pods. Criteria are the controller's
+// translation of the on-wire Discovery globs into typed match fields.
 type Instrumentation struct {
 	Criteria   []SelectionCriterion
-	OtelExport OtelExport
+	OtelExport configmap.OtelExport
 }
 
 // SelectionCriterion is one entry from a selector ConfigMap's
@@ -39,20 +36,20 @@ type Instrumentation struct {
 // match (AND); a nil field is a wildcard. Across criteria the registry
 // applies OR.
 //
-// Each field is a *GlobAttr so values like "hello-*" match a family of names.
-// JSON tags double as the YAML schema: sigs.k8s.io/yaml decodes through JSON,
-// which invokes GlobAttr.UnmarshalText on each populated string.
+// Each field is a *services.GlobAttr (obi's glob wrapper, reused so the
+// injector and Beyla agree on syntax) so values like "hello-*" match a
+// family of names.
 type SelectionCriterion struct {
-	K8sPodName         *GlobAttr `json:"k8s_pod_name,omitempty"`
-	K8sNamespace       *GlobAttr `json:"k8s_namespace,omitempty"`
-	K8sDeploymentName  *GlobAttr `json:"k8s_deployment_name,omitempty"`
-	K8sReplicaSetName  *GlobAttr `json:"k8s_replicaset_name,omitempty"`
-	K8sStatefulSetName *GlobAttr `json:"k8s_statefulset_name,omitempty"`
-	K8sDaemonSetName   *GlobAttr `json:"k8s_daemonset_name,omitempty"`
+	K8sPodName         *services.GlobAttr `json:"k8s_pod_name,omitempty"`
+	K8sNamespace       *services.GlobAttr `json:"k8s_namespace,omitempty"`
+	K8sDeploymentName  *services.GlobAttr `json:"k8s_deployment_name,omitempty"`
+	K8sReplicaSetName  *services.GlobAttr `json:"k8s_replicaset_name,omitempty"`
+	K8sStatefulSetName *services.GlobAttr `json:"k8s_statefulset_name,omitempty"`
+	K8sDaemonSetName   *services.GlobAttr `json:"k8s_daemonset_name,omitempty"`
 	// K8sOwnerName matches the pod's direct owner name (RS / STS / DS) or
 	// the resolved Deployment name reached via the RS chain. Combinable with
 	// the typed fields above (AND).
-	K8sOwnerName *GlobAttr `json:"k8s_owner_name,omitempty"`
+	K8sOwnerName *services.GlobAttr `json:"k8s_owner_name,omitempty"`
 }
 
 // IsEmpty reports whether no field is populated. An empty criterion would
@@ -167,7 +164,7 @@ func criterionMatches(c SelectionCriterion, p PodInfo) bool {
 	return true
 }
 
-func ownerNameMatches(g *GlobAttr, p PodInfo) bool {
+func ownerNameMatches(g *services.GlobAttr, p PodInfo) bool {
 	switch p.OwnerKind {
 	case "ReplicaSet", "StatefulSet", "DaemonSet", "Deployment":
 		if g.MatchString(p.OwnerName) {

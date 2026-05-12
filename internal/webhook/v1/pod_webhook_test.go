@@ -25,6 +25,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"go.opentelemetry.io/obi/pkg/appolly/services"
+
+	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
+
 	"github.com/grafana/beyla-k8s-injector/internal/config"
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 )
@@ -40,13 +44,13 @@ var _ = Describe("Pod Webhook", func() {
 	BeforeEach(func() {
 		// Registry with a single criterion that matches every pod in
 		// testNamespace; that's enough to exercise the mutator path.
-		ns := registry.NewGlob(testNamespace)
+		ns := services.NewGlob(testNamespace)
 		reg := registry.New()
 		reg.Set("test-cm", registry.Instrumentation{
 			Criteria: []registry.SelectionCriterion{{K8sNamespace: &ns}},
 			// OTLP destination now travels with the matched ConfigMap, not
 			// with the startup --config.
-			OtelExport: registry.OtelExport{
+			OtelExport: configmap.OtelExport{
 				Endpoint: "http://otel-collector:4318",
 				Protocol: "http/protobuf",
 			},

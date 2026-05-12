@@ -15,6 +15,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"net"
+	"sort"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -32,36 +33,15 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/yaml"
+
+	"go.opentelemetry.io/obi/pkg/appolly/services"
+	"gopkg.in/yaml.v3"
+
+	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 
 	"github.com/grafana/beyla-k8s-injector/internal/podinfo"
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 	webhookv1 "github.com/grafana/beyla-k8s-injector/internal/webhook/v1"
-)
-
-// SelectorAnnotation marks a ConfigMap as a Beyla injection selector. Its
-// value is ignored — presence is what matters.
-const SelectorAnnotation = "beyla.grafana.com/node"
-
-// Keys we read from ConfigMap.Data. Anything else is ignored.
-const (
-	// InstrumentationKey holds the injection document. Schema:
-	//   discovery:
-	//     - k8s_namespace: <name>
-	//     - k8s_deployment_name: <name>
-	//   otel_export:
-	//     endpoint: http://otel-collector:4318
-	//     protocol: http/protobuf
-	// AND within an entry, OR across entries. See instrumentationDoc.
-	InstrumentationKey = "instrumentation.yaml"
-	// EligibleForRestartKey holds a YAML list of restart targets. Each entry
-	// names a workload whose pods should be evicted so the webhook can
-	// re-intercept them on recreation. Schema:
-	//   - namespace: foo        # required
-	//     kind: Deployment      # required: Deployment | ReplicaSet | StatefulSet | DaemonSet
-	//     name: frontend        # optional; empty means "any of that kind in the namespace"
-	//     language: nodejs      # parsed but currently unused
-	EligibleForRestartKey = "eligible_for_restart.yaml"
 )
 
 // restartCriterion is one entry in eligible_for_restart.yaml.
@@ -123,7 +103,7 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Predicate already filters by annotation, but defend against races where
 	// the annotation was removed.
-	if _, ok := cm.Annotations[SelectorAnnotation]; !ok {
+	if _, ok := cm.Annotations[configmap.SelectorAnnotation]; !ok {
 		r.Registry.Delete(cmKey)
 		return ctrl.Result{}, nil
 	}
@@ -161,54 +141,96 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
-// instrumentationDoc is the on-disk shape of instrumentation.yaml. Criteria
-// live under `discovery:` and the OTLP destination under `otel_export:` so
-// the file can grow other top-level sections later without a breaking change.
-type instrumentationDoc struct {
-	Discovery  []registry.SelectionCriterion `json:"discovery,omitempty"`
-	OtelExport registry.OtelExport           `json:"otel_export,omitempty"`
-}
-
 // parseConfigMap extracts the injection record (from instrumentation.yaml)
 // and the eligible-for-restart targets (from eligible_for_restart.yaml).
 // Either key may be absent. Restart entries missing the required namespace
 // or kind, or naming an unknown kind, are dropped with no error.
+//
+// The wire schema (configmap.InjectConfig) carries Discovery as obi's
+// GlobDefinitionCriteria — a superset of fields Beyla uses internally. We
+// translate it down to the injector's typed SelectionCriterion here so the
+// matcher hot path stays cheap and ignores fields it can't enforce at
+// admission time (open_ports, exe_path, …).
 func parseConfigMap(data map[string]string) (registry.Instrumentation, []restartCriterion, error) {
 	var inst registry.Instrumentation
-	if raw, ok := data[InstrumentationKey]; ok {
-		var doc instrumentationDoc
-		if err := yaml.Unmarshal([]byte(raw), &doc); err != nil {
-			return registry.Instrumentation{}, nil, fmt.Errorf("parse %s: %w", InstrumentationKey, err)
+	if raw, ok := data[configmap.KeyInstrumentation]; ok {
+		var cfg configmap.InjectConfig
+		if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
+			return registry.Instrumentation{}, nil, fmt.Errorf("parse %s: %w", configmap.KeyInstrumentation, err)
 		}
-		inst.OtelExport = doc.OtelExport
-		criteria := doc.Discovery
-		// Drop blank entries: a fully-empty criterion would match every pod.
-		filtered := criteria[:0]
-		for _, c := range criteria {
-			if c.IsEmpty() {
+		inst.OtelExport = cfg.OtelExport
+		for _, ga := range cfg.Discovery {
+			crit := selectionCriterionFromGlob(&ga)
+			if crit.IsEmpty() {
+				// Either the entry only carried obi-specific fields we don't
+				// honor, or it was empty to begin with. Either way: skip,
+				// since an empty criterion would match every pod.
 				continue
 			}
-			filtered = append(filtered, c)
+			inst.Criteria = append(inst.Criteria, crit)
 		}
-		inst.Criteria = filtered
 	}
 	var restartTargets []restartCriterion
-	if raw, ok := data[EligibleForRestartKey]; ok {
-		var parsed []restartCriterion
+	if raw, ok := data[configmap.KeyEligibleForRestart]; ok {
+		var parsed []*configmap.EligibleDeployment
 		if err := yaml.Unmarshal([]byte(raw), &parsed); err != nil {
-			return registry.Instrumentation{}, nil, fmt.Errorf("parse %s: %w", EligibleForRestartKey, err)
+			return registry.Instrumentation{}, nil, fmt.Errorf("parse %s: %w", configmap.KeyEligibleForRestart, err)
 		}
+		sortEligible(parsed)
 		for _, c := range parsed {
-			if c.Namespace == "" || c.Kind == "" {
+			if c == nil || c.Namespace == "" || c.Kind == "" {
 				continue
 			}
 			if _, ok := restartKinds[c.Kind]; !ok {
 				continue
 			}
-			restartTargets = append(restartTargets, c)
+			restartTargets = append(restartTargets, restartCriterion{
+				Namespace: c.Namespace,
+				Kind:      c.Kind,
+				Name:      c.Name,
+				Language:  c.Language,
+			})
 		}
 	}
 	return inst, restartTargets, nil
+}
+
+// selectionCriterionFromGlob projects one obi GlobAttributes entry onto the
+// injector's match schema. We read the well-known k8s_* metadata keys
+// (carried via the inline Metadata map on the obi side) and ignore
+// everything else — obi's open_ports, exe_path, etc. are runtime gates
+// Beyla applies on the agent side, not admission-time gates we can apply
+// to a Pod spec.
+func selectionCriterionFromGlob(ga *services.GlobAttributes) registry.SelectionCriterion {
+	get := func(key string) *services.GlobAttr {
+		g, ok := ga.Metadata[key]
+		if !ok || g == nil || !g.IsSet() {
+			return nil
+		}
+		return g
+	}
+	return registry.SelectionCriterion{
+		K8sPodName:         get("k8s_pod_name"),
+		K8sNamespace:       get("k8s_namespace"),
+		K8sDeploymentName:  get("k8s_deployment_name"),
+		K8sReplicaSetName:  get("k8s_replicaset_name"),
+		K8sStatefulSetName: get("k8s_statefulset_name"),
+		K8sDaemonSetName:   get("k8s_daemonset_name"),
+		K8sOwnerName:       get("k8s_owner_name"),
+	}
+}
+
+// sortEligible orders the deserialized list by (Namespace, Name) so the
+// downstream loop is deterministic across reconciles. Beyla writes this slice
+// in random map-iteration order; canonicalizing here keeps any future
+// "did anything actually change?" comparison straightforward.
+func sortEligible(eligible []*configmap.EligibleDeployment) {
+	sort.Slice(eligible, func(i, j int) bool {
+		if eligible[i].Namespace != eligible[j].Namespace {
+			return eligible[i].Namespace < eligible[j].Namespace
+		}
+		return eligible[i].Name < eligible[j].Name
+	})
 }
 
 // evictMatching processes the restart targets from a single ConfigMap. For
@@ -310,7 +332,7 @@ func matchesTarget(info podinfoMatcher, t restartCriterion) bool {
 // hasSelectorAnnotation is the predicate filter we apply to the ConfigMap
 // watch so the controller only wakes up for objects we care about.
 func hasSelectorAnnotation(obj client.Object) bool {
-	_, ok := obj.GetAnnotations()[SelectorAnnotation]
+	_, ok := obj.GetAnnotations()[configmap.SelectorAnnotation]
 	return ok
 }
 

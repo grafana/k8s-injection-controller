@@ -9,7 +9,7 @@ import (
 
 	"github.com/distribution/reference"
 	"github.com/grafana/beyla-k8s-injector/internal/config"
-	"github.com/grafana/beyla-k8s-injector/internal/registry"
+	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
 	"go.opentelemetry.io/obi/pkg/appolly/services"
 	"go.opentelemetry.io/obi/pkg/kube/kubecache/informer"
@@ -137,7 +137,7 @@ func (pm *PodMutator) mountVolume(spec *corev1.PodSpec) {
 	}
 }
 
-func (pm *PodMutator) instrumentContainer(meta *metav1.ObjectMeta, c *corev1.Container, exp registry.OtelExport) {
+func (pm *PodMutator) instrumentContainer(meta *metav1.ObjectMeta, c *corev1.Container, exp configmap.OtelExport) {
 	pm.addMount(c)
 	pm.addEnvVars(meta, c, exp)
 }
@@ -203,7 +203,7 @@ func setEnvVar(c *corev1.Container, envVarName, value string) {
 	}
 }
 
-func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container, exp registry.OtelExport) {
+func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container, exp configmap.OtelExport) {
 	if c.Env == nil {
 		c.Env = []corev1.EnvVar{}
 	}
