@@ -201,7 +201,7 @@ func parseConfigMap(data map[string]string) (registry.Instrumentation, []restart
 // everything else — obi's open_ports, exe_path, etc. are runtime gates
 // Beyla applies on the agent side, not admission-time gates we can apply
 // to a Pod spec.
-func selectionCriterionFromGlob(ga *services.GlobAttributes) registry.SelectionCriterion {
+func selectionCriterionFromGlob(ga *configmap.WebhookKubeOnlySelector) registry.SelectionCriterion {
 	get := func(key string) *services.GlobAttr {
 		g, ok := ga.Metadata[key]
 		if !ok || g == nil || !g.IsSet() {
