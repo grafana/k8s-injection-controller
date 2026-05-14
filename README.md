@@ -11,8 +11,9 @@ into pods running in namespaces selected by annotated ConfigMaps. Built with
    what matters).
 2. Each selector ConfigMap carries two files in its `.data`:
 
-   **`selection_criteria.yaml`** — pod selectors under a top-level
-   `discovery:` key. Each entry may set any combination of:
+   **`instrumentation.yaml`** — pod selectors under a top-level
+   `discovery:` key, plus the OTLP destination under `otel_export:`. Each
+   discovery entry may set any combination of:
 
    ```yaml
    discovery:
@@ -23,7 +24,14 @@ into pods running in namespaces selected by annotated ConfigMaps. Built with
        k8s_statefulset_name: db
        k8s_daemonset_name: agent
        k8s_owner_name: hello            # any owner kind, including resolved Deployment
+   otel_export:
+     endpoint: http://otel-collector:4318
+     protocol: http/protobuf
    ```
+
+   `otel_export` is stamped onto mutated pods as `OTEL_EXPORTER_OTLP_ENDPOINT` /
+   `OTEL_EXPORTER_OTLP_PROTOCOL`. Each selector ConfigMap carries its own
+   destination, so a single injector can fan pods out to different collectors.
 
    Within one entry, all populated fields must match (**AND**); empty fields
    are wildcards. Across entries the registry applies **OR**. `k8s_namespace`
@@ -138,10 +146,13 @@ metadata:
   annotations:
     beyla.grafana.com/node: ""
 data:
-  selection_criteria.yaml: |
+  instrumentation.yaml: |
     discovery:
       - k8s_namespace: my-app
         k8s_deployment_name: hello
+    otel_export:
+      endpoint: http://otel-collector.observability.svc.cluster.local:4318
+      protocol: http/protobuf
   eligible_for_restart.yaml: |
     - namespace: my-app
       kind: Deployment

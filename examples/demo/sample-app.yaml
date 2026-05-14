@@ -1,0 +1,42 @@
+# Sample workload that matches the `injector.instrument` criteria in
+# examples/demo/beyla.yaml (k8s_namespace: demo). Once it's running, Beyla
+# should record it in the per-node ConfigMap as an EligibleDeployment, which
+# the injection controller will then act on.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: demo
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-node
+  namespace: demo
+  labels:
+    app: hello-node
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hello-node
+  template:
+    metadata:
+      labels:
+        app: hello-node
+    spec:
+      containers:
+        - name: hello
+          image: node:20-alpine
+          command:
+            - node
+            - -e
+            - |
+              const http = require('http');
+              const server = http.createServer((req, res) => {
+                res.writeHead(200, { 'Content-Type': 'text/plain' });
+                res.end('hello from node\n');
+              });
+              server.listen(8080, () => console.log('listening on 8080'));
+          ports:
+            - containerPort: 8080
