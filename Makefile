@@ -1,8 +1,8 @@
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
-# Beyla image used by the demo-deploy target. Override to point at a local
+IMG ?= ghcr.io/grafana/k8s-injection-controller:main
+# Beyla image used by the demo targets. Override to point at a local
 # development build (e.g. BEYLA_IMG=ghcr.io/me/beyla:dev).
-BEYLA_IMG ?= grafana/beyla:latest
+BEYLA_IMG ?= grafana/beyla:main
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
@@ -197,7 +197,8 @@ demo-deploy: manifests kustomize ## Demo: deploy controller (via deploy-test) pl
 	# 2. Deploy Beyla as a DaemonSet, with the webhook delegated to the
 	#    beyla-k8s-injector-controller-manager. The per-node ConfigMap Beyla writes is what
 	#    drives the controller in this demo.
-	sed "s|BEYLA_IMAGE_PLACEHOLDER|$(BEYLA_IMG)|g" examples/demo/beyla.yaml | "$(KUBECTL)" apply -f -
+	"$(KUBECTL)" apply -f examples/demo/beyla.yaml
+	"$(KUBECTL)" -n beyla-k8s-injector set image daemonset/beyla beyla=$(BEYLA_IMG)
 	# 3. Deploy a sample workload that matches Beyla's instrument criteria.
 	"$(KUBECTL)" apply -f examples/demo/sample-app.yaml
 	@echo
@@ -210,7 +211,7 @@ demo-deploy: manifests kustomize ## Demo: deploy controller (via deploy-test) pl
 .PHONY: demo-undeploy
 demo-undeploy: kustomize ## Demo: tear down everything demo-deploy created.
 	-"$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f examples/demo/sample-app.yaml
-	-sed "s|BEYLA_IMAGE_PLACEHOLDER|$(BEYLA_IMG)|g" examples/demo/beyla.yaml | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
+	-"$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f examples/demo/beyla.yaml
 	-"$(KUSTOMIZE)" build config/test | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
