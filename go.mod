@@ -1,16 +1,10 @@
 module github.com/grafana/beyla-k8s-injector
 
-go 1.25.9
-
-// Beyla and the injector are developed in parallel; pin to the local checkout
-// so the shared pkg/webhook/configmap types stay in lockstep without needing a
-// tagged release on every change. Remove once Beyla cuts a release that
-// includes the configmap subpackage.
-replace github.com/grafana/beyla/v3 => ../beyla
+go 1.26.3
 
 require (
 	github.com/distribution/reference v0.6.0
-	github.com/grafana/beyla/v3 v3.14.0
+	github.com/grafana/beyla/v3 v3.12.1-0.20260514131659-b74947c18607
 	github.com/onsi/ginkgo/v2 v2.28.3
 	github.com/onsi/gomega v1.40.0
 	go.opentelemetry.io/obi v0.9.0

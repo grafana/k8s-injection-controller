@@ -30,12 +30,11 @@ instrumented, and writes a ConfigMap that the controller-manager consumes.
 From the repo root (`k8s-injection-controller/`):
 
 ```sh
-#installs a dev certificate manager
 export IMG=beyla-k8s-injector:dev
 export BEYLA_IMG=your-repo/beyla:dev
 make docker-build docker-push # can replace docker-push by '&& kind load docker-image $IMG'
+#installs a dev certificate manager
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
-make install
 make demo-deploy
 ```
 
