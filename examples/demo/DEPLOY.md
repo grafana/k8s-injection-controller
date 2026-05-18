@@ -21,37 +21,44 @@ instrumented, and writes a ConfigMap that the controller-manager consumes.
   uses `ImageVolumeSource`, which requires 1.31).
 - `kubectl` and `make` on your PATH.
 - Two container images pushed to a registry your cluster can pull from:
-  - the injection controller image (`IMG`)
-  - a Beyla image (`BEYLA_IMG`) — use your local dev build to demo the
-    in-flight changes
+  - the injection controller image (`IMG`, defaults to
+    `ghcr.io/grafana/k8s-injection-controller:main`)
+  - a Beyla image (`BEYLA_IMG`, defaults to `grafana/beyla:main`)
 
 ## Deploy
 
 From the repo root (`k8s-injection-controller/`):
 
 ```sh
-export IMG=beyla-k8s-injector:dev
-export BEYLA_IMG=your-repo/beyla:dev
-make docker-build docker-push # can replace docker-push by '&& kind load docker-image $IMG'
 #installs a dev certificate manager
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+#installs a dev certificate manager
 make demo-deploy
+```
+
+If you need different images, override them explicitly:
+
+```sh
+make docker-build docker-push IMG=your-repo/k8s-injection-controller:dev
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
+make demo-deploy BEYLA_IMG=your-repo/beyla:dev IMG=your-repo/k8s-injection-controller:dev
 ```
 
 The target runs three steps:
 
 1. `kustomize build config/test | kubectl apply -f -` — controller +
    sample SDK config in `beyla-k8s-injector`.
-2. `sed BEYLA_IMG into examples/demo/beyla.yaml | kubectl apply -f -` —
-   Beyla DaemonSet, RBAC, and config in `beyla-k8s-injector`.
+2. `kubectl apply -f examples/demo/beyla.yaml` followed by
+   `kubectl -n beyla-k8s-injector set image daemonset/beyla beyla=$BEYLA_IMG`
+   — Beyla DaemonSet, RBAC, and config in `beyla-k8s-injector`.
 3. `kubectl apply -f examples/demo/sample-app.yaml` — the `demo` namespace
    and the `hello-node` Deployment.
 
 If you only want to refresh Beyla after rebuilding its image:
 
 ```sh
-sed "s|BEYLA_IMAGE_PLACEHOLDER|your-registry/beyla:dev|g" \
-  examples/demo/beyla.yaml | kubectl apply -f -
+kubectl -n beyla-k8s-injector set image daemonset/beyla \
+  beyla=${BEYLA_IMG:-grafana/beyla:main}
 kubectl -n beyla-k8s-injector rollout restart daemonset/beyla
 ```
 

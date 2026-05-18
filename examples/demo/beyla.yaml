@@ -129,7 +129,7 @@ spec:
       hostPID: true
       containers:
         - name: beyla
-          image: BEYLA_IMAGE_PLACEHOLDER
+          image: grafana/beyla:main
           imagePullPolicy: IfNotPresent
           args: ["--config=/etc/beyla/beyla-config.yaml"]
           env:
