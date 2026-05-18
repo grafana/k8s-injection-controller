@@ -63,7 +63,8 @@ type PodCustomDefaulter struct {
 func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error {
 	podlog.Info("admission received", "namespace", obj.Namespace, "name", obj.Name, "generateName", obj.GenerateName)
 	info := podinfo.Resolve(ctx, d.Reader, obj)
-	if !d.Registry.Match(info) {
+	inst, ok := d.Registry.Match(info)
+	if !ok {
 		podlog.Info("no criterion matched; skipping", "namespace", obj.Namespace, "name", obj.Name)
 		return nil
 	}
@@ -84,10 +85,10 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 
 	d.Mutator.mountVolume(&obj.Spec)
 	for i := range obj.Spec.Containers {
-		d.Mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i])
+		d.Mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i], inst.OtelExport)
 	}
 	for i := range obj.Spec.InitContainers {
-		d.Mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.InitContainers[i])
+		d.Mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.InitContainers[i], inst.OtelExport)
 	}
 
 	if obj.Annotations == nil {

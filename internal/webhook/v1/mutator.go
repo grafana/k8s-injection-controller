@@ -9,6 +9,7 @@ import (
 
 	"github.com/distribution/reference"
 	"github.com/grafana/beyla-k8s-injector/internal/config"
+	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
 	"go.opentelemetry.io/obi/pkg/appolly/services"
 	"go.opentelemetry.io/obi/pkg/kube/kubecache/informer"
@@ -136,9 +137,9 @@ func (pm *PodMutator) mountVolume(spec *corev1.PodSpec) {
 	}
 }
 
-func (pm *PodMutator) instrumentContainer(meta *metav1.ObjectMeta, c *corev1.Container) {
+func (pm *PodMutator) instrumentContainer(meta *metav1.ObjectMeta, c *corev1.Container, exp configmap.OtelExport) {
 	pm.addMount(c)
-	pm.addEnvVars(meta, c)
+	pm.addEnvVars(meta, c, exp)
 }
 
 func (pm *PodMutator) addMount(c *corev1.Container) {
@@ -202,7 +203,7 @@ func setEnvVar(c *corev1.Container, envVarName, value string) {
 	}
 }
 
-func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container) {
+func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container, exp configmap.OtelExport) {
 	if c.Env == nil {
 		c.Env = []corev1.EnvVar{}
 	}
@@ -213,8 +214,10 @@ func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container) {
 	setEnvVar(c, envVarSDKVersion, pm.Cfg.PackageVersion())
 	setEnvVar(c, envVarLdPreloadName, envVarLdPreloadValue)
 	setEnvVar(c, envOtelInjectorConfigFileName, envOtelInjectorConfigFileValue)
-	setEnvVar(c, envOtelExporterOtlpEndpointName, pm.Cfg.OTELEndpoint)
-	setEnvVar(c, envOtelExporterOtlpProtocolName, pm.Cfg.OTELProtocol)
+	// Endpoint/protocol come from the matched ConfigMap's otel_export block,
+	// not from --config, so one injector can fan out to different collectors.
+	setEnvVar(c, envOtelExporterOtlpEndpointName, exp.Endpoint)
+	setEnvVar(c, envOtelExporterOtlpProtocolName, exp.Protocol)
 	setEnvVar(c, envOtelSemConvStabilityName, "http")
 	if pm.Cfg.Debug {
 		setEnvVar(c, envInjectorDebugName, "debug")

@@ -1,5 +1,8 @@
 # Image URL to use all building/pushing image targets
-IMG ?= controller:latest
+IMG ?= ghcr.io/grafana/k8s-injection-controller:main
+# Beyla image used by the demo targets. Override to point at a local
+# development build (e.g. BEYLA_IMG=ghcr.io/me/beyla:dev).
+BEYLA_IMG ?= grafana/beyla:main
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
@@ -185,6 +188,31 @@ deploy-test: manifests kustomize ## Deploy with the sample SDK config from confi
 undeploy-test: kustomize ## Tear down deploy-test resources.
 	"$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f examples/test_config_map.yaml
 	"$(KUSTOMIZE)" build config/test | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
+
+.PHONY: demo-deploy
+demo-deploy: manifests kustomize ## Demo: deploy controller (via deploy-test) plus a Beyla DaemonSet wired to it and a sample workload.
+	# 1. Deploy the controller with its sample SDK config.
+	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
+	"$(KUSTOMIZE)" build config/test | "$(KUBECTL)" apply -f -
+	# 2. Deploy Beyla as a DaemonSet, with the webhook delegated to the
+	#    beyla-k8s-injector-controller-manager. The per-node ConfigMap Beyla writes is what
+	#    drives the controller in this demo.
+	"$(KUBECTL)" apply -f examples/demo/beyla.yaml
+	"$(KUBECTL)" -n beyla-k8s-injector set image daemonset/beyla beyla=$(BEYLA_IMG)
+	# 3. Deploy a sample workload that matches Beyla's instrument criteria.
+	"$(KUBECTL)" apply -f examples/demo/sample-app.yaml
+	@echo
+	@echo "Demo deployed. Useful checks:"
+	@echo "  kubectl -n beyla-k8s-injector get pods"
+	@echo "  kubectl -n beyla-k8s-injector get configmaps          # per-node state ConfigMaps Beyla just wrote"
+	@echo "  kubectl -n beyla-k8s-injector logs deploy/beyla-k8s-injector-controller-manager"
+	@echo "  kubectl -n demo get pods                      # workload pods the controller may bounce/inject"
+
+.PHONY: demo-undeploy
+demo-undeploy: kustomize ## Demo: tear down everything demo-deploy created.
+	-"$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f examples/demo/sample-app.yaml
+	-"$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f examples/demo/beyla.yaml
+	-"$(KUSTOMIZE)" build config/test | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
 
 ##@ Dependencies
 

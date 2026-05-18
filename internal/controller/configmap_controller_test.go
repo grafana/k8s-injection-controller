@@ -22,6 +22,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
+
 	webhookv1 "github.com/grafana/beyla-k8s-injector/internal/webhook/v1"
 )
 
@@ -89,13 +91,13 @@ var _ = Describe("ConfigMap controller eviction sweep", func() {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        "beyla-selector",
 				Namespace:   ns,
-				Annotations: map[string]string{SelectorAnnotation: ""},
+				Annotations: map[string]string{configmap.SelectorAnnotation: ""},
 			},
 			Data: map[string]string{
 				// Selection criterion is the dual gate: without it, evictMatching
 				// would skip the pod even if the restart target matched.
-				SelectionCriteriaKey: "discovery:\n  - k8s_namespace: " + ns + "\n",
-				EligibleForRestartKey: "- namespace: " + ns + "\n" +
+				configmap.KeyInstrumentation: "discovery:\n  - k8s_namespace: " + ns + "\n",
+				configmap.KeyEligibleForRestart: "- namespace: " + ns + "\n" +
 					"  kind: ReplicaSet\n" +
 					"  name: " + rsName + "\n",
 			},
@@ -172,11 +174,11 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 			ObjectMeta: metav1.ObjectMeta{
 				Name:        name,
 				Namespace:   ns,
-				Annotations: map[string]string{SelectorAnnotation: ""},
+				Annotations: map[string]string{configmap.SelectorAnnotation: ""},
 			},
 			Data: map[string]string{
-				SelectionCriteriaKey:  selectionYAML,
-				EligibleForRestartKey: restartYAML,
+				configmap.KeyInstrumentation:    selectionYAML,
+				configmap.KeyEligibleForRestart: restartYAML,
 			},
 		}
 		Expect(k8sClient.Create(ctx, cm)).To(Succeed())
