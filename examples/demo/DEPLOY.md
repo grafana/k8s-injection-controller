@@ -32,7 +32,6 @@ From the repo root (`k8s-injection-controller/`):
 ```sh
 #installs a dev certificate manager
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
-#installs a dev certificate manager
 make demo-deploy
 ```
 
