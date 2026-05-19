@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/distribution/reference v0.6.0
-	github.com/grafana/beyla/v3 v3.12.1-0.20260514131659-b74947c18607
+	github.com/grafana/beyla/v3 v3.12.1-0.20260519150118-9239e518d21b
 	github.com/onsi/ginkgo/v2 v2.28.3
 	github.com/onsi/gomega v1.40.0
 	go.opentelemetry.io/obi v0.9.0

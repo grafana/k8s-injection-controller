@@ -101,7 +101,6 @@ data:
       # When this is set Beyla skips its own TLS webhook server and only
       # publishes the per-node ConfigMap.
       webhook:
-        enabled: true
         external_deployment_name: beyla-k8s-injector/beyla-k8s-injector-controller-manager
       sdk_package_version: v0.0.9
       # The actual SDK volume / image is configured on the controller side

@@ -9,3 +9,7 @@
 # Re-include Go module files
 !go.mod
 !go.sum
+
+# Uncomment during development if go.mod contains `replace ... => ../beyla` directive
+# pointing outside the Docker build context).
+# !vendor/**
