@@ -17,13 +17,13 @@ type SDKInject struct {
 	ImageVolumePath string `yaml:"image_volume_path"`
 	// Default sampler configuration for SDK instrumentation
 	// This is used when no sampler is specified in the selector
-	DefaultSampler *services.SamplerConfig `yaml:"sampler"`
+	DefaultSampler *services.SamplerConfig `yaml:"trace_sampler"`
 	// Propagators configuration for SDK instrumentation
 	// Common values: tracecontext, baggage, b3, b3multi, jaeger, xray
-	Propagators []string `yaml:"propagators"`
+	Propagators []string `yaml:"trace_propagators"`
 	// Export configuration for SDK instrumentation
 	// Controls which signals (traces, metrics, logs) should be exported from injected SDKs
-	Export SDKExport `yaml:"export"`
+	Export SDKExport `yaml:"otel_exported_signals"`
 	// Resource attributes related settings
 	Resources SDKResource `yaml:"resources"`
 	// List of enabled SDK auto-instrumentations. Can be used to disable specific
@@ -47,14 +47,14 @@ func (s *SDKInject) PackageVersion() string {
 type SDKExport struct {
 	// Traces enables trace export from injected SDKs via OTLP
 	// Defaults to true (enabled) when not explicitly set
-	Traces *bool `yaml:"traces" env:"BEYLA_SDK_EXPORT_TRACES"`
+	Traces *bool `yaml:"traces"`
 	// Metrics enables metric export from injected SDKs via OTLP
 	// Defaults to true (enabled) when not explicitly set
 	// Note: SDKs can only export via OTLP, not Prometheus scraping
-	Metrics *bool `yaml:"metrics" env:"BEYLA_SDK_EXPORT_METRICS"`
+	Metrics *bool `yaml:"metrics"`
 	// Logs enables log export from injected SDKs via OTLP
 	// Defaults to false (disabled) when not explicitly set
-	Logs *bool `yaml:"logs" env:"BEYLA_SDK_EXPORT_LOGS"`
+	Logs *bool `yaml:"logs"`
 }
 
 // TracesEnabled returns whether trace export is enabled for SDK instrumentation
@@ -90,23 +90,23 @@ type SDKResource struct {
 	// Attributes defines attributes that are added to the resource.
 	// For example environment: dev
 	// +optional
-	Attributes map[string]string `yaml:"resourceAttributes" env:"BEYLA_RESOURCE_ATTRIBUTES"`
+	Attributes map[string]string `yaml:"attributes"`
 
 	// AddK8sUIDAttributes defines whether K8s UID attributes should be collected (e.g. k8s.deployment.uid).
 	// +optional
-	AddK8sUIDAttributes bool `yaml:"addK8sUIDAttributes" env:"BEYLA_RESOURCE_ADD_K8S_UID_ATTRIBUTES"`
+	AddK8sUIDAttributes bool `yaml:"add_k8s_uid_attributes"`
 
 	// AddK8sIPAttribute defines whether the k8s.pod.ip resource attribute should be set
 	// from the Kubernetes downward API (status.podIP). Useful for environments where the
 	// OTel k8sattributesprocessor cannot infer the pod IP from the connection source
 	// (e.g. clusters behind a NAT gateway).
 	// +optional
-	AddK8sIPAttribute bool `yaml:"addK8sIPAttribute" env:"BEYLA_RESOURCE_ADD_K8S_IP_ATTRIBUTE"`
+	AddK8sIPAttribute bool `yaml:"add_k8s_ip_attribute"`
 
 	// UseLabelsForResourceAttributes defines whether to use common labels for resource attributes:
 	// Note: first entry wins:
 	//   - `app.kubernetes.io/instance` becomes `service.name`
 	//   - `app.kubernetes.io/name` becomes `service.name`
 	//   - `app.kubernetes.io/version` becomes `service.version`
-	UseLabelsForResourceAttributes bool `yaml:"useLabelsForResourceAttributes,omitempty" env:"BEYLA_RESOURCE_USE_LABELS_FOR_RESOURCE_ATTRIBUTES"`
+	UseLabelsForResourceAttributes bool `yaml:"use_k8s_labels_for_resource_attributes,omitempty"`
 }
