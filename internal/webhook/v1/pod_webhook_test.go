@@ -125,6 +125,80 @@ var _ = Describe("Pod Webhook", func() {
 		})
 	})
 
+	Context("When the matched ConfigMap carries SDK overrides", func() {
+		// Helper: re-register the test CM so its InjectConfig overrides the
+		// controller-wide defaults set in BeforeEach. The criteria stay the
+		// same so the pod still matches.
+		setOverride := func(cfg configmap.InjectConfig) {
+			ns := services.NewGlob(testNamespace)
+			cfg.OtelExport = configmap.OtelExport{
+				Endpoint: "http://otel-collector:4318",
+				Protocol: "http/protobuf",
+			}
+			defaulter.Registry.Set("test-cm", registry.Instrumentation{
+				Criteria:     []registry.SelectionCriterion{{K8sNamespace: &ns}},
+				InjectConfig: cfg,
+			})
+		}
+
+		It("Should override the mounted image and its derived package version", func() {
+			setOverride(configmap.InjectConfig{
+				ImageVolumePath: "ghcr.io/grafana/beyla/inject-sdk-image:override",
+			})
+
+			// Capture the package-version env the default path would produce, then
+			// run injection and confirm both the volume reference and the env
+			// reflect the override (not the controller default seeded in BeforeEach).
+			defaultPV := (&config.SDKInject{ImageVolumePath: "ghcr.io/grafana/beyla/inject-sdk-image:0.0.9"}).PackageVersion()
+
+			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
+
+			Expect(obj.Spec.Volumes).To(HaveLen(1))
+			Expect(obj.Spec.Volumes[0].Image).NotTo(BeNil())
+			Expect(obj.Spec.Volumes[0].Image.Reference).
+				To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:override"))
+
+			gotPV := envValue(obj.Spec.Containers[0].Env, "BEYLA_INJECTOR_SDK_PKG_VERSION")
+			Expect(gotPV).NotTo(BeEmpty())
+			Expect(gotPV).NotTo(Equal(defaultPV),
+				"package-version env should reflect the overridden ImageVolumePath, not the controller default")
+		})
+
+		It("Should honor Resources flags from the ConfigMap", func() {
+			setOverride(configmap.InjectConfig{
+				Resources: configmap.SDKResource{
+					AddK8sUIDAttributes: true,
+					AddK8sIPAttribute:   true,
+				},
+			})
+
+			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
+
+			names := envNames(obj.Spec.Containers[0].Env)
+			// AddK8sUIDAttributes gates this env var entirely; the default
+			// (false) leaves it absent. Its presence proves the override took
+			// effect.
+			Expect(names).To(ContainElement("OTEL_INJECTOR_K8S_POD_UID"))
+			// Same gate for the IP attribute.
+			Expect(names).To(ContainElement("OTEL_RESOURCE_ATTRIBUTES_POD_IP"))
+		})
+
+		It("Should override propagators while preserving other defaults", func() {
+			setOverride(configmap.InjectConfig{
+				Propagators: []string{"b3", "baggage"},
+			})
+
+			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
+
+			Expect(envValue(obj.Spec.Containers[0].Env, "OTEL_PROPAGATORS")).
+				To(Equal("b3,baggage"))
+			// Volume reference should still come from the controller default —
+			// only propagators was overridden.
+			Expect(obj.Spec.Volumes[0].Image.Reference).
+				To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.9"))
+		})
+	})
+
 	Context("When creating a pod that is already annotated as instrumented", func() {
 		It("Should not modify anything", func() {
 			obj.Annotations = map[string]string{InjectedAnnotation: InjectedAnnotValue}

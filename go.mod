@@ -2,11 +2,9 @@ module github.com/grafana/beyla-k8s-injector
 
 go 1.26.3
 
-replace github.com/grafana/beyla/v3 v3.15.0 => ../beyla
-
 require (
 	github.com/distribution/reference v0.6.0
-	github.com/grafana/beyla/v3 v3.15.0
+	github.com/grafana/beyla/v3 v3.12.1-0.20260522090605-0e4af2a37408
 	github.com/onsi/ginkgo/v2 v2.28.3
 	github.com/onsi/gomega v1.40.0
 	go.opentelemetry.io/obi v0.9.0
