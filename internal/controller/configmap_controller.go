@@ -158,6 +158,12 @@ func parseConfigMap(data map[string]string) (registry.Instrumentation, []restart
 		if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
 			return registry.Instrumentation{}, nil, fmt.Errorf("parse %s: %w", configmap.KeyInstrumentation, err)
 		}
+		inst.NodeName = cfg.NodeName
+		inst.DefaultSampler = cfg.DefaultSampler
+		inst.ImageVolumePath = cfg.ImageVolumePath
+		inst.Propagators = cfg.Propagators
+		inst.Resources = cfg.Resources
+		inst.ExportedSignals = cfg.ExportedSignals
 		inst.OtelExport = cfg.OtelExport
 		for _, ga := range cfg.Discovery {
 			crit := selectionCriterionFromGlob(&ga)

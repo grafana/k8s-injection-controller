@@ -21,9 +21,9 @@ type SDKInject struct {
 	// Propagators configuration for SDK instrumentation
 	// Common values: tracecontext, baggage, b3, b3multi, jaeger, xray
 	Propagators []string `yaml:"trace_propagators"`
-	// Export configuration for SDK instrumentation
+	// ExportedSignals configuration for SDK instrumentation
 	// Controls which signals (traces, metrics, logs) should be exported from injected SDKs
-	Export SDKExport `yaml:"otel_exported_signals"`
+	ExportedSignals SDKExportedSignals `yaml:"otel_exported_signals"`
 	// Resource attributes related settings
 	Resources SDKResource `yaml:"resources"`
 	// List of enabled SDK auto-instrumentations. Can be used to disable specific
@@ -41,10 +41,10 @@ func (s *SDKInject) PackageVersion() string {
 	return fmt.Sprintf("%x", h)
 }
 
-// SDKExport defines which telemetry signals should be exported from injected SDKs.
+// SDKExportedSignals defines which telemetry signals should be exported from injected SDKs.
 // These settings are independent from the global export configuration and allow
 // the injector to export metrics/traces/logs even when Beyla uses Prometheus for metrics.
-type SDKExport struct {
+type SDKExportedSignals struct {
 	// Traces enables trace export from injected SDKs via OTLP
 	// Defaults to true (enabled) when not explicitly set
 	Traces *bool `yaml:"traces"`
@@ -59,7 +59,7 @@ type SDKExport struct {
 
 // TracesEnabled returns whether trace export is enabled for SDK instrumentation
 // Defaults to true when not explicitly set
-func (e SDKExport) TracesEnabled() bool {
+func (e SDKExportedSignals) TracesEnabled() bool {
 	if e.Traces == nil {
 		return true // default to enabled
 	}
@@ -68,7 +68,7 @@ func (e SDKExport) TracesEnabled() bool {
 
 // MetricsEnabled returns whether metric export is enabled for SDK instrumentation
 // Defaults to true when not explicitly set
-func (e SDKExport) MetricsEnabled() bool {
+func (e SDKExportedSignals) MetricsEnabled() bool {
 	if e.Metrics == nil {
 		return true // default to enabled
 	}
@@ -77,7 +77,7 @@ func (e SDKExport) MetricsEnabled() bool {
 
 // LogsEnabled returns whether log export is enabled for SDK instrumentation
 // Defaults to false when not explicitly set
-func (e SDKExport) LogsEnabled() bool {
+func (e SDKExportedSignals) LogsEnabled() bool {
 	if e.Logs == nil {
 		return false // default to disabled
 	}

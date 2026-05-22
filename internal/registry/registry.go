@@ -27,8 +27,14 @@ import (
 // webhook should stamp onto those pods. Criteria are the controller's
 // translation of the on-wire Discovery globs into typed match fields.
 type Instrumentation struct {
-	Criteria   []SelectionCriterion
-	OtelExport configmap.OtelExport
+	Criteria        []SelectionCriterion
+	OtelExport      configmap.OtelExport
+	NodeName        string
+	Resources       configmap.SDKResource
+	ExportedSignals configmap.SDKExportedSignals
+	Propagators     []string
+	DefaultSampler  *services.SamplerConfig
+	ImageVolumePath string
 }
 
 // SelectionCriterion is one entry from a selector ConfigMap's

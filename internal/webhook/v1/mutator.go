@@ -260,9 +260,9 @@ func (pm *PodMutator) configureContainerEnvVars(meta *metav1.ObjectMeta, contain
 
 	// Configure exporters: start with SDK export config, then override with selector's export modes
 	// Use SDK-specific export settings which are independent from global Beyla export config
-	tracesEnabled := pm.Cfg.Export.TracesEnabled()
-	metricsEnabled := pm.Cfg.Export.MetricsEnabled()
-	logsEnabled := pm.Cfg.Export.LogsEnabled()
+	tracesEnabled := pm.Cfg.ExportedSignals.TracesEnabled()
+	metricsEnabled := pm.Cfg.ExportedSignals.MetricsEnabled()
+	logsEnabled := pm.Cfg.ExportedSignals.LogsEnabled()
 
 	// Start with a new ExportModes (all blocked by default)
 	exportModes := services.NewExportModes()
