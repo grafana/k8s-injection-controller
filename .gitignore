@@ -27,3 +27,5 @@ go.work
 *.kubeconfig
 
 vendor
+
+yaml

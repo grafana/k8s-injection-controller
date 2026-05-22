@@ -88,8 +88,6 @@ type PodInfo struct {
 	// DeploymentName is set if the pod's RS owner is itself owned by a
 	// Deployment (or if the pod is directly owned by a Deployment).
 	DeploymentName string
-
-	NodeName string
 }
 
 // Registry is safe for concurrent use.
@@ -131,22 +129,8 @@ func (r *Registry) Match(p PodInfo) (Instrumentation, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	keys := make([]string, 0, len(r.instruments))
-	nodeMap := make(map[string]Instrumentation, len(r.instruments))
-	for k, v := range r.instruments {
+	for k := range r.instruments {
 		keys = append(keys, k)
-		nodeMap[v.NodeName] = v
-	}
-
-	// First check local node
-	if p.NodeName != "" {
-		if i, ok := nodeMap[p.NodeName]; ok {
-			regLog.Info("found local node instrumentation info", "criteria", i.Criteria)
-			for _, c := range i.Criteria {
-				if criterionMatches(c, p) {
-					return i, true
-				}
-			}
-		}
 	}
 
 	// Look up others

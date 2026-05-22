@@ -61,7 +61,7 @@ type PodCustomDefaulter struct {
 }
 
 func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error {
-	podlog.Info("admission received", "namespace", obj.Namespace, "name", obj.Name, "generateName", obj.GenerateName, "node", obj.Spec.NodeName)
+	podlog.Info("admission received", "namespace", obj.Namespace, "name", obj.Name, "generateName", obj.GenerateName)
 	info := podinfo.Resolve(ctx, d.Reader, obj)
 	inst, ok := d.Registry.Match(info)
 	if !ok {
