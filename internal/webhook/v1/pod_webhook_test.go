@@ -50,9 +50,11 @@ var _ = Describe("Pod Webhook", func() {
 			Criteria: []registry.SelectionCriterion{{K8sNamespace: &ns}},
 			// OTLP destination now travels with the matched ConfigMap, not
 			// with the startup --config.
-			OtelExport: configmap.OtelExport{
-				Endpoint: "http://otel-collector:4318",
-				Protocol: "http/protobuf",
+			InjectConfig: configmap.InjectConfig{
+				OtelExport: configmap.OtelExport{
+					Endpoint: "http://otel-collector:4318",
+					Protocol: "http/protobuf",
+				},
 			},
 		})
 
