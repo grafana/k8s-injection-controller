@@ -195,6 +195,14 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 			"pod %s/%s was unexpectedly evicted", ns, name)
 	}
 
+	expectEvicted := func(ns, name string) {
+		Eventually(func() bool {
+			err := k8sClient.Get(ctx, client.ObjectKey{Namespace: ns, Name: name}, &corev1.Pod{})
+			return apierrors.IsNotFound(err)
+		}, 30*time.Second, 50*time.Millisecond).Should(BeTrue(),
+			"pod %s/%s was not evicted within the timeout", ns, name)
+	}
+
 	It("does not evict when only eligible_for_restart matches (selection_criteria misses)", func() {
 		const ns = "evict-skip-1"
 		ensureNS(ns)
@@ -244,21 +252,40 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 		expectKept(ns, "worker-3-001")
 	})
 
-	It("does not evict pods already annotated with our injection marker", func() {
+	It("does not evict pods already annotated at the current SDK version", func() {
 		const ns = "evict-skip-4"
 		ensureNS(ns)
 		rs := mkRS(ns, "worker-4")
 		mkPod(ns, "worker-4-001", rs, func(p *corev1.Pod) {
 			p.Annotations = map[string]string{
-				webhookv1.InjectedAnnotation: webhookv1.InjectedAnnotValue,
+				webhookv1.InjectedAnnotation: testSDKConfig.PackageVersion(),
 			}
 		})
 
-		// Both gates would pass; AlreadyInstrumentedByOther is the skip reason.
+		// Both gates would pass; version-matched annotation is the skip reason.
 		mkCM(ns, "cm-4",
 			"discovery:\n  - k8s_namespace: "+ns+"\n",
 			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: worker-4\n")
 
 		expectKept(ns, "worker-4-001")
+	})
+
+	It("evicts pods annotated with a stale SDK version so the webhook can re-inject", func() {
+		const ns = "evict-stale-5"
+		ensureNS(ns)
+		rs := mkRS(ns, "worker-5")
+		mkPod(ns, "worker-5-001", rs, func(p *corev1.Pod) {
+			p.Annotations = map[string]string{
+				// Some prior SDK image's hash — anything different from the
+				// current testSDKConfig.PackageVersion() is treated as stale.
+				webhookv1.InjectedAnnotation: "stale-version-digest",
+			}
+		})
+
+		mkCM(ns, "cm-5",
+			"discovery:\n  - k8s_namespace: "+ns+"\n",
+			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: worker-5\n")
+
+		expectEvicted(ns, "worker-5-001")
 	})
 })

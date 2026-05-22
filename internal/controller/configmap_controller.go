@@ -39,6 +39,7 @@ import (
 
 	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 
+	"github.com/grafana/beyla-k8s-injector/internal/config"
 	"github.com/grafana/beyla-k8s-injector/internal/podinfo"
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 	webhookv1 "github.com/grafana/beyla-k8s-injector/internal/webhook/v1"
@@ -81,6 +82,12 @@ type ConfigMapReconciler struct {
 	// failurePolicy=Ignore) admit pods un-instrumented. Optional; if empty,
 	// the dial check is skipped.
 	WebhookServiceAddr string
+	// DefaultSDKConfig is the controller-wide injection default; per-ConfigMap
+	// overrides on the matched Instrumentation are layered on top of it via
+	// WithConfigMapOverrides before computing the package version used for
+	// the version-skew check. Zero value means "no SDK config wired" — in
+	// that mode the webhook is a no-op and we skip evictions to avoid churn.
+	DefaultSDKConfig config.SDKInject
 }
 
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
@@ -264,10 +271,17 @@ func (r *ConfigMapReconciler) evictMatching(ctx context.Context, targets []resta
 			if !matchesAnyTarget(info, nsTargets) {
 				continue
 			}
-			if _, ok := r.Registry.Match(info); !ok {
+			inst, ok := r.Registry.Match(info)
+			if !ok {
 				continue
 			}
-			if webhookv1.AlreadyInstrumentedByOther(&pod.Spec, &pod.ObjectMeta) {
+			effective := r.DefaultSDKConfig.WithConfigMapOverrides(inst.InjectConfig)
+			if effective.ImageVolumePath == "" {
+				// No SDK config in the default or in the CM override: the
+				// webhook would not mutate, so evicting accomplishes nothing.
+				continue
+			}
+			if webhookv1.AlreadyInstrumented(&pod.Spec, &pod.ObjectMeta, effective.PackageVersion()) {
 				continue
 			}
 			if webhookv1.PreloadsSomethingElse(pod) {

@@ -119,9 +119,9 @@ var _ = Describe("Pod Webhook", func() {
 			Expect(mounts[0].ReadOnly).To(BeTrue())
 		})
 
-		It("Should annotate the Pod as instrumented", func() {
+		It("Should annotate the Pod with the current SDK package version", func() {
 			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
-			Expect(obj.Annotations).To(HaveKeyWithValue(InjectedAnnotation, InjectedAnnotValue))
+			Expect(obj.Annotations).To(HaveKeyWithValue(InjectedAnnotation, defaulter.Mutator.Cfg.PackageVersion()))
 		})
 	})
 
@@ -199,9 +199,11 @@ var _ = Describe("Pod Webhook", func() {
 		})
 	})
 
-	Context("When creating a pod that is already annotated as instrumented", func() {
+	Context("When a pod is already annotated with the current SDK version", func() {
 		It("Should not modify anything", func() {
-			obj.Annotations = map[string]string{InjectedAnnotation: InjectedAnnotValue}
+			obj.Annotations = map[string]string{
+				InjectedAnnotation: defaulter.Mutator.Cfg.PackageVersion(),
+			}
 			before := obj.DeepCopy()
 
 			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
@@ -209,6 +211,23 @@ var _ = Describe("Pod Webhook", func() {
 			// Identical to the pre-call snapshot: no env vars, no volumes,
 			// no extra annotations.
 			Expect(obj).To(Equal(before))
+		})
+	})
+
+	Context("When a pod is annotated with a stale SDK version", func() {
+		It("Should re-instrument and update the annotation to the current version", func() {
+			obj.Annotations = map[string]string{
+				InjectedAnnotation: "stale-version-digest",
+			}
+
+			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
+
+			// Re-instrumentation went through: env vars present, volume mounted,
+			// annotation refreshed to the current package version.
+			want := defaulter.Mutator.Cfg.PackageVersion()
+			Expect(obj.Annotations).To(HaveKeyWithValue(InjectedAnnotation, want))
+			Expect(envValue(obj.Spec.Containers[0].Env, "BEYLA_INJECTOR_SDK_PKG_VERSION")).To(Equal(want))
+			Expect(obj.Spec.Volumes).To(HaveLen(1))
 		})
 	})
 })

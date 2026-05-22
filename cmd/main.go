@@ -190,18 +190,18 @@ func main() {
 	reg := registry.New()
 
 	var podMutator *webhookv1.PodMutator
+	var sdkConfig config.SDKInject
 	if configPath != "" {
 		raw, err := os.ReadFile(configPath)
 		if err != nil {
 			setupLog.Error(err, "Failed to read SDK config file", "path", configPath)
 			os.Exit(1)
 		}
-		var cfg config.SDKInject
-		if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		if err := yaml.Unmarshal(raw, &sdkConfig); err != nil {
 			setupLog.Error(err, "Failed to parse SDK config file", "path", configPath)
 			os.Exit(1)
 		}
-		podMutator = &webhookv1.PodMutator{Cfg: cfg}
+		podMutator = &webhookv1.PodMutator{Cfg: sdkConfig}
 		setupLog.Info("loaded SDK injection config", "path", configPath)
 	} else {
 		setupLog.Info("no --config provided; webhook will not mutate matched pods")
@@ -218,6 +218,7 @@ func main() {
 		Registry:           reg,
 		WebhookReady:       mgr.GetWebhookServer().StartedChecker(),
 		WebhookServiceAddr: os.Getenv("WEBHOOK_SERVICE_ADDR"),
+		DefaultSDKConfig:   sdkConfig,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up controller", "controller", "ConfigMap")
 		os.Exit(1)

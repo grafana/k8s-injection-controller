@@ -31,8 +31,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	"github.com/grafana/beyla-k8s-injector/internal/config"
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 )
+
+// testSDKConfig is the controller-wide SDK config used by the envtest
+// reconciler. The ImageVolumePath is what feeds PackageVersion() on the
+// eviction sweep — tests that exercise the version-skew check derive their
+// annotation values from it.
+var testSDKConfig = config.SDKInject{
+	ImageVolumePath: "ghcr.io/grafana/beyla/inject-sdk-image:test",
+}
 
 var (
 	ctx       context.Context
@@ -83,9 +92,10 @@ var _ = BeforeSuite(func() {
 	// WebhookReady / WebhookServiceAddr left zero: envtest has no webhook
 	// listener, and we want the eviction sweep to run unconditionally.
 	Expect((&ConfigMapReconciler{
-		Client:    mgr.GetClient(),
-		Clientset: cs,
-		Registry:  reg,
+		Client:           mgr.GetClient(),
+		Clientset:        cs,
+		Registry:         reg,
+		DefaultSDKConfig: testSDKConfig,
 	}).SetupWithManager(mgr)).To(Succeed())
 
 	go func() {
