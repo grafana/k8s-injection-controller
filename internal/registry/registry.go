@@ -137,6 +137,7 @@ func (r *Registry) Match(p PodInfo) (Instrumentation, bool) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		inst := r.instruments[k]
+		regLog.Info("checking criteria", "key", k, "criteria", inst.Criteria)
 		for _, c := range inst.Criteria {
 			if criterionMatches(c, p) {
 				return inst, true

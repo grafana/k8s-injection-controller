@@ -72,7 +72,7 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 		podlog.Info("already instrumented; skipping", "namespace", obj.Namespace, "name", obj.Name)
 		return nil
 	}
-	if d.Mutator == nil {
+	if d.Mutator.Cfg.ImageVolumePath == "" {
 		podlog.Info("pod matches but no SDK config loaded; skipping injection",
 			"namespace", obj.Namespace, "name", obj.Name)
 		return nil

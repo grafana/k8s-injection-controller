@@ -204,7 +204,8 @@ func main() {
 		podMutator = &webhookv1.PodMutator{Cfg: cfg}
 		setupLog.Info("loaded SDK injection config", "path", configPath)
 	} else {
-		setupLog.Info("no --config provided; webhook will not mutate matched pods")
+		podMutator = &webhookv1.PodMutator{Cfg: config.SDKInject{}}
+		setupLog.Info("no --config provided; webhook will wait for remotely provided injection configuration")
 	}
 
 	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
@@ -218,6 +219,7 @@ func main() {
 		Registry:           reg,
 		WebhookReady:       mgr.GetWebhookServer().StartedChecker(),
 		WebhookServiceAddr: os.Getenv("WEBHOOK_SERVICE_ADDR"),
+		Mutator:            podMutator,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up controller", "controller", "ConfigMap")
 		os.Exit(1)

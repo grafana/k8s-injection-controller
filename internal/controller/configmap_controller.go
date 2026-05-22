@@ -81,6 +81,8 @@ type ConfigMapReconciler struct {
 	// failurePolicy=Ignore) admit pods un-instrumented. Optional; if empty,
 	// the dial check is skipped.
 	WebhookServiceAddr string
+
+	Mutator *webhookv1.PodMutator
 }
 
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
@@ -116,6 +118,8 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		r.Registry.Delete(cmKey)
 		return ctrl.Result{}, nil
 	}
+
+	r.updateMutatorConfigIfNeeded(&inst)
 	r.Registry.Set(cmKey, inst)
 	if len(restartTargets) == 0 {
 		return ctrl.Result{}, nil
@@ -141,6 +145,12 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// un-mutated. AlreadyInstrumentedByOther skips already-injected pods, so
 	// steady state has no churn — only un-mutated matches get re-evicted.
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+}
+
+func (r *ConfigMapReconciler) updateMutatorConfigIfNeeded(inst *registry.Instrumentation) {
+	// TODO: check for previous values and see what pods need to be
+	// restarted to match the new desired config
+	r.Mutator.Cfg.UpdateWithInstrumentation(inst)
 }
 
 // parseConfigMap extracts the injection record (from instrumentation.yaml)

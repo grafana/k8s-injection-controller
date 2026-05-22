@@ -106,6 +106,10 @@ type PodMutator struct {
 	Cfg config.SDKInject
 }
 
+func (pm *PodMutator) UpdateConfig(cfg *config.SDKInject) {
+	pm.Cfg = *cfg
+}
+
 func (pm *PodMutator) buildVolumeDefinition() corev1.Volume {
 	// Kubernetes ImageVolumeSource (k8s 1.31+) is the only supported mode.
 	return corev1.Volume{
