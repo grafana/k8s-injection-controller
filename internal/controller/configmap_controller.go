@@ -62,6 +62,38 @@ var restartKinds = map[string]struct{}{
 	"DaemonSet":   {},
 }
 
+// protectedNamespaces is a hardcoded denylist of namespaces the eviction
+// sweep must never touch. A wide or misconfigured selector (e.g.
+// k8s_namespace: "*") must not cause us to restart pods here.
+var protectedNamespaces = map[string]bool{
+	// Kubernetes built-in system namespaces.
+	"kube-system":     true,
+	"kube-public":     true,
+	"kube-node-lease": true,
+
+	// Common infrastructure namespaces.
+	"cert-manager":       true,
+	"monitoring":         true,
+	"local-path-storage": true,
+	"grafana-alloy":      true,
+
+	// GKE-managed namespaces.
+	"gke-connect":                 true,
+	"gke-gmp-system":              true,
+	"gke-managed-cim":             true,
+	"gke-managed-filestorecsi":    true,
+	"gke-managed-metrics-server":  true,
+	"gke-managed-system":          true,
+	"gke-system":                  true,
+	"gke-managed-volumepopulator": true,
+
+	// AKS-managed namespaces.
+	"gatekeeper-system": true,
+
+	// The controller's own namespace — deadlock prevention.
+	"beyla-k8s-injector": true,
+}
+
 // ConfigMapReconciler watches ConfigMaps carrying the SelectorAnnotation and
 // keeps the in-memory Registry in sync with their k8s_namespace selections.
 type ConfigMapReconciler struct {
@@ -257,6 +289,10 @@ func (r *ConfigMapReconciler) evictMatching(ctx context.Context, targets []resta
 	}
 
 	for namespace, nsTargets := range byNamespace {
+		if protectedNamespaces[namespace] {
+			logger.Info("skipping protected namespace", "namespace", namespace)
+			continue
+		}
 		var pods corev1.PodList
 		if err := r.List(ctx, &pods, client.InNamespace(namespace)); err != nil {
 			return fmt.Errorf("list pods in %s: %w", namespace, err)
