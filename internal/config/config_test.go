@@ -23,12 +23,12 @@ func TestWithConfigMapOverrides(t *testing.T) {
 		ImageVolumePath: "default:0",
 		DefaultSampler:  &services.SamplerConfig{Name: "parentbased_always_on"},
 		Propagators:     []string{"tracecontext"},
-		Export: SDKExport{
+		ExportedSignals: configmap.SDKExportedSignals{
 			Traces:  new(true),
 			Metrics: new(true),
 			Logs:    new(false),
 		},
-		Resources: SDKResource{
+		Resources: configmap.SDKResource{
 			Attributes:          map[string]string{"env": "dev"},
 			AddK8sUIDAttributes: false,
 			AddK8sIPAttribute:   false,
@@ -85,14 +85,14 @@ func TestWithConfigMapOverrides(t *testing.T) {
 		got := base.WithConfigMapOverrides(configmap.InjectConfig{
 			ExportedSignals: configmap.SDKExportedSignals{Metrics: new(false)},
 		})
-		if got.Export.Traces == nil || *got.Export.Traces != true {
-			t.Fatalf("Traces default lost: %+v", got.Export.Traces)
+		if got.ExportedSignals.Traces == nil || *got.ExportedSignals.Traces != true {
+			t.Fatalf("Traces default lost: %+v", got.ExportedSignals.Traces)
 		}
-		if got.Export.Metrics == nil || *got.Export.Metrics != false {
-			t.Fatalf("Metrics not overridden: %+v", got.Export.Metrics)
+		if got.ExportedSignals.Metrics == nil || *got.ExportedSignals.Metrics != false {
+			t.Fatalf("Metrics not overridden: %+v", got.ExportedSignals.Metrics)
 		}
-		if got.Export.Logs == nil || *got.Export.Logs != false {
-			t.Fatalf("Logs default lost: %+v", got.Export.Logs)
+		if got.ExportedSignals.Logs == nil || *got.ExportedSignals.Logs != false {
+			t.Fatalf("Logs default lost: %+v", got.ExportedSignals.Logs)
 		}
 	})
 
@@ -106,7 +106,7 @@ func TestWithConfigMapOverrides(t *testing.T) {
 		got = base.WithConfigMapOverrides(configmap.InjectConfig{
 			Resources: configmap.SDKResource{AddK8sUIDAttributes: true},
 		})
-		want := SDKResource{AddK8sUIDAttributes: true}
+		want := configmap.SDKResource{AddK8sUIDAttributes: true}
 		if !reflect.DeepEqual(got.Resources, want) {
 			t.Fatalf("Resources override: got %+v want %+v", got.Resources, want)
 		}

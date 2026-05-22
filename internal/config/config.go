@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 
-	"github.com/grafana/beyla-k8s-injector/internal/registry"
 	bservices "github.com/grafana/beyla/v3/pkg/services"
 	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 	"go.opentelemetry.io/obi/pkg/appolly/services"
@@ -43,14 +42,6 @@ func (s *SDKInject) PackageVersion() string {
 	return fmt.Sprintf("%x", h)
 }
 
-func (s *SDKInject) UpdateWithInstrumentation(inst *registry.Instrumentation) {
-	s.ImageVolumePath = inst.ImageVolumePath
-	s.DefaultSampler = inst.DefaultSampler
-	s.Propagators = inst.Propagators
-	s.ExportedSignals = inst.ExportedSignals
-	s.Resources = inst.Resources
-}
-
 // WithConfigMapOverrides returns a copy of s with any per-ConfigMap overrides
 // from cfg applied on top. Zero/nil fields on cfg are treated as "no override"
 // and leave the corresponding default in place.
@@ -66,17 +57,17 @@ func (s SDKInject) WithConfigMapOverrides(cfg configmap.InjectConfig) SDKInject 
 		out.Propagators = cfg.Propagators
 	}
 	if cfg.ExportedSignals.Traces != nil {
-		out.Export.Traces = cfg.ExportedSignals.Traces
+		out.ExportedSignals.Traces = cfg.ExportedSignals.Traces
 	}
 	if cfg.ExportedSignals.Metrics != nil {
-		out.Export.Metrics = cfg.ExportedSignals.Metrics
+		out.ExportedSignals.Metrics = cfg.ExportedSignals.Metrics
 	}
 	if cfg.ExportedSignals.Logs != nil {
-		out.Export.Logs = cfg.ExportedSignals.Logs
+		out.ExportedSignals.Logs = cfg.ExportedSignals.Logs
 	}
 	if r := cfg.Resources; r.Attributes != nil || r.AddK8sUIDAttributes ||
 		r.AddK8sIPAttribute || r.UseLabelsForResourceAttributes {
-		out.Resources = SDKResource{
+		out.Resources = configmap.SDKResource{
 			Attributes:                     r.Attributes,
 			AddK8sUIDAttributes:            r.AddK8sUIDAttributes,
 			AddK8sIPAttribute:              r.AddK8sIPAttribute,

@@ -151,12 +151,6 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
-func (r *ConfigMapReconciler) updateMutatorConfigIfNeeded(inst *registry.Instrumentation) {
-	// TODO: check for previous values and see what pods need to be
-	// restarted to match the new desired config
-	r.Mutator.Cfg.UpdateWithInstrumentation(inst)
-}
-
 // parseConfigMap extracts the injection record (from instrumentation.yaml)
 // and the eligible-for-restart targets (from eligible_for_restart.yaml).
 // Either key may be absent. Restart entries missing the required namespace
