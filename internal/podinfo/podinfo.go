@@ -45,6 +45,8 @@ func Resolve(ctx context.Context, c client.Reader, pod *corev1.Pod) registry.Pod
 	info.OwnerKind = owner.Kind
 	info.OwnerName = owner.Name
 
+	info.NodeName = pod.Spec.NodeName
+
 	switch owner.Kind {
 	case "Deployment":
 		info.DeploymentName = owner.Name

@@ -18,9 +18,12 @@ import (
 	"sync"
 
 	"go.opentelemetry.io/obi/pkg/appolly/services"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 )
+
+var regLog = logf.Log.WithName("pod-webhook")
 
 // Instrumentation is one selector ConfigMap's contribution to the registry:
 // the criteria that decide which pods to touch, and the export config the
@@ -85,6 +88,8 @@ type PodInfo struct {
 	// DeploymentName is set if the pod's RS owner is itself owned by a
 	// Deployment (or if the pod is directly owned by a Deployment).
 	DeploymentName string
+
+	NodeName string
 }
 
 // Registry is safe for concurrent use.
@@ -126,9 +131,25 @@ func (r *Registry) Match(p PodInfo) (Instrumentation, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	keys := make([]string, 0, len(r.instruments))
-	for k := range r.instruments {
+	nodeMap := make(map[string]Instrumentation, len(r.instruments))
+	for k, v := range r.instruments {
 		keys = append(keys, k)
+		nodeMap[v.NodeName] = v
 	}
+
+	// First check local node
+	if p.NodeName != "" {
+		if i, ok := nodeMap[p.NodeName]; ok {
+			regLog.Info("found local node instrumentation info", "criteria", i.Criteria)
+			for _, c := range i.Criteria {
+				if criterionMatches(c, p) {
+					return i, true
+				}
+			}
+		}
+	}
+
+	// Look up others
 	sort.Strings(keys)
 	for _, k := range keys {
 		inst := r.instruments[k]
