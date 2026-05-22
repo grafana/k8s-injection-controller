@@ -23,7 +23,7 @@ import (
 	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 )
 
-var regLog = logf.Log.WithName("pod-webhook")
+var regLog = logf.Log.WithName("registry")
 
 // Instrumentation is one selector ConfigMap's contribution to the registry:
 // the criteria that decide which pods to touch and the rest of the wire
