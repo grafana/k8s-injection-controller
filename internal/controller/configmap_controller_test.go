@@ -288,4 +288,20 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 
 		expectEvicted(ns, "worker-5-001")
 	})
+
+	It("does not evict pods in a protected namespace even when both gates match", func() {
+		const ns = "kube-system"
+		ensureNS(ns)
+		rs := mkRS(ns, "system-worker")
+		mkPod(ns, "system-worker-001", rs, nil)
+
+		// Both gates would pass if we didn't have denylist:
+		// - discovery matches kube-system
+		// - eligible_for_restart targets kube-system/system-worker
+		mkCM(ns, "cm-protected",
+			"discovery:\n - k8s_namespace: "+ns+"\n",
+			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: system-worker\n")
+
+		expectKept(ns, "system-worker-001")
+	})
 })
