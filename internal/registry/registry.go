@@ -26,18 +26,14 @@ import (
 var regLog = logf.Log.WithName("pod-webhook")
 
 // Instrumentation is one selector ConfigMap's contribution to the registry:
-// the criteria that decide which pods to touch, and the export config the
-// webhook should stamp onto those pods. Criteria are the controller's
-// translation of the on-wire Discovery globs into typed match fields.
+// the criteria that decide which pods to touch and the rest of the wire
+// payload (OTLP destination, per-CM SDK overrides). Criteria are the
+// controller's translation of the on-wire Discovery globs into typed match
+// fields; InjectConfig keeps the raw wire document so callers can read the
+// OtelExport and feed SDKInject.WithConfigMapOverrides.
 type Instrumentation struct {
-	Criteria        []SelectionCriterion
-	OtelExport      configmap.OtelExport
-	NodeName        string
-	Resources       configmap.SDKResource
-	ExportedSignals configmap.SDKExportedSignals
-	Propagators     []string
-	DefaultSampler  *services.SamplerConfig
-	ImageVolumePath string
+	Criteria     []SelectionCriterion
+	InjectConfig configmap.InjectConfig
 }
 
 // SelectionCriterion is one entry from a selector ConfigMap's

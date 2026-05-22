@@ -605,21 +605,40 @@ func (pm *PodMutator) CanInstrument(kind svc.InstrumentableType) bool {
 	return false
 }
 
-// AlreadyInstrumentedByOther returns true when a pod shows signs of instrumentation
-// by another tool: the operator's config file env var, or our annotation from a
-// previous webhook invocation.
-func AlreadyInstrumentedByOther(spec *corev1.PodSpec, meta *metav1.ObjectMeta) bool {
+// AlreadyInstrumented reports whether the pod is already instrumented at the
+// requested SDK package version, in which case the caller should skip
+// mutation. A pod instrumented at a *different* version returns false so the
+// webhook re-instruments it on top of the older payload — the mutator's
+// env-var and volume-mount writes are idempotent and update-in-place.
+//
+// We treat the in-pod state as the truth, checking both our own annotation
+// (set on the last admission that mutated this pod) and the SDK-version env
+// we stamp onto every instrumented container. The two checks mirror Beyla's
+// own AlreadyInstrumented on the agent side, so the agent and the webhook
+// agree on what "instrumented at version X" means.
+func AlreadyInstrumented(spec *corev1.PodSpec, meta *metav1.ObjectMeta, wantVersion string) bool {
+	if val, ok := meta.Annotations[InjectedAnnotation]; ok && val != "" {
+		return val == wantVersion
+	}
 	for i := range spec.Containers {
-		for _, env := range spec.Containers[i].Env {
-			if env.Name == envOtelInjectorConfigFileName {
-				return true
-			}
+		if v, ok := findEnvVarValue(&spec.Containers[i], envVarSDKVersion); ok && v != "" {
+			return v == wantVersion
 		}
 	}
-	if val, ok := meta.Annotations[InjectedAnnotation]; ok && val != "" {
-		return true
+	for i := range spec.InitContainers {
+		if v, ok := findEnvVarValue(&spec.InitContainers[i], envVarSDKVersion); ok && v != "" {
+			return v == wantVersion
+		}
 	}
 	return false
+}
+
+func findEnvVarValue(c *corev1.Container, name string) (string, bool) {
+	pos, ok := findEnvVar(c, name)
+	if !ok {
+		return "", false
+	}
+	return c.Env[pos].Value, true
 }
 
 func ownersFrom(meta *metav1.ObjectMeta) []*informer.Owner {

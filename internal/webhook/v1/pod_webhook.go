@@ -22,12 +22,14 @@ import (
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 )
 
-// InjectedAnnotation is the marker we set on every pod we mutate. It's used
-// both as an idempotency check inside the webhook and by the controller to
-// avoid evicting already-injected pods.
+// InjectedAnnotation marks every pod we mutate. Its value is the SHA-224
+// digest returned by SDKInject.PackageVersion(), so a later admission can
+// tell whether the pod is already instrumented with the current SDK image
+// (skip) or with an older one (re-instrument). Both the webhook and the
+// controller use the annotation's presence to decide whether to evict a
+// pre-existing pod for re-interception.
 const (
 	InjectedAnnotation = "beyla.grafana.com/inject"
-	InjectedAnnotValue = "true"
 )
 
 var podlog = logf.Log.WithName("pod-webhook")
@@ -68,13 +70,25 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 		podlog.Info("no criterion matched; skipping", "namespace", obj.Namespace, "name", obj.Name)
 		return nil
 	}
-	if AlreadyInstrumentedByOther(&obj.Spec, &obj.ObjectMeta) {
-		podlog.Info("already instrumented; skipping", "namespace", obj.Namespace, "name", obj.Name)
-		return nil
-	}
 	if d.Mutator.Cfg.ImageVolumePath == "" {
 		podlog.Info("pod matches but no SDK config loaded; skipping injection",
 			"namespace", obj.Namespace, "name", obj.Name)
+		return nil
+	}
+
+	// Per-request mutator with any per-ConfigMap overrides layered on top of
+	// the controller-wide SDK defaults. Mutator methods are pm.Cfg-driven, so
+	// a shallow copy is enough to scope the override. Compute the resolved
+	// package version up front: it depends on the (possibly-overridden)
+	// ImageVolumePath, and both the version-skew check and the annotation we
+	// stamp need it.
+	mutator := *d.Mutator
+	mutator.Cfg = mutator.Cfg.WithConfigMapOverrides(inst.InjectConfig)
+	wantVersion := mutator.Cfg.PackageVersion()
+
+	if AlreadyInstrumented(&obj.Spec, &obj.ObjectMeta, wantVersion) {
+		podlog.Info("already instrumented at current SDK version; skipping",
+			"namespace", obj.Namespace, "name", obj.Name, "version", wantVersion)
 		return nil
 	}
 	if PreloadsSomethingElse(obj) {
@@ -83,18 +97,18 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 		return nil
 	}
 
-	d.Mutator.mountVolume(&obj.Spec)
+	mutator.mountVolume(&obj.Spec)
 	for i := range obj.Spec.Containers {
-		d.Mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i], inst.OtelExport)
+		mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i], inst.InjectConfig.OtelExport)
 	}
 	for i := range obj.Spec.InitContainers {
-		d.Mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.InitContainers[i], inst.OtelExport)
+		mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.InitContainers[i], inst.InjectConfig.OtelExport)
 	}
 
 	if obj.Annotations == nil {
 		obj.Annotations = map[string]string{}
 	}
-	obj.Annotations[InjectedAnnotation] = InjectedAnnotValue
+	obj.Annotations[InjectedAnnotation] = wantVersion
 
 	podlog.Info("instrumented pod", "namespace", obj.Namespace, "name", obj.Name)
 	return nil

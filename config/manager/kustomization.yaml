@@ -4,5 +4,5 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 images:
 - name: controller
-  newName: ghcr.io/grafana/k8s-injection-controller
-  newTag: main
+  newName: beyla-k8s-injector
+  newTag: dev
