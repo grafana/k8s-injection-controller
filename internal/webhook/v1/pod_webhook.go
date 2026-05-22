@@ -70,11 +70,6 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 		podlog.Info("no criterion matched; skipping", "namespace", obj.Namespace, "name", obj.Name)
 		return nil
 	}
-	if d.Mutator.Cfg.ImageVolumePath == "" {
-		podlog.Info("pod matches but no SDK config loaded; skipping injection",
-			"namespace", obj.Namespace, "name", obj.Name)
-		return nil
-	}
 
 	// Per-request mutator with any per-ConfigMap overrides layered on top of
 	// the controller-wide SDK defaults. Mutator methods are pm.Cfg-driven, so
@@ -84,6 +79,13 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	// stamp need it.
 	mutator := *d.Mutator
 	mutator.Cfg = mutator.Cfg.WithConfigMapOverrides(inst.InjectConfig)
+
+	if mutator.Cfg.ImageVolumePath == "" {
+		podlog.Info("pod matches but no SDK config loaded; skipping injection",
+			"namespace", obj.Namespace, "name", obj.Name)
+		return nil
+	}
+
 	wantVersion := mutator.Cfg.PackageVersion()
 
 	if AlreadyInstrumented(&obj.Spec, &obj.ObjectMeta, wantVersion) {

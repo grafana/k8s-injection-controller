@@ -144,11 +144,10 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.evictMatching(ctx, restartTargets); err != nil {
 		logger.Error(err, "failed to evict pre-existing pods")
 	}
-	// Re-sweep periodically. With failurePolicy=Ignore, a pod created while
-	// our webhook was briefly unreachable (e.g. our own restart) is admitted
-	// un-mutated. AlreadyInstrumentedByOther skips already-injected pods, so
-	// steady state has no churn — only un-mutated matches get re-evicted.
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+
+	// We don't need to resweep, Beyla will notice we restarted and update the config map
+	// for us so we can see a new pod that launched while we were away.
+	return ctrl.Result{}, nil
 }
 
 // parseConfigMap extracts the injection record (from instrumentation.yaml)
