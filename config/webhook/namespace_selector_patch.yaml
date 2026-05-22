@@ -13,8 +13,25 @@ webhooks:
         - key: kubernetes.io/metadata.name
           operator: NotIn
           values:
-            - beyla-k8s-injector
+            # Kubernetes built-in system namespaces.
             - kube-system
             - kube-public
             - kube-node-lease
+            # Common infrastructure namespaces.
             - cert-manager
+            - monitoring
+            - local-path-storage
+            - grafana-alloy
+            # GKE-managed namespaces.
+            - gke-connect
+            - gke-gmp-system
+            - gke-managed-cim
+            - gke-managed-filestorecsi
+            - gke-managed-metrics-server
+            - gke-managed-system
+            - gke-system
+            - gke-managed-volumepopulator
+            # AKS-managed namespaces.
+            - gatekeeper-system
+            # The controller's own namespace — deadlock prevention.
+            - beyla-k8s-injector
