@@ -18,9 +18,12 @@ import (
 	"sync"
 
 	"go.opentelemetry.io/obi/pkg/appolly/services"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 )
+
+var regLog = logf.Log.WithName("registry")
 
 // Instrumentation is one selector ConfigMap's contribution to the registry:
 // the criteria that decide which pods to touch and the rest of the wire
@@ -125,9 +128,12 @@ func (r *Registry) Match(p PodInfo) (Instrumentation, bool) {
 	for k := range r.instruments {
 		keys = append(keys, k)
 	}
+
+	// Look up others
 	sort.Strings(keys)
 	for _, k := range keys {
 		inst := r.instruments[k]
+		regLog.Info("checking criteria", "key", k, "criteria", inst.Criteria)
 		for _, c := range inst.Criteria {
 			if criterionMatches(c, p) {
 				return inst, true

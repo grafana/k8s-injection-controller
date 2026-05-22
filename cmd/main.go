@@ -201,11 +201,13 @@ func main() {
 			setupLog.Error(err, "Failed to parse SDK config file", "path", configPath)
 			os.Exit(1)
 		}
-		podMutator = &webhookv1.PodMutator{Cfg: sdkConfig}
 		setupLog.Info("loaded SDK injection config", "path", configPath)
 	} else {
-		setupLog.Info("no --config provided; webhook will not mutate matched pods")
+		sdkConfig = config.SDKInject{}
+		setupLog.Info("no --config provided; webhook will wait for remotely provided injection configuration")
 	}
+
+	podMutator = &webhookv1.PodMutator{Cfg: sdkConfig}
 
 	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
 	if err != nil {
