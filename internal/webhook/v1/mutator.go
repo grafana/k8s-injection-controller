@@ -605,6 +605,7 @@ func (pm *PodMutator) CanInstrument(kind svc.InstrumentableType) bool {
 // by another tool: the operator's config file env var, or our annotation from a
 // previous webhook invocation.
 func AlreadyInstrumentedByOther(spec *corev1.PodSpec, meta *metav1.ObjectMeta) bool {
+	// TODO: check the package version
 	for i := range spec.Containers {
 		for _, env := range spec.Containers[i].Env {
 			if env.Name == envOtelInjectorConfigFileName {
@@ -613,6 +614,7 @@ func AlreadyInstrumentedByOther(spec *corev1.PodSpec, meta *metav1.ObjectMeta) b
 		}
 	}
 	if val, ok := meta.Annotations[InjectedAnnotation]; ok && val != "" {
+		// if val is not empty and package version does not match, return false for reinstrumentation
 		return true
 	}
 	return false

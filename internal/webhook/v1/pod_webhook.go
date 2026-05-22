@@ -77,18 +77,27 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 			"namespace", obj.Namespace, "name", obj.Name)
 		return nil
 	}
+	// TODO: CanInstrument
+	// It requires that beyla sends the language together with the definition criteria
+	// TODO: if it preloads an older version of the SDK, override
 	if PreloadsSomethingElse(obj) {
 		podlog.Info("skipping injection: pod has a conflicting LD_PRELOAD",
 			"namespace", obj.Namespace, "name", obj.Name)
 		return nil
 	}
 
-	d.Mutator.mountVolume(&obj.Spec)
+	// Per-request mutator with any per-ConfigMap overrides layered on top of
+	// the controller-wide SDK defaults. Mutator methods are pm.Cfg-driven, so
+	// a shallow copy is enough to scope the override.
+	mutator := *d.Mutator
+	mutator.Cfg = mutator.Cfg.WithConfigMapOverrides(inst.InjectConfig)
+
+	mutator.mountVolume(&obj.Spec)
 	for i := range obj.Spec.Containers {
-		d.Mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i], inst.OtelExport)
+		mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i], inst.InjectConfig.OtelExport)
 	}
 	for i := range obj.Spec.InitContainers {
-		d.Mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.InitContainers[i], inst.OtelExport)
+		mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.InitContainers[i], inst.InjectConfig.OtelExport)
 	}
 
 	if obj.Annotations == nil {

@@ -158,7 +158,7 @@ func parseConfigMap(data map[string]string) (registry.Instrumentation, []restart
 		if err := yaml.Unmarshal([]byte(raw), &cfg); err != nil {
 			return registry.Instrumentation{}, nil, fmt.Errorf("parse %s: %w", configmap.KeyInstrumentation, err)
 		}
-		inst.OtelExport = cfg.OtelExport
+		inst.InjectConfig = cfg
 		for _, ga := range cfg.Discovery {
 			crit := selectionCriterionFromGlob(&ga)
 			if crit.IsEmpty() {

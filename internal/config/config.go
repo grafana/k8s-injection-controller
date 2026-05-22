@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	bservices "github.com/grafana/beyla/v3/pkg/services"
+	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 	"go.opentelemetry.io/obi/pkg/appolly/services"
 )
 
@@ -109,4 +110,39 @@ type SDKResource struct {
 	//   - `app.kubernetes.io/name` becomes `service.name`
 	//   - `app.kubernetes.io/version` becomes `service.version`
 	UseLabelsForResourceAttributes bool `yaml:"useLabelsForResourceAttributes,omitempty" env:"BEYLA_RESOURCE_USE_LABELS_FOR_RESOURCE_ATTRIBUTES"`
+}
+
+// WithConfigMapOverrides returns a copy of s with any per-ConfigMap overrides
+// from cfg applied on top. Zero/nil fields on cfg are treated as "no override"
+// and leave the corresponding default in place.
+func (s SDKInject) WithConfigMapOverrides(cfg configmap.InjectConfig) SDKInject {
+	out := s
+	if cfg.ImageVolumePath != "" {
+		out.ImageVolumePath = cfg.ImageVolumePath
+	}
+	if cfg.DefaultSampler != nil {
+		out.DefaultSampler = cfg.DefaultSampler
+	}
+	if len(cfg.Propagators) > 0 {
+		out.Propagators = cfg.Propagators
+	}
+	if cfg.ExportedSignals.Traces != nil {
+		out.Export.Traces = cfg.ExportedSignals.Traces
+	}
+	if cfg.ExportedSignals.Metrics != nil {
+		out.Export.Metrics = cfg.ExportedSignals.Metrics
+	}
+	if cfg.ExportedSignals.Logs != nil {
+		out.Export.Logs = cfg.ExportedSignals.Logs
+	}
+	if r := cfg.Resources; r.Attributes != nil || r.AddK8sUIDAttributes ||
+		r.AddK8sIPAttribute || r.UseLabelsForResourceAttributes {
+		out.Resources = SDKResource{
+			Attributes:                     r.Attributes,
+			AddK8sUIDAttributes:            r.AddK8sUIDAttributes,
+			AddK8sIPAttribute:              r.AddK8sIPAttribute,
+			UseLabelsForResourceAttributes: r.UseLabelsForResourceAttributes,
+		}
+	}
+	return out
 }
