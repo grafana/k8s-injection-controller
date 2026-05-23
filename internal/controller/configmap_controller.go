@@ -20,9 +20,9 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -53,13 +53,44 @@ type restartCriterion struct {
 	Language  string `json:"language,omitempty"` // currently unused
 }
 
+const (
+	kindDeployment  = "Deployment"
+	kindDaemonSet   = "DaemonSet"
+	kindReplicaSet  = "ReplicaSet"
+	kindStatefulSet = "StatefulSet"
+)
+
 // restartKinds is the set of workload kinds we know how to match against a
 // pod's owner chain.
 var restartKinds = map[string]struct{}{
-	"Deployment":  {},
-	"ReplicaSet":  {},
-	"StatefulSet": {},
-	"DaemonSet":   {},
+	kindDeployment:  {},
+	kindReplicaSet:  {},
+	kindStatefulSet: {},
+	kindDaemonSet:   {},
+}
+
+// workloadKey uniquely identifies a rollout-capable workload within a reconcile
+// pass. Used as a map key to deduplicate: if ten pods in the same Deployment
+// all need re-injection, we patch the Deployment exactly once.
+type workloadKey struct {
+	Namespace string
+	Kind      string
+	Name      string
+}
+
+// resolveWorkload derives the workload to patch for the graceful rollout from a
+// pod's resolved owner info. Returns the zero value if no rollout-capable
+// workload can be determined (e.g. a standalone ReplicaSet with no Deployment
+// parent - those cannot be gracefully rolled).
+func resolveWorkload(info podinfoMatcher) workloadKey {
+	if info.DeploymentName != "" {
+		return workloadKey{Namespace: info.Namespace, Kind: kindDeployment, Name: info.DeploymentName}
+	}
+	switch info.OwnerKind {
+	case kindStatefulSet, kindDaemonSet:
+		return workloadKey{Namespace: info.Namespace, Kind: info.OwnerKind, Name: info.OwnerName}
+	}
+	return workloadKey{}
 }
 
 // protectedNamespaces is a hardcoded denylist of namespaces the eviction
@@ -124,8 +155,8 @@ type ConfigMapReconciler struct {
 
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
-// +kubebuilder:rbac:groups="",resources=pods/eviction,verbs=create
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets,verbs=patch
 
 func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
@@ -173,8 +204,8 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 		}
 	}
-	if err := r.evictMatching(ctx, restartTargets); err != nil {
-		logger.Error(err, "failed to evict pre-existing pods")
+	if err := r.rolloutMatching(ctx, restartTargets); err != nil {
+		logger.Error(err, "failed to trigger rollouts for pre-existing pods")
 	}
 
 	// We don't need to resweep, Beyla will notice we restarted and update the config map
@@ -274,12 +305,12 @@ func sortEligible(eligible []*configmap.EligibleDeployment) {
 	})
 }
 
-// evictMatching processes the restart targets from a single ConfigMap. For
+// rolloutMatching processes the restart targets from a single ConfigMap. For
 // each target it lists pods in target.Namespace and evicts those whose owner
 // chain matches target.Kind (and optionally target.Name) AND that match a
 // selection criterion in the registry — no point evicting pods the webhook
 // won't inject anyway. Bare pods are skipped (no controller to recreate them).
-func (r *ConfigMapReconciler) evictMatching(ctx context.Context, targets []restartCriterion) error {
+func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []restartCriterion) error {
 	logger := log.FromContext(ctx)
 
 	// One LIST per distinct namespace, regardless of how many entries name it.
@@ -288,11 +319,14 @@ func (r *ConfigMapReconciler) evictMatching(ctx context.Context, targets []resta
 		byNamespace[t.Namespace] = append(byNamespace[t.Namespace], t)
 	}
 
+	toRestart := map[workloadKey]struct{}{}
+
 	for namespace, nsTargets := range byNamespace {
 		if protectedNamespaces[namespace] {
 			logger.Info("skipping protected namespace", "namespace", namespace)
 			continue
 		}
+
 		var pods corev1.PodList
 		if err := r.List(ctx, &pods, client.InNamespace(namespace)); err != nil {
 			return fmt.Errorf("list pods in %s: %w", namespace, err)
@@ -325,22 +359,32 @@ func (r *ConfigMapReconciler) evictMatching(ctx context.Context, targets []resta
 			if webhookv1.PreloadsSomethingElse(pod) {
 				continue
 			}
-			eviction := &policyv1.Eviction{
-				ObjectMeta: metav1.ObjectMeta{Name: pod.Name, Namespace: pod.Namespace},
+			key := resolveWorkload(info)
+			if key == (workloadKey{}) {
+				logger.Info("skipping pod: owner is not a rollout capable workload", "namespace", pod.Namespace, "pod", pod.Name, "ownerKind", info.OwnerKind, "ownerName", info.OwnerName)
+				continue
 			}
-			err := r.Clientset.CoreV1().Pods(pod.Namespace).EvictV1(ctx, eviction)
-			switch {
-			case err == nil:
-				logger.Info("evicted pod for re-injection", "namespace", pod.Namespace, "pod", pod.Name)
-			case apierrors.IsNotFound(err):
-				// already gone
-			case apierrors.IsTooManyRequests(err):
-				// PDB blocked it; log and move on. The pod will be picked up
-				// by the webhook whenever it's eventually replaced.
-				logger.Info("eviction blocked by PDB; leaving pod in place", "namespace", pod.Namespace, "pod", pod.Name)
-			default:
-				logger.Error(err, "eviction failed", "namespace", pod.Namespace, "pod", pod.Name)
-			}
+			toRestart[key] = struct{}{}
+
+		}
+	}
+
+	restartTime := time.Now().Format(time.RFC3339)
+	patch := fmt.Sprintf(`{"spec":{"template":{"metadata":{"annotations":{"beyla.grafana.com/restartedAt":%q}}}}}`, restartTime)
+	for key := range toRestart {
+		var err error
+		switch key.Kind {
+		case kindDeployment:
+			_, err = r.Clientset.AppsV1().Deployments(key.Namespace).Patch(ctx, key.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
+		case kindStatefulSet:
+			_, err = r.Clientset.AppsV1().StatefulSets(key.Namespace).Patch(ctx, key.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
+		case kindDaemonSet:
+			_, err = r.Clientset.AppsV1().DaemonSets(key.Namespace).Patch(ctx, key.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
+		}
+		if err != nil {
+			logger.Error(err, "failed to patch workload for rollout", "namespace", key.Namespace, "pod", key.Name, "kind", key.Kind)
+		} else {
+			logger.Info("triggered roll out", "namespace", key.Namespace, "pod", key.Name, "kind", key.Kind)
 		}
 	}
 	return nil
@@ -364,7 +408,7 @@ type podinfoMatcher = registry.PodInfo
 
 func matchesTarget(info podinfoMatcher, t restartCriterion) bool {
 	switch t.Kind {
-	case "Deployment":
+	case kindDeployment:
 		// Pod is owned (transitively) by a Deployment when podinfo.Resolve
 		// populates DeploymentName via the RS chain — or directly, if the
 		// pod's controller ref is itself a Deployment.
@@ -372,7 +416,7 @@ func matchesTarget(info podinfoMatcher, t restartCriterion) bool {
 			return false
 		}
 		return t.Name == "" || t.Name == info.DeploymentName
-	case "ReplicaSet", "StatefulSet", "DaemonSet":
+	case kindReplicaSet, kindStatefulSet, kindDaemonSet:
 		if info.OwnerKind != t.Kind {
 			return false
 		}

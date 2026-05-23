@@ -22,11 +22,13 @@ rules:
   - list
   - watch
 - apiGroups:
-  - ""
+  - apps
   resources:
-  - pods/eviction
+  - daemonsets
+  - deployments
+  - statefulsets
   verbs:
-  - create
+  - patch
 - apiGroups:
   - apps
   resources:
