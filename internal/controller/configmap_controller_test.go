@@ -15,8 +15,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/apimachinery/pkg/types"
-
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -322,7 +320,7 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 			"discovery:\n  - k8s_namespace: "+ns+"\n",
 			"- namespace: "+ns+"\n  kind: Deployment\n  name: worker-5\n")
 
-		By("asserting the pod is NOT invidivudally evicted")
+		By("asserting the pod is NOT individually evicted")
 		expectKept(ns, "worker-5-001")
 
 		By("asserting the pod is annotated")
@@ -365,7 +363,7 @@ var _ = Describe("ConfigMap controller rollout sweep", func() {
 
 	It("patches the Deployment annotation", func() {
 		By("creating a deployment")
-		mkDeployment(ns, depName)
+		dep := mkDeployment(ns, depName)
 
 		By("creating a ReplicaSet owned by the Deployment")
 		ctrlTrue := true
@@ -376,8 +374,8 @@ var _ = Describe("ConfigMap controller rollout sweep", func() {
 				OwnerReferences: []metav1.OwnerReference{{
 					APIVersion: "apps/v1",
 					Kind:       "Deployment",
-					UID:        types.UID(depName),
-					Name:       depName,
+					UID:        dep.UID,
+					Name:       dep.Name,
 					Controller: &ctrlTrue,
 				}},
 			},

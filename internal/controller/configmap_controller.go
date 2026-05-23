@@ -13,6 +13,7 @@ package controller
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -371,6 +372,7 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 
 	restartTime := time.Now().Format(time.RFC3339)
 	patch := fmt.Sprintf(`{"spec":{"template":{"metadata":{"annotations":{"beyla.grafana.com/restartedAt":%q}}}}}`, restartTime)
+	var errs []error
 	for key := range toRestart {
 		var err error
 		switch key.Kind {
@@ -382,12 +384,13 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 			_, err = r.Clientset.AppsV1().DaemonSets(key.Namespace).Patch(ctx, key.Name, types.MergePatchType, []byte(patch), metav1.PatchOptions{})
 		}
 		if err != nil {
-			logger.Error(err, "failed to patch workload for rollout", "namespace", key.Namespace, "pod", key.Name, "kind", key.Kind)
+			logger.Error(err, "failed to patch workload for rollout", "namespace", key.Namespace, "name", key.Name, "kind", key.Kind)
+			errs = append(errs, fmt.Errorf("patch %s %s/%s: %w", key.Kind, key.Namespace, key.Name, err))
 		} else {
-			logger.Info("triggered roll out", "namespace", key.Namespace, "pod", key.Name, "kind", key.Kind)
+			logger.Info("triggered rollout", "namespace", key.Namespace, "name", key.Name, "kind", key.Kind)
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // matchesAnyTarget reports whether the pod's owner chain satisfies any of the
