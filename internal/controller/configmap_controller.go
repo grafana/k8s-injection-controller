@@ -41,6 +41,7 @@ import (
 	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 
 	"github.com/grafana/beyla-k8s-injector/internal/config"
+	"github.com/grafana/beyla-k8s-injector/internal/metrics"
 	"github.com/grafana/beyla-k8s-injector/internal/podinfo"
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 	webhookv1 "github.com/grafana/beyla-k8s-injector/internal/webhook/v1"
@@ -152,6 +153,8 @@ type ConfigMapReconciler struct {
 	// the version-skew check. Zero value means "no SDK config wired" — in
 	// that mode the webhook is a no-op and we skip evictions to avoid churn.
 	DefaultSDKConfig config.SDKInject
+	// Metrics records triggered rollouts. Optional; nil is a no-op.
+	Metrics *metrics.SDKInjectionMetrics
 }
 
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
@@ -388,6 +391,7 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 			errs = append(errs, fmt.Errorf("patch %s %s/%s: %w", key.Kind, key.Namespace, key.Name, err))
 		} else {
 			logger.Info("triggered rollout", "namespace", key.Namespace, "name", key.Name, "kind", key.Kind)
+			r.Metrics.RecordRestart(key.Namespace, key.Kind, key.Name)
 		}
 	}
 	return errors.Join(errs...)

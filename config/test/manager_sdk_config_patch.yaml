@@ -1,6 +1,10 @@
 # Mounts the generated beyla-sdk-config ConfigMap into the manager pod and
 # adds the --config flag. Strategic merge patch: the args list is replaced
-# wholesale, so the existing flags are repeated here.
+# wholesale, so the existing flags are repeated here — including the
+# --metrics-bind-address that config/default's JSON patch adds (it would
+# otherwise be dropped by this wholesale replacement). --metrics-secure=false
+# serves the injection metrics over plain HTTP so the demo's Alloy can scrape
+# :8443 without certs or a bearer token.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -11,6 +15,8 @@ spec:
       containers:
         - name: manager
           args:
+            - --metrics-bind-address=:8443
+            - --metrics-secure=false
             - --leader-elect
             - --health-probe-bind-address=:8081
             - --config=/etc/beyla-injector/sdk-inject.yaml

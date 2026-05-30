@@ -22,6 +22,14 @@ import (
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 )
 
+// RequestRecorder records the outcome of one admission request. It is
+// satisfied by *metrics.SDKInjectionMetrics; defined here as an interface so
+// the webhook package does not import the metrics package (which in turn
+// imports this one for pod classification). A nil recorder is a no-op.
+type RequestRecorder interface {
+	RecordRequest(namespace, workloadKind, workloadName, outcome string)
+}
+
 // InjectedAnnotation marks every pod we mutate. Its value is the SHA-224
 // digest returned by SDKInject.PackageVersion(), so a later admission can
 // tell whether the pod is already instrumented with the current SDK image
@@ -39,9 +47,9 @@ var podlog = logf.Log.WithName("pod-webhook")
 // targets a Deployment. mutator may be nil — in that case the webhook only
 // records a match log line and does not mutate (useful when no SDK config
 // has been provided).
-func SetupPodWebhookWithManager(mgr ctrl.Manager, reg *registry.Registry, reader client.Reader, mutator *PodMutator) error {
+func SetupPodWebhookWithManager(mgr ctrl.Manager, reg *registry.Registry, reader client.Reader, mutator *PodMutator, recorder RequestRecorder) error {
 	return ctrl.NewWebhookManagedBy(mgr, &corev1.Pod{}).
-		WithDefaulter(&PodCustomDefaulter{Registry: reg, Reader: reader, Mutator: mutator}).
+		WithDefaulter(&PodCustomDefaulter{Registry: reg, Reader: reader, Mutator: mutator, Metrics: recorder}).
 		Complete()
 }
 
@@ -60,6 +68,16 @@ type PodCustomDefaulter struct {
 	// Mutator is nil when the operator runs without an SDK config; in that
 	// mode the webhook is a no-op even for matching pods.
 	Mutator *PodMutator
+	// Metrics records admission outcomes. Optional; nil is a no-op.
+	Metrics RequestRecorder
+}
+
+func (d *PodCustomDefaulter) recordOutcome(info registry.PodInfo, outcome string) {
+	if d.Metrics == nil {
+		return
+	}
+	kind, name := podinfo.Workload(info)
+	d.Metrics.RecordRequest(info.Namespace, kind, name, outcome)
 }
 
 func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error {
@@ -68,6 +86,7 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	inst, ok := d.Registry.Match(info)
 	if !ok {
 		podlog.Info("no criterion matched; skipping", "namespace", obj.Namespace, "name", obj.Name)
+		d.recordOutcome(info, "no_matching_selector")
 		return nil
 	}
 
@@ -83,6 +102,7 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	if mutator.Cfg.ImageVolumePath == "" {
 		podlog.Info("pod matches but no SDK config loaded; skipping injection",
 			"namespace", obj.Namespace, "name", obj.Name)
+		d.recordOutcome(info, "no_sdk_config")
 		return nil
 	}
 
@@ -91,11 +111,13 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	if AlreadyInstrumented(&obj.Spec, &obj.ObjectMeta, wantVersion) {
 		podlog.Info("already instrumented at current SDK version; skipping",
 			"namespace", obj.Namespace, "name", obj.Name, "version", wantVersion)
+		d.recordOutcome(info, "already_instrumented")
 		return nil
 	}
 	if PreloadsSomethingElse(obj) {
 		podlog.Info("skipping injection: pod has a conflicting LD_PRELOAD",
 			"namespace", obj.Namespace, "name", obj.Name)
+		d.recordOutcome(info, "ld_preload_conflict")
 		return nil
 	}
 
@@ -113,5 +135,6 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	obj.Annotations[InjectedAnnotation] = wantVersion
 
 	podlog.Info("instrumented pod", "namespace", obj.Namespace, "name", obj.Name)
+	d.recordOutcome(info, "success")
 	return nil
 }
