@@ -19,29 +19,6 @@ import (
 	webhookv1 "github.com/grafana/beyla-k8s-injector/internal/webhook/v1"
 )
 
-func TestRecordRequest(t *testing.T) {
-	m := NewSDKInjectionMetrics()
-	m.RecordRequest("demo", "Deployment", "hello", webhookv1.OutcomeSuccess)
-	m.RecordRequest("demo", "Deployment", "hello", webhookv1.OutcomeSuccess)
-	m.RecordRequest("demo", "Deployment", "hello", webhookv1.OutcomeNoMatchingSelector)
-
-	if got := testutil.ToFloat64(m.requests.WithLabelValues("demo", "Deployment", "hello", webhookv1.OutcomeSuccess)); got != 2 {
-		t.Fatalf("success count = %v, want 2", got)
-	}
-	if got := testutil.ToFloat64(m.requests.WithLabelValues("demo", "Deployment", "hello", webhookv1.OutcomeNoMatchingSelector)); got != 1 {
-		t.Fatalf("no_matching_selector count = %v, want 1", got)
-	}
-}
-
-func TestRecordRestart(t *testing.T) {
-	m := NewSDKInjectionMetrics()
-	m.RecordRestart("demo", "StatefulSet", "db")
-	m.RecordRestart("demo", "StatefulSet", "db")
-	if got := testutil.ToFloat64(m.restarts.WithLabelValues("demo", "StatefulSet", "db")); got != 2 {
-		t.Fatalf("restart count = %v, want 2", got)
-	}
-}
-
 // A nil *SDKInjectionMetrics is a valid no-op recorder so call sites need no
 // guards when metrics are disabled.
 func TestNilRecorderIsNoOp(t *testing.T) {

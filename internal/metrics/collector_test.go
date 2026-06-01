@@ -147,36 +147,32 @@ func TestCollectAggregatesAndExcludesSystemNamespaces(t *testing.T) {
 		t.Fatalf("gather: %v", err)
 	}
 
-	var family *struct {
-		series int
-		value  float64
-	}
+	var found bool
+	var series int
+	var value float64
 	for _, mf := range mfs {
 		if mf.GetName() != "beyla_injection_pods" {
 			continue
 		}
-		family = &struct {
-			series int
-			value  float64
-		}{}
+		found = true
 		for _, m := range mf.Metric {
-			family.series++
+			series++
 			// every emitted series must be in the demo namespace (system excluded)
 			for _, l := range m.Label {
 				if l.GetName() == "k8s_namespace_name" && l.GetValue() != "demo" {
 					t.Fatalf("unexpected namespace in series: %q", l.GetValue())
 				}
 			}
-			family.value = m.GetGauge().GetValue()
+			value = m.GetGauge().GetValue()
 		}
 	}
-	if family == nil {
+	if !found {
 		t.Fatal("beyla_injection_pods family not found")
 	}
-	if family.series != 1 {
-		t.Fatalf("series = %d, want 1 (the two demo pods aggregate into one)", family.series)
+	if series != 1 {
+		t.Fatalf("series = %d, want 1 (the two demo pods aggregate into one)", series)
 	}
-	if family.value != 2 {
-		t.Fatalf("gauge value = %v, want 2", family.value)
+	if value != 2 {
+		t.Fatalf("gauge value = %v, want 2", value)
 	}
 }

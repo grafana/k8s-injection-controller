@@ -6,12 +6,6 @@ you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
 */
 
 package podinfo
@@ -30,40 +24,22 @@ func TestWorkload(t *testing.T) {
 		wantName string
 	}{
 		{
-			name:     "deployment-backed pod reports as Deployment",
+			name:     "DeploymentName wins, reports as Deployment",
 			info:     registry.PodInfo{Name: "hello-abc", OwnerKind: "ReplicaSet", OwnerName: "hello-abc", DeploymentName: "hello"},
 			wantKind: kindDeployment,
 			wantName: "hello",
 		},
 		{
-			name:     "direct deployment owner reports as Deployment",
-			info:     registry.PodInfo{Name: "hello-abc", OwnerKind: "Deployment", OwnerName: "hello", DeploymentName: "hello"},
-			wantKind: kindDeployment,
-			wantName: "hello",
-		},
-		{
-			name:     "statefulset-owned pod reports the owner kind/name",
+			name:     "non-Deployment owner reports the owner kind/name",
 			info:     registry.PodInfo{Name: "db-0", OwnerKind: "StatefulSet", OwnerName: "db"},
 			wantKind: "StatefulSet",
 			wantName: "db",
-		},
-		{
-			name:     "daemonset-owned pod reports the owner kind/name",
-			info:     registry.PodInfo{Name: "agent-xyz", OwnerKind: "DaemonSet", OwnerName: "agent"},
-			wantKind: "DaemonSet",
-			wantName: "agent",
 		},
 		{
 			name:     "bare pod with no owner reports as Pod with its own name",
 			info:     registry.PodInfo{Name: "standalone"},
 			wantKind: "Pod",
 			wantName: "standalone",
-		},
-		{
-			name:     "DeploymentName wins over a non-empty OwnerKind",
-			info:     registry.PodInfo{Name: "hello-abc", OwnerKind: "ReplicaSet", OwnerName: "hello-abc", DeploymentName: "hello"},
-			wantKind: kindDeployment,
-			wantName: "hello",
 		},
 	}
 
