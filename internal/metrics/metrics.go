@@ -8,46 +8,13 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Package metrics exposes Prometheus metrics describing SDK injection activity.
-//
-// It re-homes the three metrics originally added on beyla's injection-metrics
-// branch into this controller's structure. All metrics keep their beyla_*
-// names for continuity with existing dashboards and the Instrumentation Hub.
-// They register on controller-runtime's global registry, so they are served on
-// the manager's --metrics-bind-address endpoint and scraped by the existing
-// ServiceMonitor — no separate exporter or HTTP server.
-//
-//   - beyla_sdk_injection_requests_total  (CounterVec) — webhook admission
-//     outcomes, recorded inline by the pod webhook.
-//   - beyla_sdk_injection_restarts_total  (CounterVec) — workload rollouts the
-//     controller triggers, recorded inline by the ConfigMap reconciler.
-//   - beyla_injection_pods                (Gauge via PodStateCollector) — the
-//     current cluster-wide instrumentation state, computed at scrape time.
-//
-// beyla's counters also carried a "language" label; this codebase has no
-// per-pod language signal (injection is language-agnostic), so that label is
-// dropped rather than emitted permanently empty.
 package metrics
 
 import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// metricPrefix is beyla's vendor prefix, kept verbatim so the metric names
-// match the original injection-metrics branch.
 const metricPrefix = "beyla"
-
-// Outcome constants for beyla_sdk_injection_requests_total. Only the values
-// reachable in this codebase's admission path are defined; beyla's
-// patch-generation outcomes do not apply because the controller-runtime
-// defaulter mutates the pod in place rather than building a JSON patch.
-const (
-	OutcomeSuccess             = "success"
-	OutcomeNoMatchingSelector  = "no_matching_selector"
-	OutcomeNoSDKConfig         = "no_sdk_config"
-	OutcomeAlreadyInstrumented = "already_instrumented"
-	OutcomeLDPreloadConflict   = "ld_preload_conflict"
-)
 
 // SDKInjectionMetrics holds the injection event counters.
 type SDKInjectionMetrics struct {

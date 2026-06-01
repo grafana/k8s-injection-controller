@@ -32,14 +32,11 @@ const (
 	StatusUnmatched      = "unmatched"
 )
 
-// Skip reasons for the skip_reason label (set only when status=skipped).
-// SkipReasonAlreadyInstrumented is part of the metric's documented label
-// vocabulary; this codebase's helpers surface our own annotation as
-// "instrumented", so in practice only conflict is emitted today.
-const (
-	SkipReasonConflict            = "conflict"
-	SkipReasonAlreadyInstrumented = "already_instrumented"
-)
+// SkipReasonConflict is the skip_reason label value set when status=skipped
+// because the pod carries a foreign LD_PRELOAD. It is the only skip reason the
+// state gauge emits: an already-instrumented pod is reported as its own
+// status=instrumented, not as a skip.
+const SkipReasonConflict = "conflict"
 
 // systemNamespaces are excluded from state metrics regardless of selector
 // scope, matching beyla's state collector.
@@ -52,10 +49,7 @@ var systemNamespaces = map[string]bool{
 var collectorLog = logf.Log.WithName("metrics-collector")
 
 // PodStateCollector is a prometheus.Collector that, on each scrape, lists pods
-// from the manager cache and classifies each into an injection state, emitting
-// beyla_injection_pods as a gauge aggregated by label tuple. Computing at
-// scrape time means stale series disappear automatically when workloads are
-// deleted — no sync-gauge bookkeeping required.
+// from the manager cache and classifies each into an injection state.
 type PodStateCollector struct {
 	reader client.Reader
 	reg    *registry.Registry

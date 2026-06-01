@@ -9,18 +9,20 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+
+	webhookv1 "github.com/grafana/beyla-k8s-injector/internal/webhook/v1"
 )
 
 func TestRecordRequest(t *testing.T) {
 	m := NewSDKInjectionMetrics()
-	m.RecordRequest("demo", "Deployment", "hello", OutcomeSuccess)
-	m.RecordRequest("demo", "Deployment", "hello", OutcomeSuccess)
-	m.RecordRequest("demo", "Deployment", "hello", OutcomeNoMatchingSelector)
+	m.RecordRequest("demo", "Deployment", "hello", webhookv1.OutcomeSuccess)
+	m.RecordRequest("demo", "Deployment", "hello", webhookv1.OutcomeSuccess)
+	m.RecordRequest("demo", "Deployment", "hello", webhookv1.OutcomeNoMatchingSelector)
 
-	if got := testutil.ToFloat64(m.requests.WithLabelValues("demo", "Deployment", "hello", OutcomeSuccess)); got != 2 {
+	if got := testutil.ToFloat64(m.requests.WithLabelValues("demo", "Deployment", "hello", webhookv1.OutcomeSuccess)); got != 2 {
 		t.Fatalf("success count = %v, want 2", got)
 	}
-	if got := testutil.ToFloat64(m.requests.WithLabelValues("demo", "Deployment", "hello", OutcomeNoMatchingSelector)); got != 1 {
+	if got := testutil.ToFloat64(m.requests.WithLabelValues("demo", "Deployment", "hello", webhookv1.OutcomeNoMatchingSelector)); got != 1 {
 		t.Fatalf("no_matching_selector count = %v, want 1", got)
 	}
 }
@@ -38,7 +40,7 @@ func TestRecordRestart(t *testing.T) {
 // guards when metrics are disabled.
 func TestNilRecorderIsNoOp(t *testing.T) {
 	var m *SDKInjectionMetrics
-	m.RecordRequest("demo", "Deployment", "hello", OutcomeSuccess)
+	m.RecordRequest("demo", "Deployment", "hello", webhookv1.OutcomeSuccess)
 	m.RecordRestart("demo", "Deployment", "hello")
 }
 
@@ -46,7 +48,7 @@ func TestMustRegister(t *testing.T) {
 	m := NewSDKInjectionMetrics()
 	reg := prometheus.NewRegistry()
 	m.MustRegister(reg)
-	m.RecordRequest("demo", "Deployment", "hello", OutcomeSuccess)
+	m.RecordRequest("demo", "Deployment", "hello", webhookv1.OutcomeSuccess)
 
 	count, err := testutil.GatherAndCount(reg, "beyla_sdk_injection_requests_total")
 	if err != nil {

@@ -30,6 +30,18 @@ type RequestRecorder interface {
 	RecordRequest(namespace, workloadKind, workloadName, outcome string)
 }
 
+// Outcome constants are the values the webhook passes as the outcome label of
+// beyla_sdk_injection_requests_total. They live here, with the producing
+// Default branches, rather than in the metrics package: metrics imports this
+// package for pod classification, so the dependency cannot run the other way.
+const (
+	OutcomeSuccess             = "success"
+	OutcomeNoMatchingSelector  = "no_matching_selector"
+	OutcomeNoSDKConfig         = "no_sdk_config"
+	OutcomeAlreadyInstrumented = "already_instrumented"
+	OutcomeLDPreloadConflict   = "ld_preload_conflict"
+)
+
 // InjectedAnnotation marks every pod we mutate. Its value is the SHA-224
 // digest returned by SDKInject.PackageVersion(), so a later admission can
 // tell whether the pod is already instrumented with the current SDK image
@@ -86,7 +98,7 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	inst, ok := d.Registry.Match(info)
 	if !ok {
 		podlog.Info("no criterion matched; skipping", "namespace", obj.Namespace, "name", obj.Name)
-		d.recordOutcome(info, "no_matching_selector")
+		d.recordOutcome(info, OutcomeNoMatchingSelector)
 		return nil
 	}
 
@@ -102,7 +114,7 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	if mutator.Cfg.ImageVolumePath == "" {
 		podlog.Info("pod matches but no SDK config loaded; skipping injection",
 			"namespace", obj.Namespace, "name", obj.Name)
-		d.recordOutcome(info, "no_sdk_config")
+		d.recordOutcome(info, OutcomeNoSDKConfig)
 		return nil
 	}
 
@@ -111,13 +123,13 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	if AlreadyInstrumented(&obj.Spec, &obj.ObjectMeta, wantVersion) {
 		podlog.Info("already instrumented at current SDK version; skipping",
 			"namespace", obj.Namespace, "name", obj.Name, "version", wantVersion)
-		d.recordOutcome(info, "already_instrumented")
+		d.recordOutcome(info, OutcomeAlreadyInstrumented)
 		return nil
 	}
 	if PreloadsSomethingElse(obj) {
 		podlog.Info("skipping injection: pod has a conflicting LD_PRELOAD",
 			"namespace", obj.Namespace, "name", obj.Name)
-		d.recordOutcome(info, "ld_preload_conflict")
+		d.recordOutcome(info, OutcomeLDPreloadConflict)
 		return nil
 	}
 
@@ -135,6 +147,6 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	obj.Annotations[InjectedAnnotation] = wantVersion
 
 	podlog.Info("instrumented pod", "namespace", obj.Namespace, "name", obj.Name)
-	d.recordOutcome(info, "success")
+	d.recordOutcome(info, OutcomeSuccess)
 	return nil
 }
