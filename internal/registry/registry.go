@@ -55,6 +55,14 @@ type SelectionCriterion struct {
 	// the resolved Deployment name reached via the RS chain. Combinable with
 	// the typed fields above (AND).
 	K8sOwnerName *services.GlobAttr `json:"k8s_owner_name,omitempty"`
+	// K8sPodLabels / K8sPodAnnotations narrow a criterion to pods carrying
+	// specific labels / annotations. Each map entry is an AND requirement: the
+	// pod must have the key and its value must match the glob. A missing key is
+	// a non-match. These come from Beyla's k8s_pod_labels / k8s_pod_annotations
+	// discovery clauses, which (unlike open_ports / exe_path) are visible on the
+	// admission Pod object and so can be enforced at admission time.
+	K8sPodLabels      map[string]*services.GlobAttr `json:"k8s_pod_labels,omitempty"`
+	K8sPodAnnotations map[string]*services.GlobAttr `json:"k8s_pod_annotations,omitempty"`
 }
 
 // IsEmpty reports whether no field is populated. An empty criterion would
@@ -67,7 +75,9 @@ func (c SelectionCriterion) IsEmpty() bool {
 		c.K8sReplicaSetName == nil &&
 		c.K8sStatefulSetName == nil &&
 		c.K8sDaemonSetName == nil &&
-		c.K8sOwnerName == nil
+		c.K8sOwnerName == nil &&
+		len(c.K8sPodLabels) == 0 &&
+		len(c.K8sPodAnnotations) == 0
 }
 
 // PodInfo is the projection of a Pod that Match consumes. The caller is
@@ -84,6 +94,11 @@ type PodInfo struct {
 	// DeploymentName is set if the pod's RS owner is itself owned by a
 	// Deployment (or if the pod is directly owned by a Deployment).
 	DeploymentName string
+	// Labels / Annotations are the pod's metadata, consumed by criteria that
+	// carry K8sPodLabels / K8sPodAnnotations requirements. Nil is treated as an
+	// empty map (any label/annotation requirement misses).
+	Labels      map[string]string
+	Annotations map[string]string
 }
 
 // Registry is safe for concurrent use.
@@ -167,8 +182,31 @@ func criterionMatches(c SelectionCriterion, p PodInfo) bool {
 	if c.K8sOwnerName != nil && !ownerNameMatches(c.K8sOwnerName, p) {
 		return false
 	}
+	if !mapMatches(c.K8sPodLabels, p.Labels) {
+		return false
+	}
+	if !mapMatches(c.K8sPodAnnotations, p.Annotations) {
+		return false
+	}
 	// An entirely empty criterion (no field set) matches every pod by design;
 	// callers are expected to validate at parse time if they want to forbid that.
+	return true
+}
+
+// mapMatches reports whether every required key in want is present in have
+// with a value matching the required glob (AND semantics). A nil glob entry is
+// skipped. An empty/nil want matches everything; a missing key in have is a
+// non-match.
+func mapMatches(want map[string]*services.GlobAttr, have map[string]string) bool {
+	for key, g := range want {
+		if g == nil {
+			continue
+		}
+		v, ok := have[key]
+		if !ok || !g.MatchString(v) {
+			return false
+		}
+	}
 	return true
 }
 

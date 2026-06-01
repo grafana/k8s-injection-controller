@@ -230,6 +230,42 @@ var _ = Describe("Pod Webhook", func() {
 			Expect(obj.Spec.Volumes).To(HaveLen(1))
 		})
 	})
+
+	Context("When the matched criterion is narrowed by a pod label", func() {
+		// Re-register the CM so the namespace criterion ALSO requires an
+		// inject=true label, exercising the K8sPodLabels match path.
+		BeforeEach(func() {
+			ns := services.NewGlob(testNamespace)
+			injectTrue := services.NewGlob("true")
+			defaulter.Registry.Set("test-cm", registry.Instrumentation{
+				Criteria: []registry.SelectionCriterion{{
+					K8sNamespace: &ns,
+					K8sPodLabels: map[string]*services.GlobAttr{"inject": &injectTrue},
+				}},
+				InjectConfig: configmap.InjectConfig{
+					OtelExport: configmap.OtelExport{
+						Endpoint: "http://otel-collector:4318",
+						Protocol: "http/protobuf",
+					},
+				},
+			})
+		})
+
+		It("Should NOT mutate a pod missing the inject label", func() {
+			// No inject label, so the criterion must miss and the webhook must
+			// leave the pod untouched.
+			before := obj.DeepCopy()
+			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
+			Expect(obj).To(Equal(before))
+		})
+
+		It("Should mutate a pod carrying inject=true", func() {
+			obj.Labels = map[string]string{"inject": "true"}
+			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
+			Expect(obj.Annotations).To(HaveKeyWithValue(InjectedAnnotation, defaulter.Mutator.Cfg.PackageVersion()))
+			Expect(obj.Spec.Volumes).To(HaveLen(1))
+		})
+	})
 })
 
 func envNames(env []corev1.EnvVar) []string {
