@@ -31,9 +31,8 @@ type RequestRecorder interface {
 }
 
 // Outcome constants are the values the webhook passes as the outcome label of
-// beyla_sdk_injection_requests_total. They live here, with the producing
-// Default branches, rather than in the metrics package: metrics imports this
-// package for pod classification, so the dependency cannot run the other way.
+// beyla_sdk_injection_requests_total. They live here rather than in the
+// metrics package because metrics imports this package for pod classification
 const (
 	OutcomeSuccess             = "success"
 	OutcomeNoMatchingSelector  = "no_matching_selector"
