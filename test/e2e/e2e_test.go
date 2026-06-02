@@ -566,5 +566,5 @@ data:
     - namespace: %[2]s
       kind: Deployment
       name: %[3]s
-`, cmName, targetNS, deployment, discoveryNS, image)
+`, cmName, targetNS, deployment, discoveryNS, imageVersion, imageRoot)
 }
