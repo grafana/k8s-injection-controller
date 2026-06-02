@@ -5,7 +5,7 @@
 This is a Kubebuilder project that injects **Grafana Beyla / OpenTelemetry SDK
 auto-instrumentation** into application pods at admission time.
 
-**This project defines no CRDs of its own.** `api/` is empty; `PROJECT` declares only an
+**This project defines no CRDs of its own.** There is no `api/` directory in this repo; `PROJECT` declares only an
 *external* `core/Pod` resource with a defaulting webhook. Selection/configuration comes from
 Beyla-managed ConfigMaps (reusing `github.com/grafana/beyla/v3` and `go.opentelemetry.io/obi`
 types), not from custom resources. So the CRD-centric guidance further down (creating
@@ -21,13 +21,14 @@ Two components, both registered in `cmd/main.go`:
    hit `PodMutator` (`mutator.go`) mounts an OCI **`ImageVolumeSource`** (requires k8s 1.31+)
    and instruments each container. It stamps the `beyla.grafana.com/inject` annotation with the
    SHA-224 of the image ref so a later admission can detect version skew and skip / re-inject.
-   The mutator is nil-safe: with no SDK config loaded the webhook selects but does not mutate.
+If no SDK config is loaded (`ImageVolumePath` empty), the webhook selects but does not mutate.
 
 2. **ConfigMap controller** — `internal/controller/configmap_controller.go`. Watches
    ConfigMaps carrying Beyla's `configmap.SelectorAnnotation`, parses `instrumentation.yaml`
    (selection criteria + OTLP/SDK config) and `eligible_for_restart.yaml`, and keeps
-   `registry.Registry` in sync. When a CM lists restart-eligible workloads it gracefully rolls
-   out / evicts pre-existing matching pods so they get re-admitted and instrumented — gated on
+   `registry.Registry` in sync. When a CM lists restart-eligible workloads it patches the
+   owning Deployment/StatefulSet/DaemonSet Pod template (annotation `beyla.grafana.com/restartedAt`)
+   to trigger a rollout so matching pods get re-admitted and instrumented — gated on
    webhook readiness + Service routability, and guarded by a hardcoded protected-namespace
    denylist.
 
