@@ -270,10 +270,12 @@ func parseConfigMap(data map[string]string) (registry.Instrumentation, []restart
 
 // selectionCriterionFromGlob projects one obi GlobAttributes entry onto the
 // injector's match schema. We read the well-known k8s_* metadata keys
-// (carried via the inline Metadata map on the obi side) and ignore
-// everything else — obi's open_ports, exe_path, etc. are runtime gates
-// Beyla applies on the agent side, not admission-time gates we can apply
-// to a Pod spec.
+// (carried via the inline Metadata map on the obi side) plus the
+// k8s_pod_labels / k8s_pod_annotations maps (carried in dedicated fields, not
+// the inline map), and ignore everything else — obi's open_ports, exe_path,
+// etc. are runtime gates Beyla applies on the agent side, not admission-time
+// gates we can apply to a Pod spec. Pod labels and annotations, by contrast,
+// ARE on the admission Pod object, so we enforce them.
 func selectionCriterionFromGlob(ga *configmap.WebhookKubeOnlySelector) registry.SelectionCriterion {
 	get := func(key string) *services.GlobAttr {
 		g, ok := ga.Metadata[key]
@@ -290,7 +292,26 @@ func selectionCriterionFromGlob(ga *configmap.WebhookKubeOnlySelector) registry.
 		K8sStatefulSetName: get("k8s_statefulset_name"),
 		K8sDaemonSetName:   get("k8s_daemonset_name"),
 		K8sOwnerName:       get("k8s_owner_name"),
+		K8sPodLabels:       globMap(ga.PodLabels),
+		K8sPodAnnotations:  globMap(ga.PodAnnotations),
 	}
+}
+
+// globMap copies the non-empty glob entries out of an obi pod-label /
+// pod-annotation map. Returns nil when nothing is set so an unconfigured clause
+// leaves the criterion field empty (and IsEmpty stays accurate).
+func globMap(in map[string]*services.GlobAttr) map[string]*services.GlobAttr {
+	var out map[string]*services.GlobAttr
+	for k, g := range in {
+		if g == nil || !g.IsSet() {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]*services.GlobAttr, len(in))
+		}
+		out[k] = g
+	}
+	return out
 }
 
 // sortEligible orders the deserialized list by (Namespace, Name) so the
@@ -307,10 +328,20 @@ func sortEligible(eligible []*configmap.EligibleDeployment) {
 }
 
 // rolloutMatching processes the restart targets from a single ConfigMap. For
-// each target it lists pods in target.Namespace and evicts those whose owner
-// chain matches target.Kind (and optionally target.Name) AND that match a
-// selection criterion in the registry — no point evicting pods the webhook
-// won't inject anyway. Bare pods are skipped (no controller to recreate them).
+// each target it lists pods in target.Namespace whose owner chain matches
+// target.Kind (and optionally target.Name) and decides, per pod, whether the
+// owning workload needs a rollout:
+//
+//   - Instrument: the pod matches a selection criterion but is not yet
+//     instrumented at the current SDK version — restart so the webhook injects
+//     on recreation. Pods the webhook would not mutate (no SDK config, foreign
+//     LD_PRELOAD) are skipped.
+//   - Uninstrument: the pod matches no criterion but is currently instrumented
+//     — restart so the webhook re-admits it, finds no match, and leaves it
+//     clean, removing the instrumentation.
+//
+// A pod that neither matches nor is instrumented needs no action. Bare pods are
+// skipped (no controller to recreate them).
 func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []restartCriterion) error {
 	logger := log.FromContext(ctx)
 
@@ -346,19 +377,29 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 			}
 			inst, ok := r.Registry.Match(info)
 			if !ok {
-				continue
-			}
-			effective := r.DefaultSDKConfig.WithConfigMapOverrides(inst.InjectConfig)
-			if effective.ImageVersion == "" {
-				// No SDK config in the default or in the CM override: the
-				// webhook would not mutate, so evicting accomplishes nothing.
-				continue
-			}
-			if webhookv1.AlreadyInstrumented(&pod.Spec, &pod.ObjectMeta, effective.PackageVersion()) {
-				continue
-			}
-			if webhookv1.PreloadsSomethingElse(pod) {
-				continue
+				// Pod no longer matches any selection criterion. If it is
+				// currently instrumented, restart its workload so the webhook
+				// re-admits it, finds no match, and drops the instrumentation.
+				// An un-instrumented non-matching pod needs no action.
+				if !webhookv1.IsInstrumented(&pod.Spec, &pod.ObjectMeta) {
+					continue
+				}
+				logger.Info("pod no longer matches selection criteria; scheduling rollout to remove instrumentation",
+					"namespace", pod.Namespace, "pod", pod.Name)
+			} else {
+				// Pod matches: this is the (re-)instrumentation path.
+				effective := r.DefaultSDKConfig.WithConfigMapOverrides(inst.InjectConfig)
+				if effective.ImageVersion == "" {
+					// No SDK config in the default or in the CM override: the
+					// webhook would not mutate, so evicting accomplishes nothing.
+					continue
+				}
+				if webhookv1.AlreadyInstrumented(&pod.Spec, &pod.ObjectMeta, effective.PackageVersion()) {
+					continue
+				}
+				if webhookv1.PreloadsSomethingElse(pod) {
+					continue
+				}
 			}
 			key := resolveWorkload(info)
 			if key == (workloadKey{}) {

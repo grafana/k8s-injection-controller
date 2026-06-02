@@ -231,6 +231,88 @@ var _ = Describe("Pod Webhook", func() {
 			Expect(obj.Spec.Volumes).To(HaveLen(1))
 		})
 	})
+
+	Context("When the matched criterion is narrowed by a pod label", func() {
+		// Re-register the CM so the namespace criterion ALSO requires an
+		// inject=true label, exercising the K8sPodLabels match path.
+		BeforeEach(func() {
+			ns := services.NewGlob(testNamespace)
+			injectTrue := services.NewGlob("true")
+			defaulter.Registry.Set("test-cm", registry.Instrumentation{
+				Criteria: []registry.SelectionCriterion{{
+					K8sNamespace: &ns,
+					K8sPodLabels: map[string]*services.GlobAttr{"inject": &injectTrue},
+				}},
+				InjectConfig: configmap.InjectConfig{
+					OtelExport: configmap.OtelExport{
+						Endpoint: "http://otel-collector:4318",
+						Protocol: "http/protobuf",
+					},
+				},
+			})
+		})
+
+		It("Should NOT mutate a pod missing the inject label", func() {
+			// No inject label, so the criterion must miss and the webhook must
+			// leave the pod untouched.
+			before := obj.DeepCopy()
+			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
+			Expect(obj).To(Equal(before))
+		})
+
+		It("Should mutate a pod carrying inject=true", func() {
+			obj.Labels = map[string]string{"inject": "true"}
+			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
+			Expect(obj.Annotations).To(HaveKeyWithValue(InjectedAnnotation, defaulter.Mutator.Cfg.PackageVersion()))
+			Expect(obj.Spec.Volumes).To(HaveLen(1))
+		})
+	})
+})
+
+var _ = Describe("IsInstrumented", func() {
+	It("is false for a clean pod", func() {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Image: "nginx"}},
+		}}
+		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeFalse())
+	})
+
+	It("is true when the inject annotation is present, regardless of version", func() {
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{InjectedAnnotation: "any-stale-or-current-digest"},
+		}}
+		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeTrue())
+	})
+
+	It("ignores an empty annotation value", func() {
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{InjectedAnnotation: ""},
+		}}
+		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeFalse())
+	})
+
+	It("is true when a container carries the SDK version env var", func() {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name:  "app",
+				Image: "nginx",
+				Env:   []corev1.EnvVar{{Name: envVarSDKVersion, Value: "some-digest"}},
+			}},
+		}}
+		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeTrue())
+	})
+
+	It("is true when only an init container carries the SDK version env var", func() {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{
+			InitContainers: []corev1.Container{{
+				Name:  "init",
+				Image: "busybox",
+				Env:   []corev1.EnvVar{{Name: envVarSDKVersion, Value: "some-digest"}},
+			}},
+			Containers: []corev1.Container{{Name: "app", Image: "nginx"}},
+		}}
+		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeTrue())
+	})
 })
 
 func envNames(env []corev1.EnvVar) []string {

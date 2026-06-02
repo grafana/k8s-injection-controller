@@ -621,20 +621,47 @@ func AlreadyInstrumented(spec *corev1.PodSpec, meta *metav1.ObjectMeta, wantVers
 		return val == wantVersion
 	}
 	for i := range spec.Containers {
-		if v, ok := findEnvVarValue(&spec.Containers[i], envVarSDKVersion); ok && v != "" {
+		if v, ok := sdkVersionEnvValue(&spec.Containers[i]); ok && v != "" {
 			return v == wantVersion
 		}
 	}
 	for i := range spec.InitContainers {
-		if v, ok := findEnvVarValue(&spec.InitContainers[i], envVarSDKVersion); ok && v != "" {
+		if v, ok := sdkVersionEnvValue(&spec.InitContainers[i]); ok && v != "" {
 			return v == wantVersion
 		}
 	}
 	return false
 }
 
-func findEnvVarValue(c *corev1.Container, name string) (string, bool) {
-	pos, ok := findEnvVar(c, name)
+// IsInstrumented reports whether the pod currently carries our instrumentation
+// at *any* SDK version. Unlike AlreadyInstrumented — which compares against a
+// specific wanted version to decide whether to (re-)inject — this is the signal
+// the controller uses to decide whether a pod that no longer matches any
+// selection criterion must be restarted to *remove* its instrumentation. We
+// treat the in-pod state as the truth, checking both our annotation and the
+// SDK-version env we stamp onto every instrumented container.
+func IsInstrumented(spec *corev1.PodSpec, meta *metav1.ObjectMeta) bool {
+	if val, ok := meta.Annotations[InjectedAnnotation]; ok && val != "" {
+		return true
+	}
+	for i := range spec.Containers {
+		if v, ok := sdkVersionEnvValue(&spec.Containers[i]); ok && v != "" {
+			return true
+		}
+	}
+	for i := range spec.InitContainers {
+		if v, ok := sdkVersionEnvValue(&spec.InitContainers[i]); ok && v != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// sdkVersionEnvValue returns the value of the SDK-version env var we stamp onto
+// every instrumented container, if present. It's the per-container half of the
+// in-pod instrumentation signal used by AlreadyInstrumented and IsInstrumented.
+func sdkVersionEnvValue(c *corev1.Container) (string, bool) {
+	pos, ok := findEnvVar(c, envVarSDKVersion)
 	if !ok {
 		return "", false
 	}

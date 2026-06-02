@@ -34,6 +34,16 @@ func TestMatch(t *testing.T) {
 		Name: "raw", Namespace: "demo",
 		OwnerKind: "ReplicaSet", OwnerName: "raw-rs",
 	}
+	labeledPod := PodInfo{
+		Name: "labeled-app-1", Namespace: "test-unmatched",
+		OwnerKind: "ReplicaSet", OwnerName: "labeled-app",
+		Labels:      map[string]string{"inject": "true", "tier": "web"},
+		Annotations: map[string]string{"team": "obs"},
+	}
+	unlabeledPod := PodInfo{
+		Name: "unlabeled-app-1", Namespace: "test-unmatched",
+		OwnerKind: "ReplicaSet", OwnerName: "unlabeled-app",
+	}
 
 	tests := []struct {
 		name     string
@@ -165,6 +175,76 @@ func TestMatch(t *testing.T) {
 			name:     "k8s_owner_name AND k8s_deployment_name (owner mismatch)",
 			criteria: []SelectionCriterion{{K8sOwnerName: g("other"), K8sDeploymentName: g("hello")}},
 			pod:      rsPod,
+			want:     false,
+		},
+		{
+			name:     "pod label match",
+			criteria: []SelectionCriterion{{K8sPodLabels: map[string]*services.GlobAttr{"inject": g("true")}}},
+			pod:      labeledPod,
+			want:     true,
+		},
+		{
+			name:     "pod label glob match",
+			criteria: []SelectionCriterion{{K8sPodLabels: map[string]*services.GlobAttr{"tier": g("we*")}}},
+			pod:      labeledPod,
+			want:     true,
+		},
+		{
+			name:     "pod label value mismatch",
+			criteria: []SelectionCriterion{{K8sPodLabels: map[string]*services.GlobAttr{"inject": g("false")}}},
+			pod:      labeledPod,
+			want:     false,
+		},
+		{
+			name:     "pod label missing key misses",
+			criteria: []SelectionCriterion{{K8sPodLabels: map[string]*services.GlobAttr{"inject": g("true")}}},
+			pod:      unlabeledPod,
+			want:     false,
+		},
+		{
+			name: "namespace AND pod label: labeled-app matches",
+			criteria: []SelectionCriterion{{
+				K8sNamespace: g("test-unmatched"),
+				K8sPodLabels: map[string]*services.GlobAttr{"inject": g("true")},
+			}},
+			pod:  labeledPod,
+			want: true,
+		},
+		{
+			name: "namespace AND pod label: unlabeled-app rejected (regression for dropped label clause)",
+			criteria: []SelectionCriterion{{
+				K8sNamespace: g("test-unmatched"),
+				K8sPodLabels: map[string]*services.GlobAttr{"inject": g("true")},
+			}},
+			pod:  unlabeledPod,
+			want: false,
+		},
+		{
+			name: "multiple required labels: all must match",
+			criteria: []SelectionCriterion{{
+				K8sPodLabels: map[string]*services.GlobAttr{"inject": g("true"), "tier": g("web")},
+			}},
+			pod:  labeledPod,
+			want: true,
+		},
+		{
+			name: "multiple required labels: one missing misses",
+			criteria: []SelectionCriterion{{
+				K8sPodLabels: map[string]*services.GlobAttr{"inject": g("true"), "tier": g("db")},
+			}},
+			pod:  labeledPod,
+			want: false,
+		},
+		{
+			name:     "pod annotation match",
+			criteria: []SelectionCriterion{{K8sPodAnnotations: map[string]*services.GlobAttr{"team": g("obs")}}},
+			pod:      labeledPod,
+			want:     true,
+		},
+		{
+			name:     "pod annotation missing key misses",
+			criteria: []SelectionCriterion{{K8sPodAnnotations: map[string]*services.GlobAttr{"team": g("obs")}}},
+			pod:      unlabeledPod,
 			want:     false,
 		},
 		{
