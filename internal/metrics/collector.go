@@ -12,6 +12,7 @@ package metrics
 
 import (
 	"context"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	corev1 "k8s.io/api/core/v1"
@@ -89,9 +90,14 @@ type labelTuple struct {
 	skipReason   string
 }
 
+// collectTimeout bounds a single scrape's cache reads so a pathological
+// Collect can't stall the whole /metrics response indefinitely.
+const collectTimeout = 10 * time.Second
+
 // Collect implements prometheus.Collector.
 func (c *PodStateCollector) Collect(ch chan<- prometheus.Metric) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), collectTimeout)
+	defer cancel()
 
 	var pods corev1.PodList
 	if err := c.reader.List(ctx, &pods); err != nil {
@@ -145,10 +151,17 @@ type classification struct {
 // classify determines a pod's injection state using the same predicates the
 // webhook applies at admission, so the gauge and the request counter never
 // disagree. Order mirrors PodCustomDefaulter.Default:
-//   - no registry match           -> unmatched
-//   - foreign LD_PRELOAD          -> skipped / conflict
-//   - our annotation at wantVer   -> instrumented
+//   - no registry match            -> unmatched
+//   - our annotation at wantVer    -> instrumented
+//   - foreign LD_PRELOAD           -> skipped / conflict
 //   - otherwise (matched, not yet) -> pending_restart
+//
+// AlreadyInstrumented is checked before the LD_PRELOAD conflict (matching the
+// webhook): a pod we already instrumented carries our own LD_PRELOAD, not a
+// foreign one, so the conflict predicate is false for it anyway. The order only
+// matters for the rare pod that is both annotated at the wanted version and
+// carries a foreign LD_PRELOAD on another container; reporting it as
+// instrumented keeps the gauge consistent with the admission counter.
 func (c *PodStateCollector) classify(ctx context.Context, pod *corev1.Pod) classification {
 	info := podinfo.Resolve(ctx, c.reader, pod)
 	kind, name := podinfo.Workload(info)
@@ -157,14 +170,14 @@ func (c *PodStateCollector) classify(ctx context.Context, pod *corev1.Pod) class
 	if !ok {
 		return classification{status: StatusUnmatched, kind: kind, name: name}
 	}
-	if webhookv1.PreloadsSomethingElse(pod) {
-		return classification{status: StatusSkipped, skipReason: SkipReasonConflict, kind: kind, name: name}
-	}
 
 	effective := c.cfg.WithConfigMapOverrides(inst.InjectConfig)
 	want := effective.PackageVersion()
 	if webhookv1.AlreadyInstrumented(&pod.Spec, &pod.ObjectMeta, want) {
 		return classification{status: StatusInstrumented, kind: kind, name: name}
+	}
+	if webhookv1.PreloadsSomethingElse(pod) {
+		return classification{status: StatusSkipped, skipReason: SkipReasonConflict, kind: kind, name: name}
 	}
 	return classification{status: StatusPendingRestart, kind: kind, name: name}
 }
