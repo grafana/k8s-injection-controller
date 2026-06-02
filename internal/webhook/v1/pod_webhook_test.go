@@ -150,7 +150,7 @@ var _ = Describe("Pod Webhook", func() {
 			// Capture the package-version env the default path would produce, then
 			// run injection and confirm both the volume reference and the env
 			// reflect the override (not the controller default seeded in BeforeEach).
-			defaultPV := (&config.SDKInject{ImageVersion: "0.0.9"}).PackageVersion()
+			defaultPV := defaulter.Mutator.Cfg.PackageVersion()
 
 			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
 
