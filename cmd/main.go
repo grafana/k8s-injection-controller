@@ -207,6 +207,8 @@ func main() {
 		setupLog.Info("no --config provided; webhook will wait for remotely provided injection configuration")
 	}
 
+	sdkConfig.SetDefaults()
+
 	podMutator = &webhookv1.PodMutator{Cfg: sdkConfig}
 
 	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())

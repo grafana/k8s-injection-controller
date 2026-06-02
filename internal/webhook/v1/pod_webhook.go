@@ -75,12 +75,12 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	// the controller-wide SDK defaults. Mutator methods are pm.Cfg-driven, so
 	// a shallow copy is enough to scope the override. Compute the resolved
 	// package version up front: it depends on the (possibly-overridden)
-	// ImageVolumePath, and both the version-skew check and the annotation we
+	// ImageVersion, and both the version-skew check and the annotation we
 	// stamp need it.
 	mutator := *d.Mutator
 	mutator.Cfg = mutator.Cfg.WithConfigMapOverrides(inst.InjectConfig)
 
-	if mutator.Cfg.ImageVolumePath == "" {
+	if mutator.Cfg.ImageVersion == "" {
 		podlog.Info("pod matches but no SDK config loaded; skipping injection",
 			"namespace", obj.Namespace, "name", obj.Name)
 		return nil

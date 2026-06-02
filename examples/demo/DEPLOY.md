@@ -135,10 +135,6 @@ ConfigMaps it owns, via the DaemonSet ownerReference), and the controller.
   `disabling injector state ConfigMap writer` (RBAC or env issue —
   `NODE_NAME` must be set) or
   `failed to write injector state ConfigMap` (transient API error).
-- **`image volume mounts require Kubernetes 1.31 or later`** in the
-  controller logs: your cluster is too old for the sample SDK image volume.
-  Upgrade or swap `image_volume_path` for a host-path setup in
-  `config/test/sdk-inject.yaml`.
 - **Beyla pods CrashLoopBackOff with permission errors.** Re-check the
   `securityContext.capabilities` block — `BPF`, `SYS_PTRACE`, `PERFMON`,
   `SYS_ADMIN` are all required for the local process scanner.
