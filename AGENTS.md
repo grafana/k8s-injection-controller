@@ -1,5 +1,41 @@
 # k8s-injection-controller - AI Agent Guide
 
+## What This Project Is
+
+This is a Kubebuilder project that injects **Grafana Beyla / OpenTelemetry SDK
+auto-instrumentation** into application pods at admission time.
+
+**This project defines no CRDs of its own.** `api/` is empty; `PROJECT` declares only an
+*external* `core/Pod` resource with a defaulting webhook. Selection/configuration comes from
+Beyla-managed ConfigMaps (reusing `github.com/grafana/beyla/v3` and `go.opentelemetry.io/obi`
+types), not from custom resources. So the CRD-centric guidance further down (creating
+`api/<version>/*_types.go`, editing `config/crd/bases/*`, `make manifests` regenerating CRDs)
+does **not** apply here — treat it as generic Kubebuilder reference only.
+
+Two components, both registered in `cmd/main.go`:
+
+1. **Pod mutating webhook** — `internal/webhook/v1/`. Path `/mutate--v1-pod`,
+   `failurePolicy=Ignore` (a broken injector must never block pod creation), excludes its own
+   namespace via `namespaceSelector`. `PodCustomDefaulter.Default` resolves the pod's owner
+   chain (`internal/podinfo`), matches it against the in-memory `registry.Registry`, and on a
+   hit `PodMutator` (`mutator.go`) mounts an OCI **`ImageVolumeSource`** (requires k8s 1.31+)
+   and instruments each container. It stamps the `beyla.grafana.com/inject` annotation with the
+   SHA-224 of the image ref so a later admission can detect version skew and skip / re-inject.
+   The mutator is nil-safe: with no SDK config loaded the webhook selects but does not mutate.
+
+2. **ConfigMap controller** — `internal/controller/configmap_controller.go`. Watches
+   ConfigMaps carrying Beyla's `configmap.SelectorAnnotation`, parses `instrumentation.yaml`
+   (selection criteria + OTLP/SDK config) and `eligible_for_restart.yaml`, and keeps
+   `registry.Registry` in sync. When a CM lists restart-eligible workloads it gracefully rolls
+   out / evicts pre-existing matching pods so they get re-admitted and instrumented — gated on
+   webhook readiness + Service routability, and guarded by a hardcoded protected-namespace
+   denylist.
+
+Supporting `internal/` packages: `config` (`SDKInject`, the controller-wide injection
+defaults, loaded from `--config` YAML or left empty), `podinfo` (pod → ReplicaSet →
+Deployment owner resolution, shared by webhook and controller), and `registry` (thread-safe,
+glob-based match model whose criteria mirror Beyla/obi discovery clauses).
+
 ## Project Structure
 
 **Single-group layout (default):**
