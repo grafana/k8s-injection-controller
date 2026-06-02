@@ -46,6 +46,13 @@ func (s *SDKInject) SetDefaults() {
 	if s.ImageVolumeRoot == "" {
 		s.ImageVolumeRoot = DefaultImageVolumeRoot
 	}
+	if s.EnabledSDKs == nil {
+		for _, lang := range []string{"java", "dotnet", "nodejs", "python"} {
+			if t, err := bservices.ParseInstrumentableType(lang); err != nil {
+				s.EnabledSDKs = append(s.EnabledSDKs, bservices.InstrumentableType{InstrumentableType: t})
+			}
+		}
+	}
 }
 
 func (s *SDKInject) ImageVolumePath() string {
