@@ -105,10 +105,10 @@ data:
       # The SDK volume / image and other injection defaults are configured
       # on the controller side (config/test/sdk-inject.yaml). Any of these
       # may be overridden per-node by uncommenting and setting them here —
-      # the controller honors `image_volume_version`, `trace_sampler`,
+      # the controller honors `image_version`, `trace_sampler`,
       # `trace_propagators`, `otel_exported_signals`, and `resources` from
       # the per-node ConfigMap.
-      image_volume_version: 0.0.9
+      image_version: 0.0.9
 ---
 apiVersion: apps/v1
 kind: DaemonSet

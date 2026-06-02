@@ -15,7 +15,7 @@ type SDKInject struct {
 	NoAutoRestart bool `yaml:"disable_auto_restart"`
 	// OCI image version mounted into pods via Kubernetes ImageVolumeSource.
 	// Requires k8s 1.31+. Required — this is the only supported volume mode.
-	ImageVersion string `yaml:"image_volume_version"`
+	ImageVersion string `yaml:"image_version"`
 	// OCI image reference mounted into pods via Kubernetes ImageVolumeSource.
 	// This configuration appends the version info supplied by Beyla's config maps
 	// or as a direct controller configuration option.

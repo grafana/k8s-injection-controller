@@ -343,7 +343,8 @@ var _ = Describe("Manager", Ordered, func() {
 			// A valid OCI reference the apiserver accepts as an ImageVolumeSource.
 			// These assertions are spec-level (the inject annotation), so the pod
 			// does not need to actually pull/run this image.
-			sdkImage = "ghcr.io/grafana/beyla/inject-sdk-image:0.0.9"
+			sdkImageRoot    = "ghcr.io/grafana/beyla/inject-sdk-image"
+			sdkImageVersion = "0.0.9"
 		)
 
 		It("instruments a matching workload and uninstruments it once the config excludes it", func() {
@@ -360,7 +361,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			// ---- Step 1: Beyla sends a ConfigMap that instruments the workload ----
 			By("applying the Beyla ConfigMap whose criteria select the workload namespace")
-			Expect(kubectlApply(selectorConfigMap(cmName, workloadNS, workload, workloadNS, sdkImage))).
+			Expect(kubectlApply(selectorConfigMap(cmName, workloadNS, workload, workloadNS, sdkImageVersion, sdkImageRoot))).
 				To(Succeed())
 
 			By("waiting until the workload pod is instrumented by the webhook")
@@ -389,7 +390,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("updating the ConfigMap so the criteria no longer match the workload")
 			// The workload stays listed in eligible_for_restart so the controller
 			// re-evaluates it and notices it is instrumented-but-unmatched.
-			Expect(kubectlApply(selectorConfigMap(cmName, workloadNS, workload, "somewhere-else", sdkImage))).
+			Expect(kubectlApply(selectorConfigMap(cmName, workloadNS, workload, "somewhere-else", sdkImageVersion, sdkImageRoot))).
 				To(Succeed())
 
 			// ---- Step 3: the workload gets uninstrumented ----
@@ -544,7 +545,7 @@ spec:
 // (set it to the workload namespace to instrument, elsewhere to exclude); the
 // eligible_for_restart entry always names the Deployment so the controller
 // re-evaluates it after the criterion stops matching.
-func selectorConfigMap(cmName, targetNS, deployment, discoveryNS, image string) string {
+func selectorConfigMap(cmName, targetNS, deployment, discoveryNS, imageVersion string, imageRoot string) string {
 	return fmt.Sprintf(`apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -556,7 +557,8 @@ data:
   instrumentation.yaml: |
     discovery:
       - k8s_namespace: %[4]s
-    image_volume_path: %[5]s
+    image_version: %[5]s
+    image_volume_root: %[6]s
     otel_export:
       endpoint: http://otel-collector:4318
       protocol: http/protobuf

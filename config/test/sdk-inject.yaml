@@ -8,7 +8,7 @@ debug: false
 
 # OCI image mounted into pods via Kubernetes ImageVolumeSource. Requires k8s 1.31+.
 image_volume_root: ghcr.io/grafana/beyla/inject-sdk-image
-image_volume_version: 0.0.9
+image_version: 0.0.9
 
 propagators:
   - tracecontext
