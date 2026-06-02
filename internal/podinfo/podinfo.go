@@ -28,6 +28,10 @@ import (
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 )
 
+// kindDeployment is the owner kind we resolve the RS chain up to and report as
+// the workload kind for pods backed (directly or transitively) by a Deployment.
+const kindDeployment = "Deployment"
+
 // Resolve builds a registry.PodInfo from the given pod. If the pod is owned by
 // a ReplicaSet, Resolve fetches that RS through the supplied reader and reads
 // the RS's controller owner to populate DeploymentName. Lookup errors are
@@ -48,7 +52,7 @@ func Resolve(ctx context.Context, c client.Reader, pod *corev1.Pod) registry.Pod
 	info.OwnerName = owner.Name
 
 	switch owner.Kind {
-	case "Deployment":
+	case kindDeployment:
 		info.DeploymentName = owner.Name
 	case "ReplicaSet":
 		var rs appsv1.ReplicaSet
@@ -60,11 +64,26 @@ func Resolve(ctx context.Context, c client.Reader, pod *corev1.Pod) registry.Pod
 			}
 			return info
 		}
-		if rsOwner := controllerRef(rs.OwnerReferences); rsOwner != nil && rsOwner.Kind == "Deployment" {
+		if rsOwner := controllerRef(rs.OwnerReferences); rsOwner != nil && rsOwner.Kind == kindDeployment {
 			info.DeploymentName = rsOwner.Name
 		}
 	}
 	return info
+}
+
+// Workload reduces a resolved PodInfo to the (kind, name) pair used as metric
+// labels. A pod owned (transitively) by a Deployment reports as Deployment;
+// otherwise the direct owner kind/name is used; a bare pod reports as
+// ("Pod", pod name). This mirrors resolveWorkload in the controller but yields
+// plain strings suitable for label values.
+func Workload(info registry.PodInfo) (kind, name string) {
+	if info.DeploymentName != "" {
+		return kindDeployment, info.DeploymentName
+	}
+	if info.OwnerKind != "" {
+		return info.OwnerKind, info.OwnerName
+	}
+	return "Pod", info.Name
 }
 
 // controllerRef picks the OwnerReference flagged Controller=true; otherwise
