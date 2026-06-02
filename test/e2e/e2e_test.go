@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -328,6 +329,89 @@ var _ = Describe("Manager", Ordered, func() {
 		//    strings.ToLower(<Kind>),
 		// ))
 	})
+
+	// Exercises the full instrument → re-configure → uninstrument lifecycle
+	// against the deployed controller + webhook, the way Beyla drives it via the
+	// per-node ConfigMap. Runs after the readiness checks above so the webhook is
+	// known to be serving.
+	Context("Injection lifecycle", func() {
+		const (
+			workloadNS = "beyla-inject-e2e"
+			workload   = "sample-app"
+			cmName     = "beyla-node-state"
+			injectAnno = "beyla.grafana.com/inject"
+			// A valid OCI reference the apiserver accepts as an ImageVolumeSource.
+			// These assertions are spec-level (the inject annotation), so the pod
+			// does not need to actually pull/run this image.
+			sdkImage = "ghcr.io/grafana/beyla/inject-sdk-image:0.0.9"
+		)
+
+		It("instruments a matching workload and uninstruments it once the config excludes it", func() {
+			By("creating an isolated namespace for the sample workload")
+			_, err := utils.Run(exec.Command("kubectl", "create", "ns", workloadNS))
+			Expect(err).NotTo(HaveOccurred(), "Failed to create workload namespace")
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", workloadNS,
+					"--ignore-not-found", "--wait=false"))
+			})
+
+			By("deploying the sample workload")
+			Expect(kubectlApply(sampleDeployment(workloadNS, workload))).To(Succeed())
+
+			// ---- Step 1: Beyla sends a ConfigMap that instruments the workload ----
+			By("applying the Beyla ConfigMap whose criteria select the workload namespace")
+			Expect(kubectlApply(selectorConfigMap(cmName, workloadNS, workload, workloadNS, sdkImage))).
+				To(Succeed())
+
+			By("waiting until the workload pod is instrumented by the webhook")
+			// The controller loads the ConfigMap into its in-memory registry
+			// asynchronously, so a pod admitted before that comes up clean. Deleting
+			// such a pod lets the ReplicaSet recreate it; the loop converges once the
+			// registry is populated (or the controller's own rollout sweep fires).
+			Eventually(func(g Gomega) {
+				pods := podsWithLabel(g, workloadNS, "app="+workload)
+				g.Expect(pods).NotTo(BeEmpty(), "no workload pods yet")
+				p := pods[0]
+				if p.Metadata.Annotations[injectAnno] == "" {
+					_, _ = utils.Run(exec.Command("kubectl", "delete", "pod", p.Metadata.Name,
+						"-n", workloadNS, "--ignore-not-found"))
+				}
+				g.Expect(p.Metadata.Annotations).To(HaveKey(injectAnno),
+					"workload pod was not instrumented")
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+			// The controller may instrument pre-existing pods by rolling the
+			// Deployment, so capture the current rollout marker to tell that roll
+			// apart from the uninstrument roll triggered in step 3.
+			revBefore, _ := restartedAt(workloadNS, workload)
+
+			// ---- Step 2: Beyla updates the config to exclude the workload ----
+			By("updating the ConfigMap so the criteria no longer match the workload")
+			// The workload stays listed in eligible_for_restart so the controller
+			// re-evaluates it and notices it is instrumented-but-unmatched.
+			Expect(kubectlApply(selectorConfigMap(cmName, workloadNS, workload, "somewhere-else", sdkImage))).
+				To(Succeed())
+
+			// ---- Step 3: the workload gets uninstrumented ----
+			By("asserting the controller rolls the now-unmatched Deployment")
+			Eventually(func(g Gomega) {
+				rev, err := restartedAt(workloadNS, workload)
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(rev).NotTo(BeEmpty(), "Deployment was not rolled for uninstrumentation")
+				g.Expect(rev).NotTo(Equal(revBefore), "expected a fresh rollout for uninstrumentation")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("asserting the recreated pods come back without instrumentation")
+			Eventually(func(g Gomega) {
+				pods := podsWithLabel(g, workloadNS, "app="+workload)
+				g.Expect(pods).NotTo(BeEmpty())
+				for _, p := range pods {
+					g.Expect(p.Metadata.Annotations).NotTo(HaveKey(injectAnno),
+						"pod %s is still instrumented after the config excluded it", p.Metadata.Name)
+				}
+			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+		})
+	})
 })
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.
@@ -384,4 +468,101 @@ type tokenRequest struct {
 	Status struct {
 		Token string `json:"token"`
 	} `json:"status"`
+}
+
+// kubectlApply pipes a manifest to `kubectl apply -f -`.
+func kubectlApply(manifest string) error {
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(manifest)
+	_, err := utils.Run(cmd)
+	return err
+}
+
+// kubectlOut runs kubectl and returns stdout only, so JSON/JSONPath output is
+// not polluted by warnings the CLI writes to stderr.
+func kubectlOut(args ...string) (string, error) {
+	cmd := exec.Command("kubectl", args...)
+	cmd.Env = append(os.Environ(), "GO111MODULE=on")
+	out, err := cmd.Output()
+	return string(out), err
+}
+
+// podSummary is the slice of a Pod we assert on: its name and annotations.
+type podSummary struct {
+	Metadata struct {
+		Name        string            `json:"name"`
+		Annotations map[string]string `json:"annotations"`
+	} `json:"metadata"`
+}
+
+// podsWithLabel lists pods in ns matching the label selector.
+func podsWithLabel(g Gomega, ns, selector string) []podSummary {
+	out, err := kubectlOut("get", "pods", "-n", ns, "-l", selector, "-o", "json")
+	g.Expect(err).NotTo(HaveOccurred(), "failed to list pods")
+	var list struct {
+		Items []podSummary `json:"items"`
+	}
+	g.Expect(json.Unmarshal([]byte(out), &list)).To(Succeed(), "failed to parse pod list")
+	return list.Items
+}
+
+// restartedAt returns the value of the rollout marker the controller stamps on
+// a Deployment's pod template when it triggers a (re-)roll. Empty if unset.
+func restartedAt(ns, deployment string) (string, error) {
+	return kubectlOut("get", "deploy", deployment, "-n", ns,
+		"-o", "jsonpath={.spec.template.metadata.annotations.beyla\\.grafana\\.com/restartedAt}")
+}
+
+// sampleDeployment renders a minimal workload. The pause image runs without a
+// shell and ignores the env/volume the webhook injects, so the pod reaches
+// Ready and rolling updates complete regardless of injection state.
+func sampleDeployment(ns, name string) string {
+	return fmt.Sprintf(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: %[2]s
+  namespace: %[1]s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: %[2]s
+  template:
+    metadata:
+      labels:
+        app: %[2]s
+    spec:
+      containers:
+        - name: app
+          image: registry.k8s.io/pause:3.10
+`, ns, name)
+}
+
+// selectorConfigMap renders the per-node ConfigMap Beyla writes: the selection
+// criteria + SDK image under instrumentation.yaml, and the workload under
+// eligible_for_restart.yaml. discoveryNS is the namespace the criterion matches
+// (set it to the workload namespace to instrument, elsewhere to exclude); the
+// eligible_for_restart entry always names the Deployment so the controller
+// re-evaluates it after the criterion stops matching.
+func selectorConfigMap(cmName, targetNS, deployment, discoveryNS, image string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: %[1]s
+  namespace: %[2]s
+  annotations:
+    beyla.grafana.com/node: ""
+data:
+  instrumentation.yaml: |
+    discovery:
+      - k8s_namespace: %[4]s
+    image_volume_path: %[5]s
+    otel_export:
+      endpoint: http://otel-collector:4318
+      protocol: http/protobuf
+  eligible_for_restart.yaml: |
+    - namespace: %[2]s
+      kind: Deployment
+      name: %[3]s
+`, cmName, targetNS, deployment, discoveryNS, image)
 }

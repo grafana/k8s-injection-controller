@@ -328,10 +328,20 @@ func sortEligible(eligible []*configmap.EligibleDeployment) {
 }
 
 // rolloutMatching processes the restart targets from a single ConfigMap. For
-// each target it lists pods in target.Namespace and evicts those whose owner
-// chain matches target.Kind (and optionally target.Name) AND that match a
-// selection criterion in the registry — no point evicting pods the webhook
-// won't inject anyway. Bare pods are skipped (no controller to recreate them).
+// each target it lists pods in target.Namespace whose owner chain matches
+// target.Kind (and optionally target.Name) and decides, per pod, whether the
+// owning workload needs a rollout:
+//
+//   - Instrument: the pod matches a selection criterion but is not yet
+//     instrumented at the current SDK version — restart so the webhook injects
+//     on recreation. Pods the webhook would not mutate (no SDK config, foreign
+//     LD_PRELOAD) are skipped.
+//   - Uninstrument: the pod matches no criterion but is currently instrumented
+//     — restart so the webhook re-admits it, finds no match, and leaves it
+//     clean, removing the instrumentation.
+//
+// A pod that neither matches nor is instrumented needs no action. Bare pods are
+// skipped (no controller to recreate them).
 func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []restartCriterion) error {
 	logger := log.FromContext(ctx)
 
@@ -367,19 +377,29 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 			}
 			inst, ok := r.Registry.Match(info)
 			if !ok {
-				continue
-			}
-			effective := r.DefaultSDKConfig.WithConfigMapOverrides(inst.InjectConfig)
-			if effective.ImageVolumePath == "" {
-				// No SDK config in the default or in the CM override: the
-				// webhook would not mutate, so evicting accomplishes nothing.
-				continue
-			}
-			if webhookv1.AlreadyInstrumented(&pod.Spec, &pod.ObjectMeta, effective.PackageVersion()) {
-				continue
-			}
-			if webhookv1.PreloadsSomethingElse(pod) {
-				continue
+				// Pod no longer matches any selection criterion. If it is
+				// currently instrumented, restart its workload so the webhook
+				// re-admits it, finds no match, and drops the instrumentation.
+				// An un-instrumented non-matching pod needs no action.
+				if !webhookv1.IsInstrumented(&pod.Spec, &pod.ObjectMeta) {
+					continue
+				}
+				logger.Info("pod no longer matches selection criteria; scheduling rollout to remove instrumentation",
+					"namespace", pod.Namespace, "pod", pod.Name)
+			} else {
+				// Pod matches: this is the (re-)instrumentation path.
+				effective := r.DefaultSDKConfig.WithConfigMapOverrides(inst.InjectConfig)
+				if effective.ImageVolumePath == "" {
+					// No SDK config in the default or in the CM override: the
+					// webhook would not mutate, so evicting accomplishes nothing.
+					continue
+				}
+				if webhookv1.AlreadyInstrumented(&pod.Spec, &pod.ObjectMeta, effective.PackageVersion()) {
+					continue
+				}
+				if webhookv1.PreloadsSomethingElse(pod) {
+					continue
+				}
 			}
 			key := resolveWorkload(info)
 			if key == (workloadKey{}) {
