@@ -414,7 +414,13 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 		}
 	}
 
-	restartTime := time.Now().Format(time.RFC3339)
+	// RFC3339Nano (not RFC3339) so two rollouts of the same workload within the
+	// same wall-clock second produce distinct marker values. A second-precision
+	// marker would make the second merge-patch a no-op (identical annotation
+	// value => unchanged pod-template hash => no rollout), so an instrument roll
+	// immediately followed by an uninstrument roll would silently fail to remove
+	// instrumentation.
+	restartTime := time.Now().Format(time.RFC3339Nano)
 	patch := fmt.Sprintf(`{"spec":{"template":{"metadata":{"annotations":{"beyla.grafana.com/restartedAt":%q}}}}}`, restartTime)
 	var errs []error
 	for key := range toRestart {
