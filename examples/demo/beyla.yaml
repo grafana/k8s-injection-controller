@@ -108,7 +108,7 @@ data:
       # the controller honors `image_volume_path`, `trace_sampler`,
       # `trace_propagators`, `otel_exported_signals`, and `resources` from
       # the per-node ConfigMap.
-      image_volume_path: ghcr.io/grafana/beyla/inject-sdk-image:0.0.9
+      image_volume_path: ghcr.io/grafana/beyla/inject-sdk-image:0.0.11
 ---
 apiVersion: apps/v1
 kind: DaemonSet

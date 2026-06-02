@@ -1,6 +1,9 @@
-# Mounts the generated beyla-sdk-config ConfigMap into the manager pod and
-# adds the --config flag. Strategic merge patch: the args list is replaced
-# wholesale, so the existing flags are repeated here.
+# Mounts the generated beyla-sdk-config ConfigMap into the manager pod. The
+# --config flag that points at the mounted file is added separately by
+# manager_sdk_config_args_patch.yaml (a JSON 6902 append), so this strategic
+# merge does not need — and must not include — an `args:` list (a strategic
+# merge would replace args wholesale and drop the metrics/webhook flags the
+# ../default overlay adds).
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -10,10 +13,6 @@ spec:
     spec:
       containers:
         - name: manager
-          args:
-            - --leader-elect
-            - --health-probe-bind-address=:8081
-            - --config=/etc/beyla-injector/sdk-inject.yaml
           volumeMounts:
             - name: sdk-config
               mountPath: /etc/beyla-injector

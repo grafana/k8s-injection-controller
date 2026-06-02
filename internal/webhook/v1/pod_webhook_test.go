@@ -67,7 +67,7 @@ var _ = Describe("Pod Webhook", func() {
 			Reader: k8sClient,
 			Mutator: &PodMutator{Cfg: config.SDKInject{
 				// TODO: replace from some auto-updating source
-				ImageVolumePath: "ghcr.io/grafana/beyla/inject-sdk-image:0.0.9",
+				ImageVolumePath: "ghcr.io/grafana/beyla/inject-sdk-image:0.0.11",
 				Propagators:     []string{"tracecontext"},
 			}},
 		}
@@ -110,7 +110,7 @@ var _ = Describe("Pod Webhook", func() {
 			Expect(obj.Spec.Volumes[0].Name).To(Equal(injectVolumeName))
 			Expect(obj.Spec.Volumes[0].Image).NotTo(BeNil(),
 				"expected an ImageVolumeSource since that's the only supported mode")
-			Expect(obj.Spec.Volumes[0].Image.Reference).To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.9"))
+			Expect(obj.Spec.Volumes[0].Image.Reference).To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.11"))
 
 			mounts := obj.Spec.Containers[0].VolumeMounts
 			Expect(mounts).To(HaveLen(1))
@@ -149,7 +149,7 @@ var _ = Describe("Pod Webhook", func() {
 			// Capture the package-version env the default path would produce, then
 			// run injection and confirm both the volume reference and the env
 			// reflect the override (not the controller default seeded in BeforeEach).
-			defaultPV := (&config.SDKInject{ImageVolumePath: "ghcr.io/grafana/beyla/inject-sdk-image:0.0.9"}).PackageVersion()
+			defaultPV := (&config.SDKInject{ImageVolumePath: "ghcr.io/grafana/beyla/inject-sdk-image:0.0.11"}).PackageVersion()
 
 			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
 
@@ -195,7 +195,7 @@ var _ = Describe("Pod Webhook", func() {
 			// Volume reference should still come from the controller default —
 			// only propagators was overridden.
 			Expect(obj.Spec.Volumes[0].Image.Reference).
-				To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.9"))
+				To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.11"))
 		})
 	})
 

@@ -56,6 +56,40 @@ Always use `kubebuilder create api` and `kubebuilder create webhook` to scaffold
 The e2e tests are designed to validate the solution in an isolated environment (similar to GitHub Actions CI).
 Ensure you run them against a dedicated [Kind](https://kind.sigs.k8s.io/) cluster (not your “real” dev/prod cluster).
 
+Run them with `make test-e2e`, or directly with `go test -tags e2e ./test/e2e/...` — the suite is
+self-contained. Its `BeforeSuite` programmatically creates the Kind cluster from
+`test/e2e/kind-config.yaml` via `sigs.k8s.io/e2e-framework/support/kind` (idempotent — reuses one if it
+already exists), points `KUBECONFIG` at it, builds/loads the manager image, and installs cert-manager;
+`AfterSuite` destroys the cluster (set `E2E_KEEP_CLUSTER=true` to keep it for post-mortem debugging).
+There are no longer `make setup-test-e2e`/`cleanup-test-e2e` targets — the suite owns the cluster.
+
+`test/e2e/kind-config.yaml` is not optional:
+- It enables the `ImageVolume` feature gate, otherwise the apiserver prunes the `ImageVolumeSource` the
+  webhook injects and rejects the mutated pod.
+- It maps a NodePort (30090) to the host so the telemetry case can query LGTM's Prometheus on
+  `127.0.0.1:30090` without a long-lived `kubectl port-forward` (use the IPv4 literal, not `localhost`:
+  kind/Docker binds the host port on IPv4 only).
+
+The suite deploys the controller via **`make deploy-test`** (the `config/test` overlay), not plain
+`make deploy`. That overlay passes a `--config` whose `enabled_sdks` turns on the language
+auto-instrumentations. Without it `EnabledSDKs` is empty and the injector blanks every language agent
+path, so injected pods get the annotation + `LD_PRELOAD` but are never actually instrumented and emit
+no telemetry.
+
+Beyond the controller/webhook readiness checks, the suite (`test/e2e/e2e_test.go`) runs one ordered
+**Injection lifecycle** context against a single real Node.js workload (`node:20-slim` — glibc, because a
+musl/alpine image would silently drop the `LD_PRELOAD` injector) and an in-cluster `grafana/otel-lgtm`:
+1. **instruments the running workload** — applies a ConfigMap selecting it and waits for an instrumented
+   pod that is also **Ready** (proves the injected SDK container actually starts; the SDK image is
+   multi-arch);
+2. **verifies the injected spec** — the `beyla.grafana.com/inject` annotation (= SHA-224 of the SDK image
+   ref), the SDK `ImageVolume` mount, and the injected env (`LD_PRELOAD`, OTLP endpoint/protocol, exporter
+   toggles, SDK version);
+3. **verifies telemetry** — generates traffic and asserts the emitted **metrics** become queryable via
+   LGTM's Prometheus API (traces/logs are intentionally out of scope for now);
+4. **uninstruments** — reconfigures the ConfigMap to stop matching and asserts the Deployment is rolled and
+   the recreated pods come back clean.
+
 ## After Making Changes
 
 **After editing `*_types.go` or markers:**

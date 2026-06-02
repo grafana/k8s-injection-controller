@@ -17,7 +17,17 @@ configMapGenerator:
       - sdk-inject.yaml
 
 patches:
+  # Strategic merge: mount the generated beyla-sdk-config ConfigMap. Merges into
+  # the volumes/volumeMounts lists (by name) without disturbing other entries.
   - path: manager_sdk_config_patch.yaml
+    target:
+      kind: Deployment
+      name: controller-manager
+  # JSON 6902: append the --config flag. Done as an append (not as part of the
+  # strategic-merge patch above) so it does not replace the args list that the
+  # ../default overlay builds — replacing it drops --metrics-bind-address and
+  # silently disables the metrics server.
+  - path: manager_sdk_config_args_patch.yaml
     target:
       kind: Deployment
       name: controller-manager

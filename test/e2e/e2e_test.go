@@ -22,6 +22,9 @@ package e2e
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +34,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/grafana/beyla-k8s-injector/internal/config"
 	"github.com/grafana/beyla-k8s-injector/test/utils"
 )
 
@@ -69,7 +73,11 @@ var _ = Describe("Manager", Ordered, func() {
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
+		// deploy-test (config/test overlay) passes a --config that enables the SDK
+		// languages (enabled_sdks). Without it EnabledSDKs is empty and the injector
+		// blanks every language agent path, so injected pods are never actually
+		// instrumented and emit no telemetry.
+		cmd = exec.Command("make", "deploy-test", fmt.Sprintf("IMG=%s", managerImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 	})
@@ -330,72 +338,146 @@ var _ = Describe("Manager", Ordered, func() {
 		// ))
 	})
 
-	// Exercises the full instrument → re-configure → uninstrument lifecycle
-	// against the deployed controller + webhook, the way Beyla drives it via the
-	// per-node ConfigMap. Runs after the readiness checks above so the webhook is
-	// known to be serving.
-	Context("Injection lifecycle", func() {
+	// Exercises the full lifecycle Beyla drives through the per-node ConfigMap,
+	// end to end against the deployed controller + webhook and with a real
+	// auto-instrumentable Node.js workload:
+	//   1. the workload is instrumented once a matching ConfigMap appears;
+	//   2. the injected annotations + environment variables are verified;
+	//   3. the metrics the SDK emits are confirmed queryable in a Grafana
+	//      otel-lgtm instance;
+	//   4. the workload is uninstrumented once the ConfigMap stops matching.
+	// Ordered so the steps share one deployed workload + LGTM and run in order;
+	// runs after the readiness checks above so the webhook is known to be serving.
+	Context("Injection lifecycle", Ordered, func() {
 		const (
-			workloadNS = "beyla-inject-e2e"
-			workload   = "sample-app"
+			lgtmNS     = "beyla-lgtm-e2e"
+			appNS      = "beyla-metrics-e2e"
+			appName    = "sample-node-app"
 			cmName     = "beyla-node-state"
 			injectAnno = "beyla.grafana.com/inject"
-			// A valid OCI reference the apiserver accepts as an ImageVolumeSource.
-			// These assertions are spec-level (the inject annotation), so the pod
-			// does not need to actually pull/run this image.
-			sdkImage = "ghcr.io/grafana/beyla/inject-sdk-image:0.0.9"
+			sdkImage   = "ghcr.io/grafana/beyla/inject-sdk-image:0.0.11"
+			// NodePort for LGTM's Prometheus; must match the extraPortMapping in
+			// test/e2e/kind-config.yaml so the host can reach it.
+			lgtmPromNodePort = 30090
+			// OTLP/HTTP endpoint the injected SDK exports to, via cluster DNS.
+			otlpEndpoint = "http://lgtm." + lgtmNS + ".svc.cluster.local:4318"
+			// LGTM's Prometheus as seen from the host (kind extraPortMapping).
+			// Use 127.0.0.1, not "localhost": kind/Docker binds the host port on
+			// IPv4 only, while "localhost" can resolve to IPv6 ::1 (nothing listens
+			// there) and the query fails with "connection refused".
+			promBaseURL = "http://127.0.0.1:30090"
 		)
 
-		It("instruments a matching workload and uninstruments it once the config excludes it", func() {
-			By("creating an isolated namespace for the sample workload")
-			_, err := utils.Run(exec.Command("kubectl", "create", "ns", workloadNS))
+		BeforeAll(func() {
+			By("creating the LGTM namespace and deploying grafana/otel-lgtm")
+			_, err := utils.Run(exec.Command("kubectl", "create", "ns", lgtmNS))
+			Expect(err).NotTo(HaveOccurred(), "Failed to create LGTM namespace")
+			Expect(kubectlApply(lgtmManifests(lgtmNS, lgtmPromNodePort))).To(Succeed())
+
+			By("creating the workload namespace and deploying the Node.js workload")
+			_, err = utils.Run(exec.Command("kubectl", "create", "ns", appNS))
 			Expect(err).NotTo(HaveOccurred(), "Failed to create workload namespace")
-			DeferCleanup(func() {
-				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", workloadNS,
-					"--ignore-not-found", "--wait=false"))
-			})
+			Expect(kubectlApply(nodeAppManifests(appNS, appName))).To(Succeed())
 
-			By("deploying the sample workload")
-			Expect(kubectlApply(sampleDeployment(workloadNS, workload))).To(Succeed())
-
-			// ---- Step 1: Beyla sends a ConfigMap that instruments the workload ----
-			By("applying the Beyla ConfigMap whose criteria select the workload namespace")
-			Expect(kubectlApply(selectorConfigMap(cmName, workloadNS, workload, workloadNS, sdkImage))).
-				To(Succeed())
-
-			By("waiting until the workload pod is instrumented by the webhook")
-			// The controller loads the ConfigMap into its in-memory registry
-			// asynchronously, so a pod admitted before that comes up clean. Deleting
-			// such a pod lets the ReplicaSet recreate it; the loop converges once the
-			// registry is populated (or the controller's own rollout sweep fires).
+			By("waiting for LGTM to become ready")
 			Eventually(func(g Gomega) {
-				pods := podsWithLabel(g, workloadNS, "app="+workload)
-				g.Expect(pods).NotTo(BeEmpty(), "no workload pods yet")
-				p := pods[0]
-				if p.Metadata.Annotations[injectAnno] == "" {
-					_, _ = utils.Run(exec.Command("kubectl", "delete", "pod", p.Metadata.Name,
-						"-n", workloadNS, "--ignore-not-found"))
-				}
-				g.Expect(p.Metadata.Annotations).To(HaveKey(injectAnno),
-					"workload pod was not instrumented")
-			}, 3*time.Minute, 5*time.Second).Should(Succeed())
+				out, err := kubectlOut("get", "deploy", "lgtm", "-n", lgtmNS,
+					"-o", "jsonpath={.status.readyReplicas}")
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(out).To(Equal("1"), "LGTM not ready yet")
+			}, 5*time.Minute, 5*time.Second).Should(Succeed())
+		})
 
-			// The controller may instrument pre-existing pods by rolling the
-			// Deployment, so capture the current rollout marker to tell that roll
-			// apart from the uninstrument roll triggered in step 3.
-			revBefore, _ := restartedAt(workloadNS, workload)
+		AfterAll(func() {
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", appNS,
+				"--ignore-not-found", "--wait=false"))
+			_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", lgtmNS,
+				"--ignore-not-found", "--wait=false"))
+		})
 
-			// ---- Step 2: Beyla updates the config to exclude the workload ----
+		// ---- Step 1: Beyla sends a ConfigMap that instruments the workload ----
+		It("instruments the running workload", func() {
+			By("applying the Beyla ConfigMap whose criteria select the workload namespace")
+			Expect(kubectlApply(
+				metricsConfigMap(cmName, appNS, appName, appNS, otlpEndpoint, sdkImage))).To(Succeed())
+
+			By("waiting until an instrumented workload pod is running and ready")
+			// The controller rolls the Deployment once it loads the ConfigMap into
+			// its registry, so the instrumented pod replaces the initial clean one.
+			// Waiting for a pod that both carries the inject annotation and is Ready
+			// proves the injected container actually starts (the SDK image is
+			// multi-arch, so it pulls and mounts on this node).
+			waitInstrumentedReadyPod(appNS, "app="+appName, injectAnno)
+		})
+
+		// ---- Step 2: verify the injected pod spec ----
+		It("injects the expected SDK annotations and environment variables", func() {
+			p := waitInstrumentedReadyPod(appNS, "app="+appName, injectAnno)
+
+			By("checking the inject annotation matches the SDK image package version")
+			want := (&config.SDKInject{ImageVolumePath: sdkImage}).PackageVersion()
+			Expect(p.Metadata.Annotations[injectAnno]).To(Equal(want),
+				"inject annotation should be the SHA-224 of the SDK image reference")
+
+			By("checking the SDK image is mounted as an ImageVolume")
+			Expect(p.volumeImage("otel-inject-instrumentation")).To(Equal(sdkImage))
+
+			By("checking the injected environment on the app container")
+			env := p.containerEnv("app")
+			Expect(env).To(HaveKeyWithValue("LD_PRELOAD",
+				"/__otel_sdk_auto_instrumentation__/dist/injector/libotelinject.so"))
+			Expect(env).To(HaveKeyWithValue("OTEL_INJECTOR_CONFIG_FILE",
+				"/__otel_sdk_auto_instrumentation__/dist/injector/otelinject.conf"))
+			Expect(env).To(HaveKeyWithValue("OTEL_EXPORTER_OTLP_ENDPOINT", otlpEndpoint))
+			Expect(env).To(HaveKeyWithValue("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf"))
+			Expect(env).To(HaveKeyWithValue("OTEL_SEMCONV_STABILITY_OPT_IN", "http"))
+			// The ConfigMap enabled metrics and disabled traces/logs.
+			Expect(env).To(HaveKeyWithValue("OTEL_METRICS_EXPORTER", "otlp"))
+			Expect(env).To(HaveKeyWithValue("OTEL_TRACES_EXPORTER", "none"))
+			Expect(env).To(HaveKeyWithValue("OTEL_LOGS_EXPORTER", "none"))
+			Expect(env).To(HaveKey("BEYLA_INJECTOR_SDK_PKG_VERSION"))
+			Expect(env["BEYLA_INJECTOR_SDK_PKG_VERSION"]).NotTo(BeEmpty())
+		})
+
+		// ---- Step 3: verify telemetry actually flows to LGTM ----
+		It("exports metrics that become queryable in LGTM", func() {
+			By("generating HTTP traffic against the workload so the SDK emits metrics")
+			// The load generator lives in the (unselected) LGTM namespace so it is
+			// not itself instrumented.
+			Expect(kubectlApply(loadGeneratorManifests(lgtmNS, "load-gen",
+				fmt.Sprintf("http://%s.%s.svc.cluster.local:8080/", appName, appNS)))).To(Succeed())
+
+			By("querying LGTM's Prometheus until the workload's metrics show up")
+			// The SDK maps service.name/service.namespace onto Prometheus job/instance
+			// and emits a target_info series; try a few candidate selectors so the
+			// assertion does not depend on otel-lgtm's exact OTLP→Prometheus naming.
+			Eventually(func(g Gomega) {
+				matched, n, err := promHasSeries(promBaseURL,
+					`target_info{service_name="`+appName+`"}`,
+					`{service_name="`+appName+`"}`,
+					`{job=~".*`+appName+`.*"}`,
+				)
+				g.Expect(err).NotTo(HaveOccurred(), "Prometheus query failed")
+				g.Expect(n).To(BeNumerically(">", 0),
+					"no metrics for %q in LGTM yet (last query tried: %s)", appName, matched)
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+		})
+
+		// ---- Step 4: Beyla updates the config to exclude the workload ----
+		It("uninstruments the workload once the ConfigMap no longer matches", func() {
+			// Capture the current rollout marker so we can tell the uninstrument
+			// roll apart from the instrument roll triggered in step 1.
+			revBefore, _ := restartedAt(appNS, appName)
+
 			By("updating the ConfigMap so the criteria no longer match the workload")
 			// The workload stays listed in eligible_for_restart so the controller
 			// re-evaluates it and notices it is instrumented-but-unmatched.
-			Expect(kubectlApply(selectorConfigMap(cmName, workloadNS, workload, "somewhere-else", sdkImage))).
-				To(Succeed())
+			Expect(kubectlApply(
+				metricsConfigMap(cmName, appNS, appName, "somewhere-else", otlpEndpoint, sdkImage))).To(Succeed())
 
-			// ---- Step 3: the workload gets uninstrumented ----
 			By("asserting the controller rolls the now-unmatched Deployment")
 			Eventually(func(g Gomega) {
-				rev, err := restartedAt(workloadNS, workload)
+				rev, err := restartedAt(appNS, appName)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(rev).NotTo(BeEmpty(), "Deployment was not rolled for uninstrumentation")
 				g.Expect(rev).NotTo(Equal(revBefore), "expected a fresh rollout for uninstrumentation")
@@ -403,7 +485,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("asserting the recreated pods come back without instrumentation")
 			Eventually(func(g Gomega) {
-				pods := podsWithLabel(g, workloadNS, "app="+workload)
+				pods := podsDetailed(g, appNS, "app="+appName)
 				g.Expect(pods).NotTo(BeEmpty())
 				for _, p := range pods {
 					g.Expect(p.Metadata.Annotations).NotTo(HaveKey(injectAnno),
@@ -487,23 +569,99 @@ func kubectlOut(args ...string) (string, error) {
 	return string(out), err
 }
 
-// podSummary is the slice of a Pod we assert on: its name and annotations.
-type podSummary struct {
+// podDetail is the slice of a Pod we assert on: identity/annotations, the
+// injected volume + container env, and readiness.
+type podDetail struct {
 	Metadata struct {
 		Name        string            `json:"name"`
 		Annotations map[string]string `json:"annotations"`
 	} `json:"metadata"`
+	Spec struct {
+		Volumes []struct {
+			Name  string `json:"name"`
+			Image *struct {
+				Reference string `json:"reference"`
+			} `json:"image"`
+		} `json:"volumes"`
+		Containers []struct {
+			Name string `json:"name"`
+			Env  []struct {
+				Name  string `json:"name"`
+				Value string `json:"value"`
+			} `json:"env"`
+		} `json:"containers"`
+	} `json:"spec"`
+	Status struct {
+		Conditions []struct {
+			Type   string `json:"type"`
+			Status string `json:"status"`
+		} `json:"conditions"`
+	} `json:"status"`
 }
 
-// podsWithLabel lists pods in ns matching the label selector.
-func podsWithLabel(g Gomega, ns, selector string) []podSummary {
+// ready reports whether the pod's Ready condition is True.
+func (p podDetail) ready() bool {
+	for _, c := range p.Status.Conditions {
+		if c.Type == "Ready" {
+			return c.Status == "True"
+		}
+	}
+	return false
+}
+
+// volumeImage returns the ImageVolume reference for the named volume, or "".
+func (p podDetail) volumeImage(name string) string {
+	for _, v := range p.Spec.Volumes {
+		if v.Name == name && v.Image != nil {
+			return v.Image.Reference
+		}
+	}
+	return ""
+}
+
+// containerEnv returns the named container's env as a map (plain values only;
+// downward-API valueFrom entries surface as empty strings).
+func (p podDetail) containerEnv(name string) map[string]string {
+	for _, c := range p.Spec.Containers {
+		if c.Name == name {
+			m := make(map[string]string, len(c.Env))
+			for _, e := range c.Env {
+				m[e.Name] = e.Value
+			}
+			return m
+		}
+	}
+	return nil
+}
+
+// podsDetailed lists pods in ns matching the label selector.
+func podsDetailed(g Gomega, ns, selector string) []podDetail {
 	out, err := kubectlOut("get", "pods", "-n", ns, "-l", selector, "-o", "json")
 	g.Expect(err).NotTo(HaveOccurred(), "failed to list pods")
 	var list struct {
-		Items []podSummary `json:"items"`
+		Items []podDetail `json:"items"`
 	}
 	g.Expect(json.Unmarshal([]byte(out), &list)).To(Succeed(), "failed to parse pod list")
 	return list.Items
+}
+
+// waitInstrumentedReadyPod blocks until a pod matching selector in ns is both
+// instrumented (carries injectAnno) and Ready, and returns it. Fails the spec
+// if none appears in time.
+func waitInstrumentedReadyPod(ns, selector, injectAnno string) podDetail {
+	var found podDetail
+	Eventually(func(g Gomega) {
+		found = podDetail{}
+		for _, p := range podsDetailed(g, ns, selector) {
+			if p.Metadata.Annotations[injectAnno] != "" && p.ready() {
+				found = p
+				break
+			}
+		}
+		g.Expect(found.Metadata.Name).NotTo(BeEmpty(),
+			"no instrumented, ready pod for selector %q in %s yet", selector, ns)
+	}, 5*time.Minute, 5*time.Second).Should(Succeed())
+	return found
 }
 
 // restartedAt returns the value of the rollout marker the controller stamps on
@@ -513,15 +671,80 @@ func restartedAt(ns, deployment string) (string, error) {
 		"-o", "jsonpath={.spec.template.metadata.annotations.beyla\\.grafana\\.com/restartedAt}")
 }
 
-// sampleDeployment renders a minimal workload. The pause image runs without a
-// shell and ignores the env/volume the webhook injects, so the pod reaches
-// Ready and rolling updates complete regardless of injection state.
-func sampleDeployment(ns, name string) string {
+// lgtmManifests renders a single-replica grafana/otel-lgtm Deployment plus a
+// Service. The Service is NodePort so the host can reach Prometheus (9090) via
+// the kind extraPortMapping, while in-cluster workloads reach the OTLP receiver
+// (4318) through the same Service's ClusterIP. No persistent storage — the
+// instance is disposable.
+func lgtmManifests(ns string, promNodePort int) string {
+	return fmt.Sprintf(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: lgtm
+  namespace: %[1]s
+  labels:
+    app: lgtm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: lgtm
+  template:
+    metadata:
+      labels:
+        app: lgtm
+    spec:
+      containers:
+        - name: lgtm
+          image: grafana/otel-lgtm:0.28.0
+          ports:
+            - containerPort: 4317
+            - containerPort: 4318
+            - containerPort: 9090
+          readinessProbe:
+            httpGet:
+              path: /-/ready
+              port: 9090
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            failureThreshold: 60
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: lgtm
+  namespace: %[1]s
+spec:
+  type: NodePort
+  selector:
+    app: lgtm
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+    - name: prometheus
+      port: 9090
+      targetPort: 9090
+      nodePort: %[2]d
+`, ns, promNodePort)
+}
+
+// nodeAppManifests renders a minimal Node.js HTTP server plus a Service. We use
+// the glibc node:20-slim image on purpose: the injector preloads a glibc
+// libotelinject.so via LD_PRELOAD, which a musl (alpine) image would silently
+// ignore, leaving the app uninstrumented. The SDK's HTTP instrumentation emits
+// metrics once the server starts handling requests.
+func nodeAppManifests(ns, name string) string {
 	return fmt.Sprintf(`apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: %[2]s
   namespace: %[1]s
+  labels:
+    app: %[2]s
 spec:
   replicas: 1
   selector:
@@ -534,17 +757,76 @@ spec:
     spec:
       containers:
         - name: app
-          image: registry.k8s.io/pause:3.10
+          image: node:20-slim
+          # Export metrics often so the assertion does not wait a full default
+          # (60s) collection cycle.
+          env:
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "5000"
+          command:
+            - node
+            - -e
+            - |
+              const http = require('http');
+              http.createServer((req, res) => {
+                res.writeHead(200, {'Content-Type': 'text/plain'});
+                res.end('hello\n');
+              }).listen(8080, () => console.log('listening on 8080'));
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: %[2]s
+  namespace: %[1]s
+spec:
+  selector:
+    app: %[2]s
+  ports:
+    - port: 8080
+      targetPort: 8080
 `, ns, name)
 }
 
-// selectorConfigMap renders the per-node ConfigMap Beyla writes: the selection
-// criteria + SDK image under instrumentation.yaml, and the workload under
-// eligible_for_restart.yaml. discoveryNS is the namespace the criterion matches
-// (set it to the workload namespace to instrument, elsewhere to exclude); the
-// eligible_for_restart entry always names the Deployment so the controller
-// re-evaluates it after the criterion stops matching.
-func selectorConfigMap(cmName, targetNS, deployment, discoveryNS, image string) string {
+// loadGeneratorManifests renders a Deployment that curls the target URL in a
+// loop, driving the traffic the SDK needs to emit HTTP metrics.
+func loadGeneratorManifests(ns, name, targetURL string) string {
+	return fmt.Sprintf(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: %[2]s
+  namespace: %[1]s
+  labels:
+    app: %[2]s
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: %[2]s
+  template:
+    metadata:
+      labels:
+        app: %[2]s
+    spec:
+      containers:
+        - name: load
+          image: curlimages/curl:8.11.0
+          command:
+            - /bin/sh
+            - -c
+            - "while true; do curl -s -o /dev/null %[3]s || true; sleep 1; done"
+`, ns, name, targetURL)
+}
+
+// metricsConfigMap renders the per-node ConfigMap Beyla writes: the selection
+// criteria + SDK image + OTLP destination under instrumentation.yaml (with
+// metric export enabled and traces/logs disabled), and the workload under
+// eligible_for_restart.yaml. discoveryNS is the namespace the criterion
+// matches: set it to the workload namespace to instrument, elsewhere to
+// exclude. The eligible_for_restart entry always names the Deployment so the
+// controller re-evaluates it after the criterion stops matching.
+func metricsConfigMap(cmName, ns, deployment, discoveryNS, otlpEndpoint, image string) string {
 	return fmt.Sprintf(`apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -556,13 +838,60 @@ data:
   instrumentation.yaml: |
     discovery:
       - k8s_namespace: %[4]s
-    image_volume_path: %[5]s
+    image_volume_path: %[6]s
     otel_export:
-      endpoint: http://otel-collector:4318
+      endpoint: %[5]s
       protocol: http/protobuf
+    otel_exported_signals:
+      metrics: true
+      traces: false
+      logs: false
   eligible_for_restart.yaml: |
     - namespace: %[2]s
       kind: Deployment
       name: %[3]s
-`, cmName, targetNS, deployment, discoveryNS, image)
+`, cmName, ns, deployment, discoveryNS, otlpEndpoint, image)
+}
+
+// promQueryResult is the slice of the Prometheus instant-query API response we
+// assert on: just the result vector.
+type promQueryResult struct {
+	Data struct {
+		Result []struct {
+			Metric map[string]string `json:"metric"`
+		} `json:"result"`
+	} `json:"data"`
+}
+
+// promHasSeries runs each PromQL query in order against the Prometheus instant
+// query API and returns the first query that yields at least one series, plus
+// the number of series it returned. Trying several candidate queries keeps the
+// assertion resilient to how otel-lgtm names OTLP-derived series and labels.
+func promHasSeries(baseURL string, queries ...string) (string, int, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	last := ""
+	for _, q := range queries {
+		last = q
+		u := baseURL + "/api/v1/query?query=" + url.QueryEscape(q)
+		resp, err := client.Get(u) //nolint:gosec // test-only request to a local Prometheus
+		if err != nil {
+			return q, 0, err
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			return q, 0, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return q, 0, fmt.Errorf("prometheus query %q returned HTTP %d: %s", q, resp.StatusCode, string(body))
+		}
+		var pr promQueryResult
+		if err := json.Unmarshal(body, &pr); err != nil {
+			return q, 0, fmt.Errorf("decoding prometheus response for %q: %w", q, err)
+		}
+		if len(pr.Data.Result) > 0 {
+			return q, len(pr.Data.Result), nil
+		}
+	}
+	return last, 0, nil
 }

@@ -1,0 +1,8 @@
+# Appends the --config flag pointing at the SDK config mounted by
+# manager_sdk_config_patch.yaml. Expressed as a JSON 6902 add (not folded into
+# the strategic-merge patch) so it appends to the args list the ../default
+# overlay builds instead of replacing it — replacing it would drop
+# --metrics-bind-address and silently disable the metrics server.
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --config=/etc/beyla-injector/sdk-inject.yaml
