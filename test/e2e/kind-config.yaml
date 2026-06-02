@@ -1,0 +1,11 @@
+# Kind cluster configuration for the e2e suite.
+#
+# The injector mounts the SDK via a Kubernetes ImageVolumeSource. That volume
+# kind is gated behind the `ImageVolume` feature gate (alpha in k8s 1.31, beta
+# from 1.33); with the gate off the apiserver prunes the volume source and
+# rejects the mutated pod. Enabling it here lets the e2e cluster accept the
+# pods the webhook produces.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+featureGates:
+  ImageVolume: true

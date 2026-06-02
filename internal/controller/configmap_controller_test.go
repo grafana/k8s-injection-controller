@@ -412,4 +412,61 @@ var _ = Describe("ConfigMap controller rollout sweep", func() {
 
 	})
 
+	It("restarts an instrumented Deployment whose pods no longer match (uninstrumentation)", func() {
+		const (
+			uns     = "demo-uninstrument"
+			udep    = "legacy-app"
+			urs     = "legacy-app-abc123"
+			upod    = "legacy-app-abc123-001"
+			otherNS = "somewhere-else"
+		)
+		ensureNS(uns)
+
+		By("creating an instrumented Deployment/ReplicaSet/Pod")
+		dep := mkDeployment(uns, udep)
+		ctrlTrue := true
+		rs := &appsv1.ReplicaSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      urs,
+				Namespace: uns,
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: "apps/v1",
+					Kind:       "Deployment",
+					UID:        dep.UID,
+					Name:       dep.Name,
+					Controller: &ctrlTrue,
+				}},
+			},
+			Spec: appsv1.ReplicaSetSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "worker"}},
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": "worker"}},
+					Spec:       corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "nginx"}}},
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, rs)).To(Succeed())
+
+		// The pod carries our inject annotation, marking it as instrumented.
+		mkPod(uns, upod, rs, func(p *corev1.Pod) {
+			p.Annotations = map[string]string{
+				webhookv1.InjectedAnnotation: testSDKConfig.PackageVersion(),
+			}
+		})
+
+		By("creating a ConfigMap whose selection criteria no longer match the pod")
+		// discovery targets a different namespace, so Registry.Match misses; the
+		// workload is still listed in eligible_for_restart so the controller
+		// re-evaluates it and, finding it instrumented-but-unmatched, rolls it.
+		mkCM(uns, "beyla-selector-uninstrument",
+			"discovery:\n - k8s_namespace: "+otherNS+"\n",
+			"- namespace: "+uns+"\n  kind: Deployment\n  name: "+udep+"\n")
+
+		By("asserting the pod is NOT individually evicted")
+		expectKept(uns, upod)
+
+		By("asserting the Deployment gains the restartedAt annotation")
+		expectAnnotated(uns, udep)
+	})
+
 })

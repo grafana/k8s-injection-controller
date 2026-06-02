@@ -268,6 +268,52 @@ var _ = Describe("Pod Webhook", func() {
 	})
 })
 
+var _ = Describe("IsInstrumented", func() {
+	It("is false for a clean pod", func() {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "app", Image: "nginx"}},
+		}}
+		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeFalse())
+	})
+
+	It("is true when the inject annotation is present, regardless of version", func() {
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{InjectedAnnotation: "any-stale-or-current-digest"},
+		}}
+		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeTrue())
+	})
+
+	It("ignores an empty annotation value", func() {
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{InjectedAnnotation: ""},
+		}}
+		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeFalse())
+	})
+
+	It("is true when a container carries the SDK version env var", func() {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{
+				Name:  "app",
+				Image: "nginx",
+				Env:   []corev1.EnvVar{{Name: envVarSDKVersion, Value: "some-digest"}},
+			}},
+		}}
+		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeTrue())
+	})
+
+	It("is true when only an init container carries the SDK version env var", func() {
+		pod := &corev1.Pod{Spec: corev1.PodSpec{
+			InitContainers: []corev1.Container{{
+				Name:  "init",
+				Image: "busybox",
+				Env:   []corev1.EnvVar{{Name: envVarSDKVersion, Value: "some-digest"}},
+			}},
+			Containers: []corev1.Container{{Name: "app", Image: "nginx"}},
+		}}
+		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeTrue())
+	})
+})
+
 func envNames(env []corev1.EnvVar) []string {
 	out := make([]string, 0, len(env))
 	for _, e := range env {
