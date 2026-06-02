@@ -273,10 +273,12 @@ func parseConfigMap(data map[string]string) (registry.Instrumentation, []restart
 
 // selectionCriterionFromGlob projects one obi GlobAttributes entry onto the
 // injector's match schema. We read the well-known k8s_* metadata keys
-// (carried via the inline Metadata map on the obi side) and ignore
-// everything else — obi's open_ports, exe_path, etc. are runtime gates
-// Beyla applies on the agent side, not admission-time gates we can apply
-// to a Pod spec.
+// (carried via the inline Metadata map on the obi side) plus the
+// k8s_pod_labels / k8s_pod_annotations maps (carried in dedicated fields, not
+// the inline map), and ignore everything else — obi's open_ports, exe_path,
+// etc. are runtime gates Beyla applies on the agent side, not admission-time
+// gates we can apply to a Pod spec. Pod labels and annotations, by contrast,
+// ARE on the admission Pod object, so we enforce them.
 func selectionCriterionFromGlob(ga *configmap.WebhookKubeOnlySelector) registry.SelectionCriterion {
 	get := func(key string) *services.GlobAttr {
 		g, ok := ga.Metadata[key]
@@ -293,7 +295,26 @@ func selectionCriterionFromGlob(ga *configmap.WebhookKubeOnlySelector) registry.
 		K8sStatefulSetName: get("k8s_statefulset_name"),
 		K8sDaemonSetName:   get("k8s_daemonset_name"),
 		K8sOwnerName:       get("k8s_owner_name"),
+		K8sPodLabels:       globMap(ga.PodLabels),
+		K8sPodAnnotations:  globMap(ga.PodAnnotations),
 	}
+}
+
+// globMap copies the non-empty glob entries out of an obi pod-label /
+// pod-annotation map. Returns nil when nothing is set so an unconfigured clause
+// leaves the criterion field empty (and IsEmpty stays accurate).
+func globMap(in map[string]*services.GlobAttr) map[string]*services.GlobAttr {
+	var out map[string]*services.GlobAttr
+	for k, g := range in {
+		if g == nil || !g.IsSet() {
+			continue
+		}
+		if out == nil {
+			out = make(map[string]*services.GlobAttr, len(in))
+		}
+		out[k] = g
+	}
+	return out
 }
 
 // sortEligible orders the deserialized list by (Namespace, Name) so the

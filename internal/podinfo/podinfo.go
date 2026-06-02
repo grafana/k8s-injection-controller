@@ -39,8 +39,10 @@ const kindDeployment = "Deployment"
 // criteria that don't require a deployment.
 func Resolve(ctx context.Context, c client.Reader, pod *corev1.Pod) registry.PodInfo {
 	info := registry.PodInfo{
-		Name:      pod.Name,
-		Namespace: pod.Namespace,
+		Name:        pod.Name,
+		Namespace:   pod.Namespace,
+		Labels:      pod.Labels,
+		Annotations: pod.Annotations,
 	}
 	owner := controllerRef(pod.OwnerReferences)
 	if owner == nil {
