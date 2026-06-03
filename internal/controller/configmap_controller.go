@@ -35,7 +35,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	"go.opentelemetry.io/obi/pkg/appolly/services"
 	"gopkg.in/yaml.v3"
 
 	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
@@ -85,12 +84,16 @@ type workloadKey struct {
 // workload can be determined (e.g. a standalone ReplicaSet with no Deployment
 // parent - those cannot be gracefully rolled).
 func resolveWorkload(info podinfoMatcher) workloadKey {
-	if info.DeploymentName != "" {
-		return workloadKey{Namespace: info.Namespace, Kind: kindDeployment, Name: info.DeploymentName}
-	}
-	switch info.OwnerKind {
-	case kindStatefulSet, kindDaemonSet:
-		return workloadKey{Namespace: info.Namespace, Kind: info.OwnerKind, Name: info.OwnerName}
+	// Walk the resolved owner chain from the top-most owner down and return the
+	// highest-level rollout-capable workload. A Deployment (added last by
+	// podinfo.Resolve via the RS chain) wins; otherwise a StatefulSet/DaemonSet.
+	// A standalone ReplicaSet or a bare Pod yields the zero value (not rollable).
+	for i := len(info.OwnerChain) - 1; i >= 0; i-- {
+		o := info.OwnerChain[i]
+		switch o.Kind {
+		case kindDeployment, kindStatefulSet, kindDaemonSet:
+			return workloadKey{Namespace: info.Namespace, Kind: o.Kind, Name: o.Name}
+		}
 	}
 	return workloadKey{}
 }
@@ -221,12 +224,6 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 // and the eligible-for-restart targets (from eligible_for_restart.yaml).
 // Either key may be absent. Restart entries missing the required namespace
 // or kind, or naming an unknown kind, are dropped with no error.
-//
-// The wire schema (configmap.InjectConfig) carries Discovery as obi's
-// GlobDefinitionCriteria — a superset of fields Beyla uses internally. We
-// translate it down to the injector's typed SelectionCriterion here so the
-// matcher hot path stays cheap and ignores fields it can't enforce at
-// admission time (open_ports, exe_path, …).
 func parseConfigMap(data map[string]string) (registry.Instrumentation, []restartCriterion, error) {
 	var inst registry.Instrumentation
 	if raw, ok := data[configmap.KeyInstrumentation]; ok {
@@ -235,16 +232,6 @@ func parseConfigMap(data map[string]string) (registry.Instrumentation, []restart
 			return registry.Instrumentation{}, nil, fmt.Errorf("parse %s: %w", configmap.KeyInstrumentation, err)
 		}
 		inst.InjectConfig = cfg
-		for _, ga := range cfg.Discovery {
-			crit := selectionCriterionFromGlob(&ga)
-			if crit.IsEmpty() {
-				// Either the entry only carried obi-specific fields we don't
-				// honor, or it was empty to begin with. Either way: skip,
-				// since an empty criterion would match every pod.
-				continue
-			}
-			inst.Criteria = append(inst.Criteria, crit)
-		}
 	}
 	var restartTargets []restartCriterion
 	if raw, ok := data[configmap.KeyEligibleForRestart]; ok {
@@ -269,52 +256,6 @@ func parseConfigMap(data map[string]string) (registry.Instrumentation, []restart
 		}
 	}
 	return inst, restartTargets, nil
-}
-
-// selectionCriterionFromGlob projects one obi GlobAttributes entry onto the
-// injector's match schema. We read the well-known k8s_* metadata keys
-// (carried via the inline Metadata map on the obi side) plus the
-// k8s_pod_labels / k8s_pod_annotations maps (carried in dedicated fields, not
-// the inline map), and ignore everything else — obi's open_ports, exe_path,
-// etc. are runtime gates Beyla applies on the agent side, not admission-time
-// gates we can apply to a Pod spec. Pod labels and annotations, by contrast,
-// ARE on the admission Pod object, so we enforce them.
-func selectionCriterionFromGlob(ga *configmap.WebhookKubeOnlySelector) registry.SelectionCriterion {
-	get := func(key string) *services.GlobAttr {
-		g, ok := ga.Metadata[key]
-		if !ok || g == nil || !g.IsSet() {
-			return nil
-		}
-		return g
-	}
-	return registry.SelectionCriterion{
-		K8sPodName:         get("k8s_pod_name"),
-		K8sNamespace:       get("k8s_namespace"),
-		K8sDeploymentName:  get("k8s_deployment_name"),
-		K8sReplicaSetName:  get("k8s_replicaset_name"),
-		K8sStatefulSetName: get("k8s_statefulset_name"),
-		K8sDaemonSetName:   get("k8s_daemonset_name"),
-		K8sOwnerName:       get("k8s_owner_name"),
-		K8sPodLabels:       globMap(ga.PodLabels),
-		K8sPodAnnotations:  globMap(ga.PodAnnotations),
-	}
-}
-
-// globMap copies the non-empty glob entries out of an obi pod-label /
-// pod-annotation map. Returns nil when nothing is set so an unconfigured clause
-// leaves the criterion field empty (and IsEmpty stays accurate).
-func globMap(in map[string]*services.GlobAttr) map[string]*services.GlobAttr {
-	var out map[string]*services.GlobAttr
-	for k, g := range in {
-		if g == nil || !g.IsSet() {
-			continue
-		}
-		if out == nil {
-			out = make(map[string]*services.GlobAttr, len(in))
-		}
-		out[k] = g
-	}
-	return out
 }
 
 // sortEligible orders the deserialized list by (Namespace, Name) so the
@@ -378,7 +319,7 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 			if !matchesAnyTarget(info, nsTargets) {
 				continue
 			}
-			inst, ok := r.Registry.Match(info)
+			_, cfg, ok := r.Registry.Match(info)
 			if !ok {
 				// Pod no longer matches any selection criterion. If it is
 				// currently instrumented, restart its workload so the webhook
@@ -391,7 +332,7 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 					"namespace", pod.Namespace, "pod", pod.Name)
 			} else {
 				// Pod matches: this is the (re-)instrumentation path.
-				effective := r.DefaultSDKConfig.WithConfigMapOverrides(inst.InjectConfig)
+				effective := r.DefaultSDKConfig.WithConfigMapOverrides(cfg)
 				if effective.ImageVersion == "" {
 					// No SDK config in the default or in the CM override: the
 					// webhook would not mutate, so evicting accomplishes nothing.
@@ -406,7 +347,7 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 			}
 			key := resolveWorkload(info)
 			if key == (workloadKey{}) {
-				logger.Info("skipping pod: owner is not a rollout capable workload", "namespace", pod.Namespace, "pod", pod.Name, "ownerKind", info.OwnerKind, "ownerName", info.OwnerName)
+				logger.Info("skipping pod: owner is not a rollout capable workload", "namespace", pod.Namespace, "pod", pod.Name, "ownerChain", info.OwnerChain)
 				continue
 			}
 			toRestart[key] = struct{}{}
@@ -461,20 +402,10 @@ func matchesAnyTarget(info podinfoMatcher, targets []restartCriterion) bool {
 type podinfoMatcher = registry.PodInfo
 
 func matchesTarget(info podinfoMatcher, t restartCriterion) bool {
-	switch t.Kind {
-	case kindDeployment:
-		// Pod is owned (transitively) by a Deployment when podinfo.Resolve
-		// populates DeploymentName via the RS chain — or directly, if the
-		// pod's controller ref is itself a Deployment.
-		if info.DeploymentName == "" {
-			return false
+	for _, o := range info.OwnerChain {
+		if o.Kind == t.Kind && (t.Name == "" || t.Name == o.Name) {
+			return true
 		}
-		return t.Name == "" || t.Name == info.DeploymentName
-	case kindReplicaSet, kindStatefulSet, kindDaemonSet:
-		if info.OwnerKind != t.Kind {
-			return false
-		}
-		return t.Name == "" || t.Name == info.OwnerName
 	}
 	return false
 }

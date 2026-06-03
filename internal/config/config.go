@@ -6,7 +6,6 @@ import (
 
 	bservices "github.com/grafana/beyla/v3/pkg/services"
 	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
-	"go.opentelemetry.io/obi/pkg/appolly/services"
 )
 
 type SDKInject struct {
@@ -14,27 +13,21 @@ type SDKInject struct {
 	// a responsibility of the end-user to bounce the pods to be instrumented
 	NoAutoRestart bool `yaml:"disable_auto_restart"`
 	// OCI image version mounted into pods via Kubernetes ImageVolumeSource.
-	// Requires k8s 1.31+. Required — this is the only supported volume mode.
+	// Requires k8s 1.31+. Combined with ImageVolumeRoot to form the full image
+	// reference. Beyla may override this per-ConfigMap via InjectConfig.ImageVersion.
 	ImageVersion string `yaml:"image_version"`
-	// OCI image reference mounted into pods via Kubernetes ImageVolumeSource.
-	// This configuration appends the version info supplied by Beyla's config maps
-	// or as a direct controller configuration option.
+	// OCI image repository mounted into pods via Kubernetes ImageVolumeSource.
+	// The version (from this config or a Beyla ConfigMap) is appended to form the
+	// full reference, e.g. "<root>:<version>".
 	ImageVolumeRoot string `yaml:"image_volume_root"`
-	// Default sampler configuration for SDK instrumentation
-	// This is used when no sampler is specified in the selector
-	DefaultSampler *services.SamplerConfig `yaml:"trace_sampler"`
-	// Propagators configuration for SDK instrumentation
-	// Common values: tracecontext, baggage, b3, b3multi, jaeger, xray
-	Propagators []string `yaml:"trace_propagators"`
-	// ExportedSignals configuration for SDK instrumentation
-	// Controls which signals (traces, metrics, logs) should be exported from injected SDKs
-	ExportedSignals configmap.SDKExportedSignals `yaml:"otel_exported_signals"`
 	// Resource attributes related settings
 	Resources configmap.SDKResource `yaml:"resources"`
 	// List of enabled SDK auto-instrumentations. Can be used to disable specific
 	// language instrumentations.
 	EnabledSDKs []bservices.InstrumentableType `yaml:"enabled_sdks"`
-	// Enables injection debugging
+	// Debug enables verbose injector logging (OTEL_INJECTOR_LOG_LEVEL=debug) on
+	// instrumented containers. Unlike the signal/sampler/propagator config, Beyla
+	// does not write this as a per-rule env var, so it stays a controller-side knob.
 	Debug bool `yaml:"debug"`
 }
 
@@ -68,36 +61,15 @@ func (s *SDKInject) PackageVersion() string {
 }
 
 // WithConfigMapOverrides returns a copy of s with any per-ConfigMap overrides
-// from cfg applied on top. Zero/nil fields on cfg are treated as "no override"
-// and leave the corresponding default in place.
+// from cfg applied on top. The merged Beyla webhook config (#2819) carries only
+// the image version at the InjectConfig level; all per-rule instrumentation
+// config now travels as env vars in each Rule.Config.Env. A zero/empty
+// ImageVersion is treated as "no override" and leaves the controller default in
+// place.
 func (s SDKInject) WithConfigMapOverrides(cfg configmap.InjectConfig) SDKInject {
 	out := s
 	if cfg.ImageVersion != "" {
 		out.ImageVersion = cfg.ImageVersion
-	}
-	if cfg.DefaultSampler != nil {
-		out.DefaultSampler = cfg.DefaultSampler
-	}
-	if len(cfg.Propagators) > 0 {
-		out.Propagators = cfg.Propagators
-	}
-	if cfg.ExportedSignals.Traces != nil {
-		out.ExportedSignals.Traces = cfg.ExportedSignals.Traces
-	}
-	if cfg.ExportedSignals.Metrics != nil {
-		out.ExportedSignals.Metrics = cfg.ExportedSignals.Metrics
-	}
-	if cfg.ExportedSignals.Logs != nil {
-		out.ExportedSignals.Logs = cfg.ExportedSignals.Logs
-	}
-	if r := cfg.Resources; r.Attributes != nil || r.AddK8sUIDAttributes ||
-		r.AddK8sIPAttribute || r.UseLabelsForResourceAttributes {
-		out.Resources = configmap.SDKResource{
-			Attributes:                     r.Attributes,
-			AddK8sUIDAttributes:            r.AddK8sUIDAttributes,
-			AddK8sIPAttribute:              r.AddK8sIPAttribute,
-			UseLabelsForResourceAttributes: r.UseLabelsForResourceAttributes,
-		}
 	}
 	return out
 }

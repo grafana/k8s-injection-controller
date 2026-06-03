@@ -21,15 +21,12 @@ import (
 
 	"go.opentelemetry.io/obi/pkg/appolly/services"
 
+	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
+
 	"github.com/grafana/beyla-k8s-injector/internal/config"
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 	webhookv1 "github.com/grafana/beyla-k8s-injector/internal/webhook/v1"
 )
-
-func glob(p string) *services.GlobAttr {
-	a := services.NewGlob(p)
-	return &a
-}
 
 func deployOwner(name string) metav1.OwnerReference {
 	ctrl := true
@@ -55,9 +52,11 @@ func testPod(ns, name string, owners []metav1.OwnerReference, env []corev1.EnvVa
 // demoRegistry matches everything in namespace "demo".
 func demoRegistry() *registry.Registry {
 	r := registry.New()
-	r.Set("test/cm", registry.Instrumentation{
-		Criteria: []registry.SelectionCriterion{{K8sNamespace: glob("demo")}},
-	})
+	r.Set("test/cm", registry.Instrumentation{InjectConfig: configmap.InjectConfig{
+		Rules: []configmap.Rule{{
+			Selector: configmap.K8sSelector{Namespaces: []services.GlobAttr{services.NewGlob("demo")}},
+		}},
+	}})
 	return r
 }
 

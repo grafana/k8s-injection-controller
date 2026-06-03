@@ -1,36 +1,19 @@
-# Sample config.SDKInject loaded by `make deploy-test`. Tweak to match your
-# cluster — the values here are just placeholders that exercise every field.
-
-# The OTLP endpoint / protocol no longer live here — they're per-ConfigMap,
-# under `otel_export:` inside each selector's instrumentation.yaml.
-
-debug: false
+# Sample config.SDKInject loaded by `make deploy-test`.
+# Signal exporters, propagators, sampler, debug, and static resource attributes
+# are now owned by Beyla and written to the ConfigMap as env vars.
 
 # OCI image mounted into pods via Kubernetes ImageVolumeSource. Requires k8s 1.31+.
 image_volume_root: ghcr.io/grafana/beyla/inject-sdk-image
 image_version: 0.0.11
 
-propagators:
-  - tracecontext
-  - baggage
-
-export:
-  traces: true
-  metrics: true
-  logs: false
-
-resources:
-  resourceAttributes:
-    deployment.environment: dev
-  addK8sUIDAttributes: true
-  addK8sIPAttribute: false
-  useLabelsForResourceAttributes: false
-
-# Languages whose auto-instrumentation should run. Anything omitted gets the
-# corresponding *_AUTO_INSTRUMENTATION_AGENT_PATH env var blanked, which the
-# injector reads as "disabled".
+# Languages whose auto-instrumentation should run.
 enabled_sdks:
   - nodejs
   - python
   - java
   - dotnet
+
+resources:
+  add_k8s_uid_attributes: true
+  add_k8s_ip_attribute: false
+  use_k8s_labels_for_resource_attributes: false

@@ -93,21 +93,28 @@ func (d *PodCustomDefaulter) recordOutcome(info registry.PodInfo, outcome string
 func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error {
 	podlog.Info("admission received", "namespace", obj.Namespace, "name", obj.Name, "generateName", obj.GenerateName)
 	info := podinfo.Resolve(ctx, d.Reader, obj)
-	inst, ok := d.Registry.Match(info)
+	rule, cmCfg, ok := d.Registry.Match(info)
 	if !ok {
-		podlog.Info("no criterion matched; skipping", "namespace", obj.Namespace, "name", obj.Name)
+		podlog.Info("no rule matched; skipping", "namespace", obj.Namespace, "name", obj.Name)
 		d.recordOutcome(info, OutcomeNoMatchingSelector)
 		return nil
 	}
 
-	// Per-request mutator with any per-ConfigMap overrides layered on top of
-	// the controller-wide SDK defaults. Mutator methods are pm.Cfg-driven, so
-	// a shallow copy is enough to scope the override. Compute the resolved
-	// package version up front: it depends on the (possibly-overridden)
-	// ImageVersion, and both the version-skew check and the annotation we
-	// stamp need it.
+	if d.Mutator == nil {
+		podlog.Info("pod matches but no SDK config loaded; skipping injection",
+			"namespace", obj.Namespace, "name", obj.Name)
+		d.recordOutcome(info, OutcomeNoSDKConfig)
+		return nil
+	}
+
+	// Per-request mutator with the ConfigMap's image-version override (if any)
+	// layered on top of the controller-wide SDK defaults. Mutator methods are
+	// pm.Cfg-driven, so a shallow copy is enough to scope the override. Compute
+	// the resolved package version up front: it depends on the (possibly
+	// overridden) ImageVersion, and both the version-skew check and the
+	// annotation we stamp need it.
 	mutator := *d.Mutator
-	mutator.Cfg = mutator.Cfg.WithConfigMapOverrides(inst.InjectConfig)
+	mutator.Cfg = mutator.Cfg.WithConfigMapOverrides(cmCfg)
 
 	if mutator.Cfg.ImageVersion == "" {
 		podlog.Info("pod matches but no SDK config loaded; skipping injection",
@@ -117,7 +124,6 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	}
 
 	wantVersion := mutator.Cfg.PackageVersion()
-
 	if AlreadyInstrumented(&obj.Spec, &obj.ObjectMeta, wantVersion) {
 		podlog.Info("already instrumented at current SDK version; skipping",
 			"namespace", obj.Namespace, "name", obj.Name, "version", wantVersion)
@@ -133,10 +139,10 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 
 	mutator.mountVolume(&obj.Spec)
 	for i := range obj.Spec.Containers {
-		mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i], inst.InjectConfig.OtelExport)
+		mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i], rule.Config.Env)
 	}
 	for i := range obj.Spec.InitContainers {
-		mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.InitContainers[i], inst.InjectConfig.OtelExport)
+		mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.InitContainers[i], rule.Config.Env)
 	}
 
 	if obj.Annotations == nil {
