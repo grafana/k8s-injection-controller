@@ -108,7 +108,7 @@ data:
       # the controller honors `image_version`, `trace_sampler`,
       # `trace_propagators`, `otel_exported_signals`, and `resources` from
       # the per-node ConfigMap.
-      image_version: 0.0.9
+      image_version: 0.0.11
 ---
 apiVersion: apps/v1
 kind: DaemonSet

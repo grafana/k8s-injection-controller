@@ -340,7 +340,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// These assertions are spec-level (the inject annotation), so the pod
 			// does not need to actually pull/run this image.
 			sdkImageRoot    = "ghcr.io/grafana/beyla/inject-sdk-image"
-			sdkImageVersion = "0.0.9"
+			sdkImageVersion = "0.0.11"
 		)
 
 		It("instruments a matching workload and uninstruments it once the config excludes it", func() {
