@@ -7,3 +7,7 @@ patches:
   target:
     kind: MutatingWebhookConfiguration
     name: mutating-webhook-configuration
+- path: configmap_namespace_selector_patch.yaml
+  target:
+    kind: ValidatingWebhookConfiguration
+    name: validating-webhook-configuration

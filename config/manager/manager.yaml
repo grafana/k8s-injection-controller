@@ -73,6 +73,20 @@ spec:
         # with failurePolicy=Ignore, admit them un-instrumented.
         - name: WEBHOOK_SERVICE_ADDR
           value: beyla-k8s-injector-webhook-service.beyla-k8s-injector.svc:443
+        # The controller's own namespace, surfaced via the downward API. Used
+        # as the default ConfigMap watch namespace when WATCH_NAMESPACE is
+        # unset (Beyla is expected to run co-located). Set WATCH_NAMESPACE
+        # explicitly if Beyla writes its state ConfigMaps elsewhere.
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        # Comma-separated allowlist of usernames permitted to create/update the
+        # annotated injection ConfigMaps — typically Beyla's ServiceAccount.
+        # Members of system:masters are always allowed (break-glass). Adjust to
+        # match Beyla's actual ServiceAccount and namespace.
+        - name: ALLOWED_CONFIGMAP_WRITERS
+          value: system:serviceaccount:beyla-k8s-injector:beyla
         ports:
         - containerPort: 8081
           name: health

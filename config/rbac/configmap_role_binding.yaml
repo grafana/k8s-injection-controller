@@ -1,0 +1,22 @@
+# Binds the namespaced Role granting get/list/watch on ConfigMaps (generated
+# from the namespace-scoped +kubebuilder:rbac marker in the ConfigMap
+# controller) to the manager's ServiceAccount. The Role and this binding live
+# in the controller's own namespace — the only namespace whose ConfigMaps the
+# controller watches and trusts. Cluster-wide permissions (pods, replicasets,
+# workloads) remain in the ClusterRole bound by role_binding.yaml.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/name: k8s-injection-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: manager-configmap-rolebinding
+  namespace: system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: manager-role
+subjects:
+- kind: ServiceAccount
+  name: controller-manager
+  namespace: system

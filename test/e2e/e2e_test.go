@@ -356,11 +356,45 @@ var _ = Describe("Manager", Ordered, func() {
 			By("deploying the sample workload")
 			Expect(k8sClient.Resources().Create(suiteCtx, sampleDeployment(workloadNS, workload))).To(Succeed())
 
-			// ---- Step 1: Beyla sends a ConfigMap that instruments the workload ----
-			By("applying the Beyla ConfigMap whose criteria select the workload namespace")
-			Expect(applyConfigMap(
-				selectorConfigMap(cmName, workloadNS, workload, workloadNS, sdkImageVersion, sdkImageRoot))).
+			By("granting Beyla's ServiceAccount RBAC to write injection ConfigMaps")
+			Expect(k8sClient.Resources().Create(suiteCtx, beylaWriterRole(namespace))).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Resources().Delete(suiteCtx, beylaWriterRole(namespace)) })
+			Expect(k8sClient.Resources().Create(suiteCtx, beylaWriterRoleBinding(namespace, allowedConfigMapWriter))).
 				To(Succeed())
+			DeferCleanup(func() {
+				_ = k8sClient.Resources().Delete(suiteCtx, beylaWriterRoleBinding(namespace, allowedConfigMapWriter))
+			})
+
+			// ---- Step 1: Beyla sends a ConfigMap that instruments the workload ----
+			By("asserting an unauthorized identity cannot write an injection ConfigMap")
+			// The kind-admin is neither on ALLOWED_CONFIGMAP_WRITERS nor in
+			// system:masters, so the validating webhook must reject it. This is
+			// the security control that stops an unprivileged principal from
+			// steering instrumentation by planting an annotated ConfigMap.
+			// Retry through the cert-manager CA-injection window: until the
+			// apiserver can reach the webhook (failurePolicy=Fail), the error is
+			// "webhook unreachable" rather than the actual "not authorized".
+			Eventually(func(g Gomega) {
+				err := k8sClient.Resources().Create(suiteCtx,
+					selectorConfigMap(cmName, namespace, workloadNS, workload, workloadNS, sdkImageVersion, sdkImageRoot))
+				g.Expect(err).To(HaveOccurred(), "expected the validating webhook to deny the unauthorized write")
+				g.Expect(err.Error()).To(ContainSubstring("not authorized"))
+			}, time.Minute, 5*time.Second).Should(Succeed())
+
+			By("applying the Beyla ConfigMap whose criteria select the workload namespace")
+			// The ConfigMap lives in the controller's own namespace (the single
+			// watched namespace), mirroring how Beyla writes it into its own
+			// namespace; its criteria/eligible entries target workloadNS. The
+			// ConfigMap validating webhook runs failurePolicy=Fail in this
+			// namespace, so retry to wait out the brief cert-manager
+			// CA-injection window before the apiserver can reach the webhook.
+			// The suite's kind-admin identity passes the webhook via the
+			// system:masters break-glass path.
+			Eventually(func(g Gomega) {
+				g.Expect(applyConfigMap(
+					selectorConfigMap(cmName, namespace, workloadNS, workload, workloadNS, sdkImageVersion, sdkImageRoot))).
+					To(Succeed())
+			}, time.Minute, 5*time.Second).Should(Succeed())
 
 			By("waiting until the workload pod is instrumented by the webhook")
 			// The controller loads the ConfigMap into its in-memory registry
@@ -387,9 +421,11 @@ var _ = Describe("Manager", Ordered, func() {
 			By("updating the ConfigMap so the criteria no longer match the workload")
 			// The workload stays listed in eligible_for_restart so the controller
 			// re-evaluates it and notices it is instrumented-but-unmatched.
-			Expect(applyConfigMap(
-				selectorConfigMap(cmName, workloadNS, workload, "somewhere-else", sdkImageVersion, sdkImageRoot))).
-				To(Succeed())
+			Eventually(func(g Gomega) {
+				g.Expect(applyConfigMap(
+					selectorConfigMap(cmName, namespace, workloadNS, workload, "somewhere-else", sdkImageVersion, sdkImageRoot))).
+					To(Succeed())
+			}, time.Minute, 5*time.Second).Should(Succeed())
 
 			// ---- Step 3: the workload gets uninstrumented ----
 			By("asserting the controller rolls the now-unmatched Deployment")
@@ -499,18 +535,23 @@ func restartedAt(ns, deployment string) (string, error) {
 
 // applyConfigMap creates the ConfigMap, or updates it in place if it already
 // exists, giving the apply-like semantics the lifecycle test relies on.
+// applyConfigMap upserts the ConfigMap as Beyla's ServiceAccount (via the
+// impersonating client), so the write is admitted by the validating webhook
+// the same way it would be in production.
 func applyConfigMap(cm *corev1.ConfigMap) error {
-	var existing corev1.ConfigMap
-	err := k8sClient.Resources().Get(suiteCtx, cm.Name, cm.Namespace, &existing)
+	cms := beylaClientset.CoreV1().ConfigMaps(cm.Namespace)
+	existing, err := cms.Get(suiteCtx, cm.Name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return k8sClient.Resources().Create(suiteCtx, cm)
+		_, err = cms.Create(suiteCtx, cm, metav1.CreateOptions{})
+		return err
 	}
 	if err != nil {
 		return err
 	}
 	existing.Annotations = cm.Annotations
 	existing.Data = cm.Data
-	return k8sClient.Resources().Update(suiteCtx, &existing)
+	_, err = cms.Update(suiteCtx, existing, metav1.UpdateOptions{})
+	return err
 }
 
 // sampleDeployment renders a minimal workload. The pause image runs without a
@@ -535,13 +576,44 @@ func sampleDeployment(ns, name string) *appsv1.Deployment {
 	}
 }
 
+// beylaWriterRole grants the verbs Beyla needs to upsert its per-node state
+// ConfigMaps. In production this RBAC ships with Beyla's own deployment (this
+// controller repo only grants itself read access); the e2e recreates it so the
+// impersonated writes are authorized by RBAC as well as by the webhook.
+func beylaWriterRole(ns string) *rbacv1.Role {
+	return &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: "beyla-configmap-writer", Namespace: ns},
+		Rules: []rbacv1.PolicyRule{{
+			APIGroups: []string{""},
+			Resources: []string{"configmaps"},
+			Verbs:     []string{"get", "list", "watch", "create", "update", "patch", "delete"},
+		}},
+	}
+}
+
+// beylaWriterRoleBinding binds beylaWriterRole to the impersonated Beyla
+// identity (a User subject, since the suite impersonates it by username).
+func beylaWriterRoleBinding(ns, user string) *rbacv1.RoleBinding {
+	return &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: "beyla-configmap-writer", Namespace: ns},
+		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "Role", Name: "beyla-configmap-writer"},
+		Subjects:   []rbacv1.Subject{{Kind: "User", Name: user}},
+	}
+}
+
 // selectorConfigMap renders the per-node ConfigMap Beyla writes: the selection
 // criteria + SDK image under instrumentation.yaml, and the workload under
-// eligible_for_restart.yaml. discoveryNS is the namespace the criterion matches
-// (set it to the workload namespace to instrument, elsewhere to exclude); the
-// eligible_for_restart entry always names the Deployment so the controller
-// re-evaluates it after the criterion stops matching.
-func selectorConfigMap(cmName, targetNS, deployment, discoveryNS, imageVersion, imageRoot string) *corev1.ConfigMap {
+// eligible_for_restart.yaml.
+//
+// cmNamespace is where the ConfigMap object lives — Beyla writes it into its
+// own namespace, which is the single namespace the controller watches (see
+// WATCH_NAMESPACE). It is deliberately decoupled from the workload namespace:
+// targetNS is the workload's namespace named in eligible_for_restart, and
+// discoveryNS is the namespace the criterion matches (set it to the workload
+// namespace to instrument, elsewhere to exclude). The eligible_for_restart
+// entry always names the Deployment so the controller re-evaluates it after the
+// criterion stops matching.
+func selectorConfigMap(cmName, cmNamespace, targetNS, deployment, discoveryNS, imageVersion, imageRoot string) *corev1.ConfigMap {
 	instrumentation := fmt.Sprintf(`discovery:
   - k8s_namespace: %s
 image_version: %s
@@ -559,7 +631,7 @@ otel_export:
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:        cmName,
-			Namespace:   targetNS,
+			Namespace:   cmNamespace,
 			Annotations: map[string]string{"beyla.grafana.com/node": ""},
 		},
 		Data: map[string]string{

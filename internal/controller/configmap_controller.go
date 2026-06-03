@@ -157,7 +157,14 @@ type ConfigMapReconciler struct {
 	Metrics *metrics.SDKInjectionMetrics
 }
 
-// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
+// ConfigMaps are only ever read from the single watched namespace (see the
+// cache scoping in main.go), so this permission is a namespaced Role rather
+// than a cluster-wide grant — an unprivileged ConfigMap elsewhere is invisible
+// to the controller and ungranted. The literal namespace here is the install
+// base namespace; the kustomize overlay rewrites it to the real one.
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch,namespace=system
+// Pods, ReplicaSets and workloads stay cluster-scoped: the eviction sweep
+// targets arbitrary namespaces and the pod-state collector scans the cluster.
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets,verbs=patch

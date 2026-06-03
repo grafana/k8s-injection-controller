@@ -20,6 +20,7 @@ import (
 	"crypto/tls"
 	"flag"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -32,6 +33,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
@@ -165,9 +168,39 @@ func main() {
 		metricsServerOptions.KeyName = metricsCertKey
 	}
 
+	// The controller only trusts ConfigMaps in a single namespace — the one
+	// where Beyla writes its per-node state ConfigMaps (its own namespace).
+	// Restricting the watch here is the first half of the security model:
+	// combined with the namespaced RBAC Role and the validating webhook, an
+	// unprivileged ConfigMap created anywhere else cannot steer injection.
+	watchNamespace := os.Getenv("WATCH_NAMESPACE")
+	if watchNamespace == "" {
+		// Fall back to the controller's own namespace (downward API), which is
+		// where Beyla is expected to run co-located.
+		watchNamespace = os.Getenv("POD_NAMESPACE")
+	}
+	if watchNamespace == "" {
+		setupLog.Error(nil, "no watch namespace configured: set WATCH_NAMESPACE, "+
+			"or POD_NAMESPACE via the downward API, to the namespace where Beyla writes its state ConfigMaps")
+		os.Exit(1)
+	}
+	setupLog.Info("restricting ConfigMap watch to a single namespace", "namespace", watchNamespace)
+
 	mgr, err := ctrl.NewManager(ctrl.GetConfigOrDie(), ctrl.Options{
-		Scheme:                 scheme,
-		Metrics:                metricsServerOptions,
+		Scheme:  scheme,
+		Metrics: metricsServerOptions,
+		// Scope only the ConfigMap informer to watchNamespace. Pods,
+		// ReplicaSets and workloads stay cluster-wide on purpose: the eviction
+		// sweep lists pods in arbitrary target namespaces and the pod-state
+		// collector scans the whole cluster. A blanket cache.DefaultNamespaces
+		// would break both — hence ByObject, restricting ConfigMaps alone.
+		Cache: cache.Options{
+			ByObject: map[client.Object]cache.ByObject{
+				&corev1.ConfigMap{}: {
+					Namespaces: map[string]cache.Config{watchNamespace: {}},
+				},
+			},
+		},
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
@@ -247,6 +280,22 @@ func main() {
 			setupLog.Error(err, "Failed to create webhook", "webhook", "Pod")
 			os.Exit(1)
 		}
+
+		// Validating webhook that gates writes to annotated ConfigMaps. The
+		// allowlist is the set of usernames permitted to create/update them —
+		// typically Beyla's ServiceAccount. system:masters is always allowed
+		// (break-glass). With an empty allowlist only break-glass works, so
+		// Beyla itself would be locked out: warn loudly.
+		allowedWriters := parseAllowedWriters(os.Getenv("ALLOWED_CONFIGMAP_WRITERS"))
+		if len(allowedWriters) == 0 {
+			setupLog.Info("WARNING: ALLOWED_CONFIGMAP_WRITERS is empty; only system:masters may write " +
+				"injection ConfigMaps. Set it to Beyla's ServiceAccount, e.g. " +
+				"system:serviceaccount:<namespace>:<beyla-sa>")
+		}
+		mgr.GetWebhookServer().Register(webhookv1.ValidateConfigMapPath,
+			&webhook.Admission{Handler: webhookv1.NewConfigMapValidator(scheme, allowedWriters)})
+		setupLog.Info("registered ConfigMap validating webhook",
+			"path", webhookv1.ValidateConfigMapPath, "allowedWriters", allowedWriters)
 	}
 	// +kubebuilder:scaffold:builder
 
@@ -271,4 +320,16 @@ func main() {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+// parseAllowedWriters splits a comma-separated list of usernames, trimming
+// whitespace and dropping empty entries.
+func parseAllowedWriters(raw string) []string {
+	var out []string
+	for u := range strings.SplitSeq(raw, ",") {
+		if u = strings.TrimSpace(u); u != "" {
+			out = append(out, u)
+		}
+	}
+	return out
 }
