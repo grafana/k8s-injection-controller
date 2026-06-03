@@ -131,8 +131,9 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 		return nil
 	}
 
-// Mounts the volume as an image on k8s 1.31+, or as an ephemeral emptyDir
-// volume on older k8s.
+	// Mounts the volume as an image on k8s 1.31+, or as an ephemeral emptyDir
+	// volume on older k8s.
+	mutator.mountVolume(&obj.Spec)
 	for i := range obj.Spec.Containers {
 		mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i], inst.InjectConfig.OtelExport)
 	}
