@@ -392,7 +392,7 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 			} else {
 				// Pod matches: this is the (re-)instrumentation path.
 				effective := r.DefaultSDKConfig.WithConfigMapOverrides(inst.InjectConfig)
-				if effective.ImageVolumePath == "" {
+				if effective.ImageVersion == "" {
 					// No SDK config in the default or in the CM override: the
 					// webhook would not mutate, so evicting accomplishes nothing.
 					continue

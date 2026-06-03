@@ -20,7 +20,8 @@ import (
 
 func TestWithConfigMapOverrides(t *testing.T) {
 	base := SDKInject{
-		ImageVolumePath: "default:0",
+		ImageVersion:    "0",
+		ImageVolumeRoot: "default",
 		DefaultSampler:  &services.SamplerConfig{Name: "parentbased_always_on"},
 		Propagators:     []string{"tracecontext"},
 		ExportedSignals: configmap.SDKExportedSignals{
@@ -42,14 +43,14 @@ func TestWithConfigMapOverrides(t *testing.T) {
 		}
 	})
 
-	t.Run("ImageVolumePath override wins when set; empty preserves default", func(t *testing.T) {
-		got := base.WithConfigMapOverrides(configmap.InjectConfig{ImageVolumePath: "override:9"})
-		if got.ImageVolumePath != "override:9" {
-			t.Fatalf("ImageVolumePath = %q, want %q", got.ImageVolumePath, "override:9")
+	t.Run("ImageVersion override wins when set; empty preserves default", func(t *testing.T) {
+		got := base.WithConfigMapOverrides(configmap.InjectConfig{ImageVersion: "9"})
+		if got.ImageVersion != "9" {
+			t.Fatalf("ImageVersion = %q, want %q", got.ImageVersion, "9")
 		}
-		got = base.WithConfigMapOverrides(configmap.InjectConfig{ImageVolumePath: ""})
-		if got.ImageVolumePath != base.ImageVolumePath {
-			t.Fatalf("empty override should preserve default, got %q", got.ImageVolumePath)
+		got = base.WithConfigMapOverrides(configmap.InjectConfig{ImageVersion: ""})
+		if got.ImageVersion != base.ImageVersion {
+			t.Fatalf("empty override should preserve default, got %q", got.ImageVersion)
 		}
 	})
 
@@ -128,9 +129,9 @@ func TestWithConfigMapOverrides(t *testing.T) {
 	t.Run("source struct is not mutated", func(t *testing.T) {
 		snapshot := base
 		_ = base.WithConfigMapOverrides(configmap.InjectConfig{
-			ImageVolumePath: "x",
-			Propagators:     []string{"b3"},
-			Resources:       configmap.SDKResource{AddK8sIPAttribute: true},
+			ImageVersion: "x",
+			Propagators:  []string{"b3"},
+			Resources:    configmap.SDKResource{AddK8sIPAttribute: true},
 		})
 		if !reflect.DeepEqual(base, snapshot) {
 			t.Fatalf("base was mutated by WithConfigMapOverrides")

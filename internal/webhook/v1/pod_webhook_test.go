@@ -67,7 +67,8 @@ var _ = Describe("Pod Webhook", func() {
 			Reader: k8sClient,
 			Mutator: &PodMutator{Cfg: config.SDKInject{
 				// TODO: replace from some auto-updating source
-				ImageVolumePath: "ghcr.io/grafana/beyla/inject-sdk-image:0.0.9",
+				ImageVolumeRoot: "ghcr.io/grafana/beyla/inject-sdk-image",
+				ImageVersion:    "0.0.9",
 				Propagators:     []string{"tracecontext"},
 			}},
 		}
@@ -143,13 +144,13 @@ var _ = Describe("Pod Webhook", func() {
 
 		It("Should override the mounted image and its derived package version", func() {
 			setOverride(configmap.InjectConfig{
-				ImageVolumePath: "ghcr.io/grafana/beyla/inject-sdk-image:override",
+				ImageVersion: "override",
 			})
 
 			// Capture the package-version env the default path would produce, then
 			// run injection and confirm both the volume reference and the env
 			// reflect the override (not the controller default seeded in BeforeEach).
-			defaultPV := (&config.SDKInject{ImageVolumePath: "ghcr.io/grafana/beyla/inject-sdk-image:0.0.9"}).PackageVersion()
+			defaultPV := defaulter.Mutator.Cfg.PackageVersion()
 
 			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
 
@@ -161,7 +162,7 @@ var _ = Describe("Pod Webhook", func() {
 			gotPV := envValue(obj.Spec.Containers[0].Env, "BEYLA_INJECTOR_SDK_PKG_VERSION")
 			Expect(gotPV).NotTo(BeEmpty())
 			Expect(gotPV).NotTo(Equal(defaultPV),
-				"package-version env should reflect the overridden ImageVolumePath, not the controller default")
+				"package-version env should reflect the overridden ImageVersion, not the controller default")
 		})
 
 		It("Should honor Resources flags from the ConfigMap", func() {

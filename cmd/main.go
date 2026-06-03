@@ -215,6 +215,8 @@ func main() {
 		setupLog.Info("no --config provided; webhook will wait for remotely provided injection configuration")
 	}
 
+	sdkConfig.SetDefaults()
+
 	podMutator = &webhookv1.PodMutator{Cfg: sdkConfig}
 
 	// State gauge: scans the manager pod cache at scrape time and reports the

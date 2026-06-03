@@ -36,11 +36,11 @@ import (
 )
 
 // testSDKConfig is the controller-wide SDK config used by the envtest
-// reconciler. The ImageVolumePath is what feeds PackageVersion() on the
+// reconciler. The ImageVersion is what feeds PackageVersion() on the
 // eviction sweep — tests that exercise the version-skew check derive their
 // annotation values from it.
 var testSDKConfig = config.SDKInject{
-	ImageVolumePath: "ghcr.io/grafana/beyla/inject-sdk-image:test",
+	ImageVersion: "test",
 }
 
 var (

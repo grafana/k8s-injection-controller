@@ -107,6 +107,8 @@ github.com/google/pprof v0.0.0-20260402051712-545e8a4df936 h1:EwtI+Al+DeppwYX2oX
 github.com/google/pprof v0.0.0-20260402051712-545e8a4df936/go.mod h1:MxpfABSjhmINe3F1It9d+8exIHFvUqtLIRCdOGNXqiI=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
+github.com/grafana/beyla/v3 v3.12.1-0.20260602135611-6ff0bc471de1 h1:sHoBK0TSvCLWGyBBnpJdwe/Ymz56Zq95/lr8562AcTI=
+github.com/grafana/beyla/v3 v3.12.1-0.20260602135611-6ff0bc471de1/go.mod h1:YSKCl76Dx+9mlBqjt3hE5S9o9dmi0QRAkvIpTO1Cc0o=
 github.com/grafana/beyla/v3 v3.17.0 h1:V2GY35ApB7IKZcJUc1w/thNZayF3x+Wf09vKIpj67BE=
 github.com/grafana/beyla/v3 v3.17.0/go.mod h1:vS7Ia4ZGYEV/zEcUA4eKTH4Cklx3Ou3lLhoF1PyxE38=
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.28.0 h1:HWRh5R2+9EifMyIHV7ZV+MIZqgz+PMpZ14Jynv3O2Zs=
