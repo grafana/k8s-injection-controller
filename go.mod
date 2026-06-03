@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/distribution/reference v0.6.0
-	github.com/grafana/beyla/v3 v3.12.1-0.20260602135611-6ff0bc471de1
+	github.com/grafana/beyla/v3 v3.20.0
 	github.com/onsi/ginkgo/v2 v2.29.0
 	github.com/onsi/gomega v1.41.0
 	github.com/prometheus/client_golang v1.23.2
