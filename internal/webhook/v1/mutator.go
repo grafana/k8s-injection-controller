@@ -111,7 +111,7 @@ func (pm *PodMutator) UpdateConfig(cfg *config.SDKInject) {
 	pm.Cfg = *cfg
 }
 
-// This is the undesirable mode, since it uses a lot of emphemeral storage.
+// This is the undesirable mode, since it uses a lot of ephemeral storage.
 // Typically it's used on old k8s clusters, version < 1.31.
 func (pm *PodMutator) usesInitContainer() bool {
 	return pm.Cfg.InjectionMode != config.InjectionModeImage
