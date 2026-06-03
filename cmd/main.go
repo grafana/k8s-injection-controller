@@ -276,10 +276,9 @@ func main() {
 	}
 }
 
-// resolveInjectionMode resolved the "auto" InjectionMode to a concrete mode by
+// resolveInjectionMode resolves the "auto" InjectionMode to a concrete mode by
 // querying the cluster's server version: we use direct ImageVolumeSource mode on
-// k8s 1.31+, otherwise disk heavy init-container copy approach is used.
-func resolveInjectionMode(cfg *config.SDKInject, clientset kubernetes.Interface) {
+// k8s 1.31+, otherwise the disk-heavy init-container copy approach is used.
 	if cfg.InjectionMode != config.InjectionModeAuto {
 		setupLog.Info("using configured injection mode", "mode", cfg.InjectionMode)
 		return
