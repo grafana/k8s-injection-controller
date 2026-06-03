@@ -489,8 +489,8 @@ func chooseServiceName(meta *metav1.ObjectMeta, useLabelsForResourceAttributes b
 // The precedence is as follows:
 // 1. annotation with key resource.opentelemetry.io/<resource>.
 // 2. label with key labelKey.
-func chooseLabelOrAnnotation(meta *metav1.ObjectMeta, useLabelsForResourceAttributes bool, resource attribute.Key, labelKeys []string) string {
-	if v := meta.GetAnnotations()[(ResourceAttributeAnnotationPrefix + string(resource))]; v != "" {
+func chooseLabelOrAnnotation(meta *metav1.ObjectMeta, useLabelsForResourceAttributes bool, res attribute.Key, labelKeys []string) string {
+	if v := meta.GetAnnotations()[(ResourceAttributeAnnotationPrefix + string(res))]; v != "" {
 		return v
 	}
 	if useLabelsForResourceAttributes {
