@@ -17,6 +17,7 @@ import (
 	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -40,9 +41,9 @@ var (
 )
 
 const (
-	injectVolumeName = "otel-inject-instrumentation"
-	// this value is hardcoded in the config file
-	internalMountPath = "/__otel_sdk_auto_instrumentation__"
+	injectVolumeName        = "otel-inject-instrumentation"
+	injectInitContainerName = "otel-sdk-inject"
+	internalMountPath       = "/__otel_sdk_auto_instrumentation__"
 
 	envVarLdPreloadName               = "LD_PRELOAD"
 	envVarLdPreloadValue              = internalMountPath + "/dist/injector/libotelinject.so"
@@ -110,8 +111,28 @@ func (pm *PodMutator) UpdateConfig(cfg *config.SDKInject) {
 	pm.Cfg = *cfg
 }
 
+// This is the undesirable mode, since it uses a lot of emphemeral storage.
+// Typically it's used on old k8s clusters, version < 1.31.
+func (pm *PodMutator) usesInitContainer() bool {
+	return pm.Cfg.InjectionMode != config.InjectionModeImage
+}
+
 func (pm *PodMutator) buildVolumeDefinition() corev1.Volume {
-	// Kubernetes ImageVolumeSource (k8s 1.31+) is the only supported mode.
+	if pm.usesInitContainer() {
+		// Older clusters (k8s < 1.31) lack ImageVolumeSource. Provision an
+		// ephemeral emptyDir that the copy init container populates from the
+		// SDK image before the app containers start.
+		sizeLimit := resource.MustParse(config.EphemeralVolumeSize)
+		return corev1.Volume{
+			Name: injectVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{
+					SizeLimit: &sizeLimit,
+				},
+			},
+		}
+	}
+	// Kubernetes ImageVolumeSource (k8s 1.31+).
 	return corev1.Volume{
 		Name: injectVolumeName,
 		VolumeSource: corev1.VolumeSource{
@@ -138,6 +159,39 @@ func (pm *PodMutator) mountVolume(spec *corev1.PodSpec) {
 		spec.Volumes = append(spec.Volumes, v)
 	} else {
 		spec.Volumes[pos] = v
+	}
+}
+
+// addCopyInitContainerIfNeeded adds (or replaces, by name) the init container that
+// copies the SDK payload from the SDK image into the shared ephemeral volume.
+func (pm *PodMutator) addCopyInitContainerIfNeeded(spec *corev1.PodSpec) {
+	if !pm.usesInitContainer() {
+		return
+	}
+	if spec.InitContainers == nil {
+		spec.InitContainers = make([]corev1.Container, 0)
+	}
+
+	c := corev1.Container{
+		Name:            injectInitContainerName,
+		Image:           pm.Cfg.ImageVolumePath(),
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		VolumeMounts: []corev1.VolumeMount{{
+			Name:      injectVolumeName,
+			MountPath: internalMountPath,
+			ReadOnly:  false,
+		}},
+	}
+
+	pos := slices.IndexFunc(spec.InitContainers, func(ic corev1.Container) bool {
+		return ic.Name == injectInitContainerName
+	})
+	// Replace existing if already exists, rather than chaining it. This helps with
+	// customers potentially using this directly in their setup.
+	if pos < 0 {
+		spec.InitContainers = append(spec.InitContainers, c)
+	} else {
+		spec.InitContainers[pos] = c
 	}
 }
 

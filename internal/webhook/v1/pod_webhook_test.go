@@ -70,6 +70,10 @@ var _ = Describe("Pod Webhook", func() {
 				ImageVolumeRoot: "ghcr.io/grafana/beyla/inject-sdk-image",
 				ImageVersion:    "0.0.9",
 				Propagators:     []string{"tracecontext"},
+				// These specs assert direct ImageVolumeSource behavior. In
+				// production "auto" is resolved to a concrete mode at boot; the
+				// tests construct the mutator directly, so set it explicitly.
+				InjectionMode: config.InjectionModeImage,
 			}},
 		}
 
@@ -197,6 +201,40 @@ var _ = Describe("Pod Webhook", func() {
 			// only propagators was overridden.
 			Expect(obj.Spec.Volumes[0].Image.Reference).
 				To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.9"))
+		})
+	})
+
+	Context("When injection_mode is init_container", func() {
+		BeforeEach(func() {
+			defaulter.Mutator.Cfg.InjectionMode = config.InjectionModeInitContainer
+		})
+
+		It("Should provision an ephemeral volume and a copy init container, and not instrument the copy container", func() {
+			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
+
+			// Ephemeral emptyDir volume rather than an image volume.
+			Expect(obj.Spec.Volumes).To(HaveLen(1))
+			Expect(obj.Spec.Volumes[0].Name).To(Equal(injectVolumeName))
+			Expect(obj.Spec.Volumes[0].EmptyDir).NotTo(BeNil())
+			Expect(obj.Spec.Volumes[0].Image).To(BeNil())
+
+			// Exactly one init container: our copy container.
+			Expect(obj.Spec.InitContainers).To(HaveLen(1))
+			copyC := obj.Spec.InitContainers[0]
+			Expect(copyC.Name).To(Equal(injectInitContainerName))
+			Expect(copyC.Image).To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.9"))
+
+			// The copy container must NOT be instrumented: no LD_PRELOAD, and
+			// its mount is read-write so it can populate the volume.
+			Expect(envNames(copyC.Env)).NotTo(ContainElement("LD_PRELOAD"))
+			Expect(copyC.VolumeMounts).To(HaveLen(1))
+			Expect(copyC.VolumeMounts[0].ReadOnly).To(BeFalse())
+
+			// The app container is still instrumented with a read-only mount.
+			Expect(envNames(obj.Spec.Containers[0].Env)).To(ContainElement("LD_PRELOAD"))
+			appMounts := obj.Spec.Containers[0].VolumeMounts
+			Expect(appMounts).To(HaveLen(1))
+			Expect(appMounts[0].ReadOnly).To(BeTrue())
 		})
 	})
 

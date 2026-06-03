@@ -209,13 +209,16 @@ func main() {
 
 	sdkConfig.SetDefaults()
 
-	podMutator = &webhookv1.PodMutator{Cfg: sdkConfig}
-
 	clientset, err := kubernetes.NewForConfig(mgr.GetConfig())
 	if err != nil {
 		setupLog.Error(err, "Failed to build clientset")
 		os.Exit(1)
 	}
+
+	resolveInjectionMode(&sdkConfig, clientset)
+
+	podMutator = &webhookv1.PodMutator{Cfg: sdkConfig}
+
 	if err := (&controller.ConfigMapReconciler{
 		Client:             mgr.GetClient(),
 		Clientset:          clientset,
@@ -258,4 +261,37 @@ func main() {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}
+}
+
+// resolveInjectionMode resolved the "auto" InjectionMode to a concrete mode by
+// querying the cluster's server version: we use direct ImageVolumeSource mode on
+// k8s 1.31+, otherwise disk heavy init-container copy approach is used.
+func resolveInjectionMode(cfg *config.SDKInject, clientset kubernetes.Interface) {
+	if cfg.InjectionMode != config.InjectionModeAuto {
+		setupLog.Info("using configured injection mode", "mode", cfg.InjectionMode)
+		return
+	}
+
+	info, err := clientset.Discovery().ServerVersion()
+	if err != nil {
+		setupLog.Error(err, "Failed to determine server version; defaulting to init-container injection mode")
+		cfg.InjectionMode = config.InjectionModeInitContainer
+		return
+	}
+
+	major, minor, err := config.ParseServerVersion(info)
+	if err != nil {
+		setupLog.Error(err, "Failed to parse server version; defaulting to init-container injection mode",
+			"gitVersion", info.GitVersion)
+		cfg.InjectionMode = config.InjectionModeInitContainer
+		return
+	}
+
+	if config.SupportsImageVolume(major, minor) {
+		cfg.InjectionMode = config.InjectionModeImage
+	} else {
+		cfg.InjectionMode = config.InjectionModeInitContainer
+	}
+	setupLog.Info("injection mode",
+		"serverVersion", info.GitVersion, "mode", cfg.InjectionMode)
 }

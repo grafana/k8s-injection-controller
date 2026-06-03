@@ -6,9 +6,18 @@
 
 debug: false
 
-# OCI image mounted into pods via Kubernetes ImageVolumeSource. Requires k8s 1.31+.
+# OCI image carrying the SDK auto-instrumentation payload.
 image_volume_root: ghcr.io/grafana/beyla/inject-sdk-image
 image_version: 0.0.9
+
+# How the SDK payload is delivered into instrumented pods:
+#   image          - mount the image directly via ImageVolumeSource (k8s 1.31+)
+#   init_container - provisions a 250Mi ephemeral volume and adds an init
+#                    container that copies the payload into it (k8s < 1.31)
+#   auto           - picks "image" on k8s 1.31+, "init_container" otherwise,
+#                    checked once against the cluster's server version at boot
+# Defaults to "auto" when unset.
+injection_mode: auto
 
 propagators:
   - tracecontext
