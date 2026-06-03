@@ -20,16 +20,25 @@ limitations under the License.
 package e2e
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	appsv1 "k8s.io/api/apps/v1"
+	authenticationv1 "k8s.io/api/authentication/v1"
+	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 
 	"github.com/grafana/beyla-k8s-injector/test/utils"
 )
@@ -52,25 +61,21 @@ var _ = Describe("Manager", Ordered, func() {
 	// enforce the restricted security policy to the namespace, installing CRDs,
 	// and deploying the controller.
 	BeforeAll(func() {
-		By("creating manager namespace")
-		cmd := exec.Command("kubectl", "create", "ns", namespace)
-		_, err := utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to create namespace")
-
-		By("labeling the namespace to enforce the restricted security policy")
-		cmd = exec.Command("kubectl", "label", "--overwrite", "ns", namespace,
-			"pod-security.kubernetes.io/enforce=restricted")
-		_, err = utils.Run(cmd)
-		Expect(err).NotTo(HaveOccurred(), "Failed to label namespace with restricted policy")
+		By("creating manager namespace with the restricted security policy enforced")
+		ns := &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   namespace,
+				Labels: map[string]string{"pod-security.kubernetes.io/enforce": "restricted"},
+			},
+		}
+		Expect(k8sClient.Resources().Create(suiteCtx, ns)).To(Succeed(), "Failed to create namespace")
 
 		By("installing CRDs")
-		cmd = exec.Command("make", "install")
-		_, err = utils.Run(cmd)
+		_, err := utils.Run(exec.Command("make", "install"))
 		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
 		By("deploying the controller-manager")
-		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
-		_, err = utils.Run(cmd)
+		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage)))
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 	})
 
@@ -78,20 +83,18 @@ var _ = Describe("Manager", Ordered, func() {
 	// and deleting the namespace.
 	AfterAll(func() {
 		By("cleaning up the curl pod for metrics")
-		cmd := exec.Command("kubectl", "delete", "pod", "curl-metrics", "-n", namespace)
-		_, _ = utils.Run(cmd)
+		_ = k8sClient.Resources().Delete(suiteCtx,
+			&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "curl-metrics", Namespace: namespace}})
 
 		By("undeploying the controller-manager")
-		cmd = exec.Command("make", "undeploy")
-		_, _ = utils.Run(cmd)
+		_, _ = utils.Run(exec.Command("make", "undeploy"))
 
 		By("uninstalling CRDs")
-		cmd = exec.Command("make", "uninstall")
-		_, _ = utils.Run(cmd)
+		_, _ = utils.Run(exec.Command("make", "uninstall"))
 
 		By("removing manager namespace")
-		cmd = exec.Command("kubectl", "delete", "ns", namespace)
-		_, _ = utils.Run(cmd)
+		_ = k8sClient.Resources().Delete(suiteCtx,
+			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})
 	})
 
 	// After each test, check for failures and collect logs, events,
@@ -99,40 +102,38 @@ var _ = Describe("Manager", Ordered, func() {
 	AfterEach(func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
-			By("Fetching controller manager pod logs")
-			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
-			controllerLogs, err := utils.Run(cmd)
-			if err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
+			if controllerPodName != "" {
+				By("Fetching controller manager pod logs")
+				if controllerLogs, err := podLogs(namespace, controllerPodName); err == nil {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
+				} else {
+					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
+				}
 			}
 
 			By("Fetching Kubernetes events")
-			cmd = exec.Command("kubectl", "get", "events", "-n", namespace, "--sort-by=.lastTimestamp")
-			eventsOutput, err := utils.Run(cmd)
-			if err == nil {
+			if eventsOutput, err := events(namespace); err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s", eventsOutput)
 			} else {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Kubernetes events: %s", err)
 			}
 
 			By("Fetching curl-metrics logs")
-			cmd = exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
-			metricsOutput, err := utils.Run(cmd)
-			if err == nil {
+			if metricsOutput, err := podLogs(namespace, "curl-metrics"); err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Metrics logs:\n %s", metricsOutput)
 			} else {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get curl-metrics logs: %s", err)
 			}
 
-			By("Fetching controller manager pod description")
-			cmd = exec.Command("kubectl", "describe", "pod", controllerPodName, "-n", namespace)
-			podDescription, err := utils.Run(cmd)
-			if err == nil {
-				fmt.Println("Pod description:\n", podDescription)
-			} else {
-				fmt.Println("Failed to describe controller pod")
+			if controllerPodName != "" {
+				By("Fetching controller manager pod status")
+				var pod corev1.Pod
+				if err := k8sClient.Resources().Get(suiteCtx, controllerPodName, namespace, &pod); err == nil {
+					fmt.Printf("Pod status:\n phase=%s\n conditions=%+v\n containerStatuses=%+v\n",
+						pod.Status.Phase, pod.Status.Conditions, pod.Status.ContainerStatuses)
+				} else {
+					fmt.Println("Failed to fetch controller pod status")
+				}
 			}
 		}
 	})
@@ -145,47 +146,54 @@ var _ = Describe("Manager", Ordered, func() {
 			By("validating that the controller-manager pod is running as expected")
 			verifyControllerUp := func(g Gomega) {
 				By("getting the name of the controller-manager pod")
-				cmd := exec.Command("kubectl", "get",
-					"pods", "-l", "control-plane=controller-manager",
-					"-o", "go-template={{ range .items }}"+
-						"{{ if not .metadata.deletionTimestamp }}"+
-						"{{ .metadata.name }}"+
-						"{{ \"\\n\" }}{{ end }}{{ end }}",
-					"-n", namespace,
-				)
+				var pods corev1.PodList
+				g.Expect(k8sClient.Resources(namespace).List(suiteCtx, &pods,
+					resources.WithLabelSelector("control-plane=controller-manager"))).
+					To(Succeed(), "Failed to retrieve controller-manager pod information")
 
-				podOutput, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
-				podNames := utils.GetNonEmptyLines(podOutput)
-				g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
-				controllerPodName = podNames[0]
+				var names []string
+				for i := range pods.Items {
+					if pods.Items[i].DeletionTimestamp == nil {
+						names = append(names, pods.Items[i].Name)
+					}
+				}
+				g.Expect(names).To(HaveLen(1), "expected 1 controller pod running")
+				controllerPodName = names[0]
 				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
 
 				By("validating the pod's status")
-				cmd = exec.Command("kubectl", "get",
-					"pods", controllerPodName, "-o", "jsonpath={.status.phase}",
-					"-n", namespace,
-				)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Running"), "Incorrect controller-manager pod status")
+				var pod corev1.Pod
+				g.Expect(k8sClient.Resources().Get(suiteCtx, controllerPodName, namespace, &pod)).To(Succeed())
+				g.Expect(pod.Status.Phase).To(Equal(corev1.PodRunning), "Incorrect controller-manager pod status")
 			}
 			Eventually(verifyControllerUp).Should(Succeed())
 		})
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
-			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
-				"--clusterrole="+metricsReaderRoleName,
-				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
-			)
-			_, err := utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create ClusterRoleBinding")
+			crb := &rbacv1.ClusterRoleBinding{
+				ObjectMeta: metav1.ObjectMeta{Name: metricsRoleBindingName},
+				RoleRef: rbacv1.RoleRef{
+					APIGroup: rbacv1.GroupName,
+					Kind:     "ClusterRole",
+					Name:     metricsReaderRoleName,
+				},
+				Subjects: []rbacv1.Subject{{
+					Kind:      "ServiceAccount",
+					Name:      serviceAccountName,
+					Namespace: namespace,
+				}},
+			}
+			Expect(k8sClient.Resources().Create(suiteCtx, crb)).To(Succeed(), "Failed to create ClusterRoleBinding")
+			DeferCleanup(func() {
+				_ = k8sClient.Resources().Delete(suiteCtx,
+					&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: metricsRoleBindingName}})
+			})
 
 			By("validating that the metrics service is available")
-			cmd = exec.Command("kubectl", "get", "service", metricsServiceName, "-n", namespace)
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Metrics service should exist")
+			var metricsSvc corev1.Service
+			Expect(k8sClient.Resources().Get(suiteCtx, metricsServiceName, namespace, &metricsSvc)).
+				To(Succeed(), "Metrics service should exist")
 
 			By("getting the service account token")
 			token, err := serviceAccountToken()
@@ -194,18 +202,15 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("ensuring the controller pod is ready")
 			verifyControllerPodReady := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pod", controllerPodName, "-n", namespace,
-					"-o", "jsonpath={.status.conditions[?(@.type=='Ready')].status}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("True"), "Controller pod not ready")
+				var pod corev1.Pod
+				g.Expect(k8sClient.Resources().Get(suiteCtx, controllerPodName, namespace, &pod)).To(Succeed())
+				g.Expect(podReady(&pod)).To(BeTrue(), "Controller pod not ready")
 			}
 			Eventually(verifyControllerPodReady, 3*time.Minute, time.Second).Should(Succeed())
 
 			By("verifying that the controller manager is serving the metrics server")
 			verifyMetricsServerStarted := func(g Gomega) {
-				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
-				output, err := utils.Run(cmd)
+				output, err := podLogs(namespace, controllerPodName)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("Serving metrics server"),
 					"Metrics server not yet started")
@@ -214,23 +219,25 @@ var _ = Describe("Manager", Ordered, func() {
 
 			By("waiting for the webhook service endpoints to be ready")
 			verifyWebhookEndpointsReady := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "endpointslices.discovery.k8s.io", "-n", namespace,
-					"-l", "kubernetes.io/service-name="+webhookServiceName,
-					"-o", "jsonpath={range .items[*]}{range .endpoints[*]}{.addresses[*]}{end}{end}")
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Webhook endpoints should exist")
-				g.Expect(output).ShouldNot(BeEmpty(), "Webhook endpoints not yet ready")
+				var slices discoveryv1.EndpointSliceList
+				g.Expect(k8sClient.Resources(namespace).List(suiteCtx, &slices,
+					resources.WithLabelSelector("kubernetes.io/service-name="+webhookServiceName))).
+					To(Succeed(), "Webhook endpoints should exist")
+				var addresses []string
+				for _, slice := range slices.Items {
+					for _, ep := range slice.Endpoints {
+						addresses = append(addresses, ep.Addresses...)
+					}
+				}
+				g.Expect(addresses).ShouldNot(BeEmpty(), "Webhook endpoints not yet ready")
 			}
 			Eventually(verifyWebhookEndpointsReady, 3*time.Minute, time.Second).Should(Succeed())
 
 			By("verifying the mutating webhook server is ready")
 			verifyMutatingWebhookReady := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "mutatingwebhookconfigurations.admissionregistration.k8s.io",
-					"beyla-k8s-injector-mutating-webhook-configuration",
-					"-o", "jsonpath={.webhooks[0].clientConfig.caBundle}")
-				output, err := utils.Run(cmd)
+				caBundle, err := mutatingWebhookCABundle()
 				g.Expect(err).NotTo(HaveOccurred(), "MutatingWebhookConfiguration should exist")
-				g.Expect(output).ShouldNot(BeEmpty(), "Mutating webhook CA bundle not yet injected")
+				g.Expect(caBundle).ShouldNot(BeEmpty(), "Mutating webhook CA bundle not yet injected")
 			}
 			Eventually(verifyMutatingWebhookReady, 3*time.Minute, time.Second).Should(Succeed())
 
@@ -240,46 +247,40 @@ var _ = Describe("Manager", Ordered, func() {
 			// +kubebuilder:scaffold:e2e-metrics-webhooks-readiness
 
 			By("creating the curl-metrics pod to access the metrics endpoint")
-			cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
-				"--namespace", namespace,
-				"--image=curlimages/curl:latest",
-				"--overrides",
-				fmt.Sprintf(`{
-					"spec": {
-						"containers": [{
-							"name": "curl",
-							"image": "curlimages/curl:latest",
-							"command": ["/bin/sh", "-c"],
-							"args": [
-								"for i in $(seq 1 30); do curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1"
-							],
-							"securityContext": {
-								"readOnlyRootFilesystem": true,
-								"allowPrivilegeEscalation": false,
-								"capabilities": {
-									"drop": ["ALL"]
-								},
-								"runAsNonRoot": true,
-								"runAsUser": 1000,
-								"seccompProfile": {
-									"type": "RuntimeDefault"
-								}
-							}
-						}],
-						"serviceAccountName": "%s"
-					}
-				}`, token, metricsServiceName, namespace, serviceAccountName))
-			_, err = utils.Run(cmd)
-			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
+			// The assertions are spec-level; the pod retries the in-cluster HTTPS
+			// request a few times to ride out the metrics server warming up.
+			curlScript := fmt.Sprintf(
+				"for i in $(seq 1 30); do curl -v -k -H 'Authorization: Bearer %s' "+
+					"https://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1",
+				token, metricsServiceName, namespace)
+			curlPod := &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "curl-metrics", Namespace: namespace},
+				Spec: corev1.PodSpec{
+					RestartPolicy:      corev1.RestartPolicyNever,
+					ServiceAccountName: serviceAccountName,
+					Containers: []corev1.Container{{
+						Name:    "curl",
+						Image:   "curlimages/curl:latest",
+						Command: []string{"/bin/sh", "-c"},
+						Args:    []string{curlScript},
+						SecurityContext: &corev1.SecurityContext{
+							ReadOnlyRootFilesystem:   ptr.To(true),
+							AllowPrivilegeEscalation: ptr.To(false),
+							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+							RunAsNonRoot:             ptr.To(true),
+							RunAsUser:                ptr.To(int64(1000)),
+							SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+						},
+					}},
+				},
+			}
+			Expect(k8sClient.Resources().Create(suiteCtx, curlPod)).To(Succeed(), "Failed to create curl-metrics pod")
 
 			By("waiting for the curl-metrics pod to complete.")
 			verifyCurlUp := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods", "curl-metrics",
-					"-o", "jsonpath={.status.phase}",
-					"-n", namespace)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Succeeded"), "curl pod in wrong status")
+				var pod corev1.Pod
+				g.Expect(k8sClient.Resources().Get(suiteCtx, "curl-metrics", namespace, &pod)).To(Succeed())
+				g.Expect(pod.Status.Phase).To(Equal(corev1.PodSucceeded), "curl pod in wrong status")
 			}
 			Eventually(verifyCurlUp, 5*time.Minute).Should(Succeed())
 
@@ -296,9 +297,8 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should provisioned cert-manager", func() {
 			By("validating that cert-manager has the certificate Secret")
 			verifyCertManager := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "secrets", "webhook-server-cert", "-n", namespace)
-				_, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
+				var secret corev1.Secret
+				g.Expect(k8sClient.Resources().Get(suiteCtx, "webhook-server-cert", namespace, &secret)).To(Succeed())
 			}
 			Eventually(verifyCertManager).Should(Succeed())
 		})
@@ -306,13 +306,9 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should have CA injection for mutating webhooks", func() {
 			By("checking CA injection for mutating webhooks")
 			verifyCAInjection := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get",
-					"mutatingwebhookconfigurations.admissionregistration.k8s.io",
-					"beyla-k8s-injector-mutating-webhook-configuration",
-					"-o", "go-template={{ range .webhooks }}{{ .clientConfig.caBundle }}{{ end }}")
-				mwhOutput, err := utils.Run(cmd)
+				caBundle, err := mutatingWebhookCABundle()
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(len(mwhOutput)).To(BeNumerically(">", 10))
+				g.Expect(len(caBundle)).To(BeNumerically(">", 10))
 			}
 			Eventually(verifyCAInjection).Should(Succeed())
 		})
@@ -349,19 +345,21 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("instruments a matching workload and uninstruments it once the config excludes it", func() {
 			By("creating an isolated namespace for the sample workload")
-			_, err := utils.Run(exec.Command("kubectl", "create", "ns", workloadNS))
-			Expect(err).NotTo(HaveOccurred(), "Failed to create workload namespace")
+			Expect(k8sClient.Resources().Create(suiteCtx,
+				&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: workloadNS}})).
+				To(Succeed(), "Failed to create workload namespace")
 			DeferCleanup(func() {
-				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", workloadNS,
-					"--ignore-not-found", "--wait=false"))
+				_ = k8sClient.Resources().Delete(suiteCtx,
+					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: workloadNS}})
 			})
 
 			By("deploying the sample workload")
-			Expect(kubectlApply(sampleDeployment(workloadNS, workload))).To(Succeed())
+			Expect(k8sClient.Resources().Create(suiteCtx, sampleDeployment(workloadNS, workload))).To(Succeed())
 
 			// ---- Step 1: Beyla sends a ConfigMap that instruments the workload ----
 			By("applying the Beyla ConfigMap whose criteria select the workload namespace")
-			Expect(kubectlApply(selectorConfigMap(cmName, workloadNS, workload, workloadNS, sdkImageVersion, sdkImageRoot))).
+			Expect(applyConfigMap(
+				selectorConfigMap(cmName, workloadNS, workload, workloadNS, sdkImageVersion, sdkImageRoot))).
 				To(Succeed())
 
 			By("waiting until the workload pod is instrumented by the webhook")
@@ -373,11 +371,10 @@ var _ = Describe("Manager", Ordered, func() {
 				pods := podsWithLabel(g, workloadNS, "app="+workload)
 				g.Expect(pods).NotTo(BeEmpty(), "no workload pods yet")
 				p := pods[0]
-				if p.Metadata.Annotations[injectAnno] == "" {
-					_, _ = utils.Run(exec.Command("kubectl", "delete", "pod", p.Metadata.Name,
-						"-n", workloadNS, "--ignore-not-found"))
+				if p.Annotations[injectAnno] == "" {
+					_ = k8sClient.Resources().Delete(suiteCtx, &p)
 				}
-				g.Expect(p.Metadata.Annotations).To(HaveKey(injectAnno),
+				g.Expect(p.Annotations).To(HaveKey(injectAnno),
 					"workload pod was not instrumented")
 			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
@@ -390,7 +387,8 @@ var _ = Describe("Manager", Ordered, func() {
 			By("updating the ConfigMap so the criteria no longer match the workload")
 			// The workload stays listed in eligible_for_restart so the controller
 			// re-evaluates it and notices it is instrumented-but-unmatched.
-			Expect(kubectlApply(selectorConfigMap(cmName, workloadNS, workload, "somewhere-else", sdkImageVersion, sdkImageRoot))).
+			Expect(applyConfigMap(
+				selectorConfigMap(cmName, workloadNS, workload, "somewhere-else", sdkImageVersion, sdkImageRoot))).
 				To(Succeed())
 
 			// ---- Step 3: the workload gets uninstrumented ----
@@ -407,136 +405,134 @@ var _ = Describe("Manager", Ordered, func() {
 				pods := podsWithLabel(g, workloadNS, "app="+workload)
 				g.Expect(pods).NotTo(BeEmpty())
 				for _, p := range pods {
-					g.Expect(p.Metadata.Annotations).NotTo(HaveKey(injectAnno),
-						"pod %s is still instrumented after the config excluded it", p.Metadata.Name)
+					g.Expect(p.Annotations).NotTo(HaveKey(injectAnno),
+						"pod %s is still instrumented after the config excluded it", p.Name)
 				}
 			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 		})
 	})
 })
 
-// serviceAccountToken returns a token for the specified service account in the given namespace.
-// It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
-// and parsing the resulting token from the API response.
+// serviceAccountToken returns a token for the suite's service account using the
+// Kubernetes TokenRequest API.
 func serviceAccountToken() (string, error) {
-	const tokenRequestRawString = `{
-		"apiVersion": "authentication.k8s.io/v1",
-		"kind": "TokenRequest"
-	}`
-
-	By("creating temporary file to store the token request")
-	secretName := fmt.Sprintf("%s-token-request", serviceAccountName)
-	tokenRequestFile := filepath.Join("/tmp", secretName)
-	err := os.WriteFile(tokenRequestFile, []byte(tokenRequestRawString), os.FileMode(0o644))
+	tr, err := clientset.CoreV1().ServiceAccounts(namespace).CreateToken(
+		suiteCtx, serviceAccountName, &authenticationv1.TokenRequest{}, metav1.CreateOptions{})
 	if err != nil {
 		return "", err
 	}
-
-	var out string
-	verifyTokenCreation := func(g Gomega) {
-		By("executing kubectl command to create the token")
-		cmd := exec.Command("kubectl", "create", "--raw", fmt.Sprintf(
-			"/api/v1/namespaces/%s/serviceaccounts/%s/token",
-			namespace,
-			serviceAccountName,
-		), "-f", tokenRequestFile)
-
-		output, err := cmd.CombinedOutput()
-		g.Expect(err).NotTo(HaveOccurred())
-
-		By("parsing the JSON output to extract the token")
-		var token tokenRequest
-		err = json.Unmarshal(output, &token)
-		g.Expect(err).NotTo(HaveOccurred())
-
-		out = token.Status.Token
-	}
-	Eventually(verifyTokenCreation).Should(Succeed())
-
-	return out, err
+	return tr.Status.Token, nil
 }
 
-// getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.
+// getMetricsOutput returns the logs from the curl pod used to access the metrics endpoint.
 func getMetricsOutput() (string, error) {
-	By("getting the curl-metrics logs")
-	cmd := exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
-	return utils.Run(cmd)
+	return podLogs(namespace, "curl-metrics")
 }
 
-// tokenRequest is a simplified representation of the Kubernetes TokenRequest API response,
-// containing only the token field that we need to extract.
-type tokenRequest struct {
-	Status struct {
-		Token string `json:"token"`
-	} `json:"status"`
+// podLogs streams the logs of a pod's first container.
+func podLogs(ns, name string) (string, error) {
+	stream, err := clientset.CoreV1().Pods(ns).GetLogs(name, &corev1.PodLogOptions{}).Stream(suiteCtx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = stream.Close() }()
+	data, err := io.ReadAll(stream)
+	return string(data), err
 }
 
-// kubectlApply pipes a manifest to `kubectl apply -f -`.
-func kubectlApply(manifest string) error {
-	cmd := exec.Command("kubectl", "apply", "-f", "-")
-	cmd.Stdin = strings.NewReader(manifest)
-	_, err := utils.Run(cmd)
-	return err
+// events renders the namespace's events, newest involved-object info last, for
+// failure diagnostics.
+func events(ns string) (string, error) {
+	list, err := clientset.CoreV1().Events(ns).List(suiteCtx, metav1.ListOptions{})
+	if err != nil {
+		return "", err
+	}
+	var b strings.Builder
+	for _, e := range list.Items {
+		_, _ = fmt.Fprintf(&b, "%s\t%s\t%s/%s\t%s\n",
+			e.LastTimestamp, e.Type, e.InvolvedObject.Kind, e.InvolvedObject.Name, e.Message)
+	}
+	return b.String(), nil
 }
 
-// kubectlOut runs kubectl and returns stdout only, so JSON/JSONPath output is
-// not polluted by warnings the CLI writes to stderr.
-func kubectlOut(args ...string) (string, error) {
-	cmd := exec.Command("kubectl", args...)
-	cmd.Env = append(os.Environ(), "GO111MODULE=on")
-	out, err := cmd.Output()
-	return string(out), err
+// mutatingWebhookCABundle returns the CA bundle injected into the controller's
+// MutatingWebhookConfiguration (empty until cert-manager's ca-injector fills it).
+func mutatingWebhookCABundle() ([]byte, error) {
+	var mwc admissionregistrationv1.MutatingWebhookConfiguration
+	if err := k8sClient.Resources().Get(suiteCtx, mutatingWebhookConfigName, "", &mwc); err != nil {
+		return nil, err
+	}
+	var bundle []byte
+	for _, w := range mwc.Webhooks {
+		bundle = append(bundle, w.ClientConfig.CABundle...)
+	}
+	return bundle, nil
 }
 
-// podSummary is the slice of a Pod we assert on: its name and annotations.
-type podSummary struct {
-	Metadata struct {
-		Name        string            `json:"name"`
-		Annotations map[string]string `json:"annotations"`
-	} `json:"metadata"`
+// podReady reports whether the pod's Ready condition is True.
+func podReady(pod *corev1.Pod) bool {
+	for _, c := range pod.Status.Conditions {
+		if c.Type == corev1.PodReady {
+			return c.Status == corev1.ConditionTrue
+		}
+	}
+	return false
 }
 
 // podsWithLabel lists pods in ns matching the label selector.
-func podsWithLabel(g Gomega, ns, selector string) []podSummary {
-	out, err := kubectlOut("get", "pods", "-n", ns, "-l", selector, "-o", "json")
-	g.Expect(err).NotTo(HaveOccurred(), "failed to list pods")
-	var list struct {
-		Items []podSummary `json:"items"`
-	}
-	g.Expect(json.Unmarshal([]byte(out), &list)).To(Succeed(), "failed to parse pod list")
+func podsWithLabel(g Gomega, ns, selector string) []corev1.Pod {
+	var list corev1.PodList
+	g.Expect(k8sClient.Resources(ns).List(suiteCtx, &list,
+		resources.WithLabelSelector(selector))).To(Succeed(), "failed to list pods")
 	return list.Items
 }
 
 // restartedAt returns the value of the rollout marker the controller stamps on
 // a Deployment's pod template when it triggers a (re-)roll. Empty if unset.
 func restartedAt(ns, deployment string) (string, error) {
-	return kubectlOut("get", "deploy", deployment, "-n", ns,
-		"-o", "jsonpath={.spec.template.metadata.annotations.beyla\\.grafana\\.com/restartedAt}")
+	var d appsv1.Deployment
+	if err := k8sClient.Resources().Get(suiteCtx, deployment, ns, &d); err != nil {
+		return "", err
+	}
+	return d.Spec.Template.Annotations["beyla.grafana.com/restartedAt"], nil
+}
+
+// applyConfigMap creates the ConfigMap, or updates it in place if it already
+// exists, giving the apply-like semantics the lifecycle test relies on.
+func applyConfigMap(cm *corev1.ConfigMap) error {
+	var existing corev1.ConfigMap
+	err := k8sClient.Resources().Get(suiteCtx, cm.Name, cm.Namespace, &existing)
+	if apierrors.IsNotFound(err) {
+		return k8sClient.Resources().Create(suiteCtx, cm)
+	}
+	if err != nil {
+		return err
+	}
+	existing.Annotations = cm.Annotations
+	existing.Data = cm.Data
+	return k8sClient.Resources().Update(suiteCtx, &existing)
 }
 
 // sampleDeployment renders a minimal workload. The pause image runs without a
 // shell and ignores the env/volume the webhook injects, so the pod reaches
 // Ready and rolling updates complete regardless of injection state.
-func sampleDeployment(ns, name string) string {
-	return fmt.Sprintf(`apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: %[2]s
-  namespace: %[1]s
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: %[2]s
-  template:
-    metadata:
-      labels:
-        app: %[2]s
-    spec:
-      containers:
-        - name: app
-          image: registry.k8s.io/pause:3.10
-`, ns, name)
+func sampleDeployment(ns, name string) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: ptr.To(int32(1)),
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": name}},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"app": name}},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "app",
+						Image: "registry.k8s.io/pause:3.10",
+					}},
+				},
+			},
+		},
+	}
 }
 
 // selectorConfigMap renders the per-node ConfigMap Beyla writes: the selection
@@ -545,26 +541,30 @@ spec:
 // (set it to the workload namespace to instrument, elsewhere to exclude); the
 // eligible_for_restart entry always names the Deployment so the controller
 // re-evaluates it after the criterion stops matching.
-func selectorConfigMap(cmName, targetNS, deployment, discoveryNS, imageVersion string, imageRoot string) string {
-	return fmt.Sprintf(`apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: %[1]s
-  namespace: %[2]s
-  annotations:
-    beyla.grafana.com/node: ""
-data:
-  instrumentation.yaml: |
-    discovery:
-      - k8s_namespace: %[4]s
-    image_version: %[5]s
-    image_volume_root: %[6]s
-    otel_export:
-      endpoint: http://otel-collector:4318
-      protocol: http/protobuf
-  eligible_for_restart.yaml: |
-    - namespace: %[2]s
-      kind: Deployment
-      name: %[3]s
-`, cmName, targetNS, deployment, discoveryNS, imageVersion, imageRoot)
+func selectorConfigMap(cmName, targetNS, deployment, discoveryNS, imageVersion, imageRoot string) *corev1.ConfigMap {
+	instrumentation := fmt.Sprintf(`discovery:
+  - k8s_namespace: %s
+image_version: %s
+image_volume_root: %s
+otel_export:
+  endpoint: http://otel-collector:4318
+  protocol: http/protobuf
+`, discoveryNS, imageVersion, imageRoot)
+
+	eligible := fmt.Sprintf(`- namespace: %s
+  kind: Deployment
+  name: %s
+`, targetNS, deployment)
+
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        cmName,
+			Namespace:   targetNS,
+			Annotations: map[string]string{"beyla.grafana.com/node": ""},
+		},
+		Data: map[string]string{
+			"instrumentation.yaml":      instrumentation,
+			"eligible_for_restart.yaml": eligible,
+		},
+	}
 }

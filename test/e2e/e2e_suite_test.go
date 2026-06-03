@@ -20,13 +20,19 @@ limitations under the License.
 package e2e
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/e2e-framework/klient"
+	"sigs.k8s.io/e2e-framework/support/kind"
 
 	"github.com/grafana/beyla-k8s-injector/test/utils"
 )
@@ -34,16 +40,27 @@ import (
 var (
 	// managerImage is the manager image to be built and loaded for testing.
 	managerImage = "beyla-k8s-injector:dev"
-	// shouldCleanupCertManager tracks whether CertManager was installed by this suite.
-	shouldCleanupCertManager = false
+
+	// clusterName is the Kind cluster the suite creates and destroys. The
+	clusterName = "k8s-injection-controller-test-e2e"
+
+	// testCluster owns the Kind cluster lifecycle for the whole suite.
+	testCluster *kind.Cluster
+	// k8sClient is the typed client the specs use instead of shelling out to kubectl.
+	k8sClient klient.Client
+	// clientset backs the subresource calls klient does not expose directly
+	// (ServiceAccount token requests and pod log streaming).
+	clientset *kubernetes.Clientset
+	// suiteCtx scopes the cluster/client operations to the suite run.
+	suiteCtx = context.Background()
 )
 
 // TestE2E runs the e2e test suite to validate the solution in an isolated environment.
-// The default setup requires Kind and CertManager.
+// The suite owns its Kind cluster: it builds and loads the manager image, creates the
+// cluster (with the ImageVolume feature gate from test/e2e/kind-config.yaml), installs
+// CertManager, and tears the cluster down afterwards. Kind and Docker must be on PATH.
 //
-// To enable kubectl kuberc (use custom kubectl configurations), set: KUBECTL_KUBERC=true
-// By default, kuberc is disabled to ensure consistent test behavior across different environments.
-// To skip CertManager installation, set: CERT_MANAGER_INSTALL_SKIP=true
+// To keep the Kind cluster after the run (e.g. for debugging), set: KIND_KEEP_CLUSTER=true
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Starting k8s-injection-controller e2e test suite\n")
@@ -51,69 +68,51 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	// Resolve the kind config path up front: the first utils.Run chdirs to the
+	// project root, so compute the absolute path while it is still unambiguous.
+	projectDir, err := utils.GetProjectDir()
+	Expect(err).NotTo(HaveOccurred(), "Failed to resolve project directory")
+	kindConfig := filepath.Join(projectDir, "test", "e2e", "kind-config.yaml")
+
 	By("building the manager image")
 	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
-	_, err := utils.Run(cmd)
+	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
 
-	// TODO(user): If you want to change the e2e test vendor from Kind,
-	// ensure the image is built and available, then remove the following block.
-	By("loading the manager image on Kind")
-	err = utils.LoadImageToKindClusterWithName(managerImage)
-	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
+	By("creating the Kind cluster")
+	testCluster = kind.NewCluster(clusterName)
+	_, err = testCluster.CreateWithConfig(suiteCtx, kindConfig)
+	Expect(err).NotTo(HaveOccurred(), "Failed to create the Kind cluster")
 
-	configureKubectlKubeRC()
-	setupCertManager()
+	By("loading the manager image into the Kind cluster")
+	Expect(testCluster.LoadImage(suiteCtx, managerImage)).
+		To(Succeed(), "Failed to load the manager image into Kind")
+
+	By("pointing kubectl/kustomize tooling at the Kind cluster")
+	// support/kind writes an isolated kubeconfig; export it so the surviving
+	// `make install`/`make deploy` shell-outs (kustomize + kubectl) target it.
+	kubeconfig := testCluster.GetKubeconfig()
+	Expect(os.Setenv("KUBECONFIG", kubeconfig)).To(Succeed(), "Failed to export KUBECONFIG")
+
+	By("building the Kubernetes clients")
+	k8sClient, err = klient.NewWithKubeConfigFile(kubeconfig)
+	Expect(err).NotTo(HaveOccurred(), "Failed to build the klient client")
+	clientset, err = kubernetes.NewForConfig(k8sClient.RESTConfig())
+	Expect(err).NotTo(HaveOccurred(), "Failed to build the client-go clientset")
+
+	By("installing CertManager")
+	Expect(utils.InstallCertManager(suiteCtx, k8sClient.Resources())).
+		To(Succeed(), "Failed to install CertManager")
 })
 
 var _ = AfterSuite(func() {
-	teardownCertManager()
+	if testCluster == nil {
+		return
+	}
+	if os.Getenv("KIND_KEEP_CLUSTER") == "true" {
+		_, _ = fmt.Fprintf(GinkgoWriter, "Keeping Kind cluster (KIND_KEEP_CLUSTER=true)\n")
+		return
+	}
+	By("destroying the Kind cluster")
+	Expect(testCluster.Destroy(context.Background())).To(Succeed(), "Failed to destroy the Kind cluster")
 })
-
-// Disable kubectl kuberc by default for test isolation.
-// This prevents local kubectl configurations from affecting test behavior.
-// To enable kuberc, set: KUBECTL_KUBERC=true
-func configureKubectlKubeRC() {
-	if os.Getenv("KUBECTL_KUBERC") != "true" {
-		By("disabling kubectl kuberc for test isolation")
-		err := os.Setenv("KUBECTL_KUBERC", "false")
-		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to disable kubectl kuberc")
-		_, _ = fmt.Fprintf(GinkgoWriter,
-			"kubectl kuberc disabled for consistent test behavior (override with KUBECTL_KUBERC=true)\n")
-	} else {
-		_, _ = fmt.Fprintf(GinkgoWriter, "kubectl kuberc enabled (KUBECTL_KUBERC=true)\n")
-	}
-}
-
-// setupCertManager installs CertManager if needed for webhook tests.
-// Skips installation if CERT_MANAGER_INSTALL_SKIP=true or if already present.
-func setupCertManager() {
-	if os.Getenv("CERT_MANAGER_INSTALL_SKIP") == "true" {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping CertManager installation (CERT_MANAGER_INSTALL_SKIP=true)\n")
-		return
-	}
-
-	By("checking if CertManager is already installed")
-	if utils.IsCertManagerCRDsInstalled() {
-		_, _ = fmt.Fprintf(GinkgoWriter, "CertManager is already installed. Skipping installation.\n")
-		return
-	}
-
-	// Mark for cleanup before installation to handle interruptions and partial installs.
-	shouldCleanupCertManager = true
-
-	By("installing CertManager")
-	Expect(utils.InstallCertManager()).To(Succeed(), "Failed to install CertManager")
-}
-
-// teardownCertManager uninstalls CertManager if it was installed by setupCertManager.
-// This ensures we only remove what we installed.
-func teardownCertManager() {
-	if !shouldCleanupCertManager {
-		_, _ = fmt.Fprintf(GinkgoWriter, "Skipping CertManager cleanup (not installed by this suite)\n")
-		return
-	}
-
-	By("uninstalling CertManager")
-	utils.UninstallCertManager()
-}
