@@ -62,7 +62,7 @@ func demoRegistry() *registry.Registry {
 }
 
 func TestClassify(t *testing.T) {
-	cfg := config.SDKInject{ImageVolumePath: "registry.example/img:1"}
+	cfg := config.SDKInject{ImageVolumeRoot: "registry.example/img", ImageVersion: "1"}
 	wantVersion := cfg.PackageVersion()
 
 	tests := []struct {
@@ -129,7 +129,7 @@ func TestClassify(t *testing.T) {
 }
 
 func TestCollectAggregatesAndExcludesSystemNamespaces(t *testing.T) {
-	cfg := config.SDKInject{ImageVolumePath: "registry.example/img:1"}
+	cfg := config.SDKInject{ImageVolumeRoot: "registry.example", ImageVersion: "img:1"}
 
 	// Two pods of the same workload -> one aggregated series with value 2.
 	p1 := testPod("demo", "hello-a", []metav1.OwnerReference{deployOwner("hello")}, nil, nil)
