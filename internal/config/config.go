@@ -70,7 +70,7 @@ const DefaultImageVolumeRoot = "ghcr.io/grafana/beyla/inject-sdk-image"
 
 // EphemeralVolumeSize bounds the emptyDir volume provisioned in
 // init-container mode. 250Mi leaves some amount of headroom, since
-// the actual current images size is a bit less than 200Mi
+// the actual current image size is a bit less than 200Mi.
 const EphemeralVolumeSize = "250Mi"
 
 // SetDefaults populates zero-value fields with their defaults.
