@@ -1,6 +1,7 @@
-# Sample config.SDKInject loaded by `make deploy-test`. Tweak to match your
-# cluster — the values here are just placeholders that exercise every field.
-
+# Default sample config.SDKInject shipped in the artifact built by `make yaml`.
+# It exists so the controller comes up with a valid, mounted config out of the
+# box. Edit these values (or replace the ConfigMap) to match your cluster.
+#
 # The OTLP endpoint / protocol no longer live here — they're per-ConfigMap,
 # under `otel_export:` inside each selector's instrumentation.yaml.
 
@@ -27,13 +28,6 @@ export:
   traces: true
   metrics: true
   logs: false
-
-resources:
-  resourceAttributes:
-    deployment.environment: dev
-  addK8sUIDAttributes: true
-  addK8sIPAttribute: false
-  useLabelsForResourceAttributes: false
 
 # Languages whose auto-instrumentation should run. Anything omitted gets the
 # corresponding *_AUTO_INSTRUMENTATION_AGENT_PATH env var blanked, which the
