@@ -34,12 +34,14 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	"github.com/grafana/beyla-k8s-injector/internal/config"
 	"github.com/grafana/beyla-k8s-injector/internal/controller"
+	"github.com/grafana/beyla-k8s-injector/internal/metrics"
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 	webhookv1 "github.com/grafana/beyla-k8s-injector/internal/webhook/v1"
 	// +kubebuilder:scaffold:imports
@@ -189,6 +191,12 @@ func main() {
 
 	reg := registry.New()
 
+	// Injection metrics. The counters and the state collector register on
+	// controller-runtime's global registry, so they are exposed on the same
+	// --metrics-bind-address endpoint and scraped by the existing ServiceMonitor.
+	injMetrics := metrics.NewSDKInjectionMetrics()
+	injMetrics.MustRegister(ctrlmetrics.Registry)
+
 	var podMutator *webhookv1.PodMutator
 	var sdkConfig config.SDKInject
 	if configPath != "" {
@@ -219,6 +227,10 @@ func main() {
 
 	podMutator = &webhookv1.PodMutator{Cfg: sdkConfig}
 
+	// State gauge: scans the manager pod cache at scrape time and reports the
+	// cluster-wide injection state (beyla_injection_pods).
+	ctrlmetrics.Registry.MustRegister(metrics.NewPodStateCollector(mgr.GetClient(), reg, sdkConfig))
+
 	if err := (&controller.ConfigMapReconciler{
 		Client:             mgr.GetClient(),
 		Clientset:          clientset,
@@ -226,6 +238,7 @@ func main() {
 		WebhookReady:       mgr.GetWebhookServer().StartedChecker(),
 		WebhookServiceAddr: os.Getenv("WEBHOOK_SERVICE_ADDR"),
 		DefaultSDKConfig:   sdkConfig,
+		Metrics:            injMetrics,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to set up controller", "controller", "ConfigMap")
 		os.Exit(1)
@@ -233,7 +246,7 @@ func main() {
 
 	// nolint:goconst
 	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
-		if err := webhookv1.SetupPodWebhookWithManager(mgr, reg, mgr.GetAPIReader(), podMutator); err != nil {
+		if err := webhookv1.SetupPodWebhookWithManager(mgr, reg, mgr.GetAPIReader(), podMutator, injMetrics); err != nil {
 			setupLog.Error(err, "Failed to create webhook", "webhook", "Pod")
 			os.Exit(1)
 		}
