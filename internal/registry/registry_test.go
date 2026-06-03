@@ -297,3 +297,65 @@ func TestSetAndDelete(t *testing.T) {
 		t.Fatalf("expected no match after deleting all CMs")
 	}
 }
+
+func TestMatch_Exclusion(t *testing.T) {
+	// "all pods in namespace demo except deployment skip-me"
+	include := []SelectionCriterion{{K8sNamespace: g("demo")}}
+	exclude := []SelectionCriterion{{K8sNamespace: g("demo"), K8sDeploymentName: g("skip-me")}}
+
+	excluded := PodInfo{
+		Name: "skip-me-abc-1", Namespace: "demo",
+		OwnerKind: "ReplicaSet", OwnerName: "skip-me-abc", DeploymentName: "skip-me",
+	}
+	kept := PodInfo{
+		Name: "keep-me-abc-1", Namespace: "demo",
+		OwnerKind: "ReplicaSet", OwnerName: "keep-me-abc", DeploymentName: "keep-me",
+	}
+
+	tests := []struct {
+		name     string
+		criteria []SelectionCriterion
+		exclude  []SelectionCriterion
+		pod      PodInfo
+		want     bool
+	}{
+		{
+			name:     "excluded pod is skipped even though it matches include",
+			criteria: include,
+			exclude:  exclude,
+			pod:      excluded,
+			want:     false,
+		},
+		{
+			name:     "non-excluded pod in the same namespace is still matched",
+			criteria: include,
+			exclude:  exclude,
+			pod:      kept,
+			want:     true,
+		},
+		{
+			name:     "exclude that does not match leaves the include intact",
+			criteria: include,
+			exclude:  []SelectionCriterion{{K8sNamespace: g("other")}},
+			pod:      kept,
+			want:     true,
+		},
+		{
+			name:     "exclude only, no include, matches nothing",
+			criteria: nil,
+			exclude:  exclude,
+			pod:      excluded,
+			want:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New()
+			r.Set("test/cm", Instrumentation{Criteria: tc.criteria, ExcludeCriteria: tc.exclude})
+			if _, got := r.Match(tc.pod); got != tc.want {
+				t.Errorf("Match() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

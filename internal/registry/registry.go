@@ -32,8 +32,12 @@ var regLog = logf.Log.WithName("registry")
 // fields; InjectConfig keeps the raw wire document so callers can read the
 // OtelExport and feed SDKInject.WithConfigMapOverrides.
 type Instrumentation struct {
-	Criteria     []SelectionCriterion
-	InjectConfig configmap.InjectConfig
+	Criteria []SelectionCriterion
+	// ExcludeCriteria are the negative selectors from the CM's exclude_discovery.
+	// A pod selected by Criteria is skipped when it also matches any
+	// ExcludeCriterion (exclusion wins), mirroring Beyla's exclude_instrument.
+	ExcludeCriteria []SelectionCriterion
+	InjectConfig    configmap.InjectConfig
 }
 
 // SelectionCriterion is one entry from a selector ConfigMap's
@@ -148,14 +152,29 @@ func (r *Registry) Match(p PodInfo) (Instrumentation, bool) {
 	sort.Strings(keys)
 	for _, k := range keys {
 		inst := r.instruments[k]
-		regLog.Info("checking criteria", "key", k, "criteria", inst.Criteria)
-		for _, c := range inst.Criteria {
-			if criterionMatches(c, p) {
-				return inst, true
-			}
+		regLog.Info("checking criteria", "key", k, "criteria", inst.Criteria, "excludeCriteria", inst.ExcludeCriteria)
+		if !anyCriterionMatches(inst.Criteria, p) {
+			continue
 		}
+		// Exclusion wins: a pod selected by this CM's Criteria is skipped when
+		// it also matches any of the CM's ExcludeCriteria.
+		if anyCriterionMatches(inst.ExcludeCriteria, p) {
+			regLog.Info("pod excluded by exclude_discovery", "key", k, "pod", p.Namespace+"/"+p.Name)
+			continue
+		}
+		return inst, true
 	}
 	return Instrumentation{}, false
+}
+
+// anyCriterionMatches reports whether p satisfies at least one criterion (OR).
+func anyCriterionMatches(criteria []SelectionCriterion, p PodInfo) bool {
+	for _, c := range criteria {
+		if criterionMatches(c, p) {
+			return true
+		}
+	}
+	return false
 }
 
 func criterionMatches(c SelectionCriterion, p PodInfo) bool {

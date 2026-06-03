@@ -245,6 +245,15 @@ func parseConfigMap(data map[string]string) (registry.Instrumentation, []restart
 			}
 			inst.Criteria = append(inst.Criteria, crit)
 		}
+		for _, ga := range cfg.ExcludeDiscovery {
+			crit := selectionCriterionFromGlob(&ga)
+			if crit.IsEmpty() {
+				// An empty exclude criterion would exclude every pod; skip it
+				// rather than silently disabling all instrumentation.
+				continue
+			}
+			inst.ExcludeCriteria = append(inst.ExcludeCriteria, crit)
+		}
 	}
 	var restartTargets []restartCriterion
 	if raw, ok := data[configmap.KeyEligibleForRestart]; ok {

@@ -12,8 +12,9 @@ into pods running in namespaces selected by annotated ConfigMaps. Built with
 2. Each selector ConfigMap carries two files in its `.data`:
 
    **`instrumentation.yaml`** — pod selectors under a top-level
-   `discovery:` key, plus the OTLP destination under `otel_export:`. Each
-   discovery entry may set any combination of:
+   `discovery:` key, optional exclusions under `exclude_discovery:`, plus the
+   OTLP destination under `otel_export:`. Each `discovery` / `exclude_discovery`
+   entry may set any combination of:
 
    ```yaml
    discovery:
@@ -24,6 +25,9 @@ into pods running in namespaces selected by annotated ConfigMaps. Built with
        k8s_statefulset_name: db
        k8s_daemonset_name: agent
        k8s_owner_name: hello            # any owner kind, including resolved Deployment
+   exclude_discovery:
+     - k8s_namespace: my-app            # instrument my-app, except...
+       k8s_deployment_name: legacy      # ...the "legacy" deployment
    otel_export:
      endpoint: http://otel-collector:4318
      protocol: http/protobuf
@@ -38,6 +42,10 @@ into pods running in namespaces selected by annotated ConfigMaps. Built with
    is optional — entries without one match cluster-wide in the webhook, but
    do not trigger eviction of pre-existing pods. Multiple ConfigMaps are
    merged.
+
+   `exclude_discovery` entries use the same fields. A pod is instrumented only
+   if it matches at least one `discovery` entry **and** no `exclude_discovery`
+   entry — exclusion always wins (mirroring Beyla's `exclude_instrument`).
 
    **`eligible_for_restart.yaml`** — list of restart targets. Each entry:
 

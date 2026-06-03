@@ -83,3 +83,49 @@ func TestParseConfigMapPodLabelsOnlyIsNotEmpty(t *testing.T) {
 		t.Fatalf("expected 1 criterion (label-only entry must not be dropped), got %d", len(inst.Criteria))
 	}
 }
+
+// TestParseConfigMapExcludeDiscovery verifies that exclude_discovery entries are
+// translated into ExcludeCriteria (so the registry can apply exclusion).
+func TestParseConfigMapExcludeDiscovery(t *testing.T) {
+	const yaml = `discovery:
+  - k8s_namespace: demo
+exclude_discovery:
+  - k8s_namespace: demo
+    k8s_deployment_name: legacy
+`
+	inst, _, err := parseConfigMap(map[string]string{configmap.KeyInstrumentation: yaml})
+	if err != nil {
+		t.Fatalf("parseConfigMap returned error: %v", err)
+	}
+	if len(inst.Criteria) != 1 {
+		t.Fatalf("expected 1 include criterion, got %d", len(inst.Criteria))
+	}
+	if len(inst.ExcludeCriteria) != 1 {
+		t.Fatalf("expected 1 exclude criterion, got %d", len(inst.ExcludeCriteria))
+	}
+	ex := inst.ExcludeCriteria[0]
+	if ex.K8sNamespace == nil || !ex.K8sNamespace.MatchString("demo") {
+		t.Errorf("exclude namespace not populated: %+v", ex.K8sNamespace)
+	}
+	if ex.K8sDeploymentName == nil || !ex.K8sDeploymentName.MatchString("legacy") {
+		t.Errorf("exclude deployment name not populated: %+v", ex.K8sDeploymentName)
+	}
+}
+
+// TestParseConfigMapExcludeDiscoveryEmptyDropped guards that an empty
+// exclude_discovery entry (no usable selector) is dropped rather than excluding
+// every pod.
+func TestParseConfigMapExcludeDiscoveryEmptyDropped(t *testing.T) {
+	const yaml = `discovery:
+  - k8s_namespace: demo
+exclude_discovery:
+  - open_ports: 8080
+`
+	inst, _, err := parseConfigMap(map[string]string{configmap.KeyInstrumentation: yaml})
+	if err != nil {
+		t.Fatalf("parseConfigMap returned error: %v", err)
+	}
+	if len(inst.ExcludeCriteria) != 0 {
+		t.Fatalf("expected obi-only exclude entry to be dropped, got %d", len(inst.ExcludeCriteria))
+	}
+}
