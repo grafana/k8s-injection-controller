@@ -336,10 +336,11 @@ var _ = Describe("Manager", Ordered, func() {
 			workload   = "sample-app"
 			cmName     = "beyla-node-state"
 			injectAnno = "beyla.grafana.com/inject"
-			// A valid OCI reference the apiserver accepts as an ImageVolumeSource.
-			// These assertions are spec-level (the inject annotation), so the pod
-			// does not need to actually pull/run this image.
-			sdkImageRoot    = "ghcr.io/grafana/beyla/inject-sdk-image"
+			// The SDK image root is no longer carried in the ConfigMap (it comes
+			// from the controller's own SDKInject config, defaulting to
+			// ghcr.io/grafana/beyla/inject-sdk-image). The ConfigMap only supplies
+			// the image version. These assertions are spec-level (the inject
+			// annotation), so the pod does not need to actually pull/run the image.
 			sdkImageVersion = "0.0.12"
 		)
 
@@ -392,7 +393,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// system:masters break-glass path.
 			Eventually(func(g Gomega) {
 				g.Expect(applyConfigMap(
-					selectorConfigMap(cmName, namespace, workloadNS, workload, workloadNS, sdkImageVersion, sdkImageRoot))).
+					selectorConfigMap(cmName, namespace, workloadNS, workload, workloadNS, sdkImageVersion))).
 					To(Succeed())
 			}, time.Minute, 5*time.Second).Should(Succeed())
 
@@ -423,7 +424,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// re-evaluates it and notices it is instrumented-but-unmatched.
 			Eventually(func(g Gomega) {
 				g.Expect(applyConfigMap(
-					selectorConfigMap(cmName, namespace, workloadNS, workload, "somewhere-else", sdkImageVersion, sdkImageRoot))).
+					selectorConfigMap(cmName, namespace, workloadNS, workload, "somewhere-else", sdkImageVersion))).
 					To(Succeed())
 			}, time.Minute, 5*time.Second).Should(Succeed())
 
@@ -601,27 +602,19 @@ func beylaWriterRoleBinding(ns, user string) *rbacv1.RoleBinding {
 	}
 }
 
-// selectorConfigMap renders the per-node ConfigMap Beyla writes: the selection
-// criteria + SDK image under instrumentation.yaml, and the workload under
-// eligible_for_restart.yaml.
-//
-// cmNamespace is where the ConfigMap object lives — Beyla writes it into its
-// own namespace, which is the single namespace the controller watches (see
-// WATCH_NAMESPACE). It is deliberately decoupled from the workload namespace:
-// targetNS is the workload's namespace named in eligible_for_restart, and
-// discoveryNS is the namespace the criterion matches (set it to the workload
-// namespace to instrument, elsewhere to exclude). The eligible_for_restart
-// entry always names the Deployment so the controller re-evaluates it after the
-// criterion stops matching.
-func selectorConfigMap(cmName, cmNamespace, targetNS, deployment, discoveryNS, imageVersion, imageRoot string) *corev1.ConfigMap {
-	instrumentation := fmt.Sprintf(`discovery:
-  - k8s_namespace: %s
-image_version: %s
-image_volume_root: %s
-otel_export:
-  endpoint: http://otel-collector:4318
-  protocol: http/protobuf
-`, discoveryNS, imageVersion, imageRoot)
+// selectorConfigMap renders the per-node ConfigMap Beyla writes: the image
+// version + an ordered list of rules under instrumentation.yaml, and the
+// workload under eligible_for_restart.yaml. discoveryNS is the namespace the
+// rule's k8s_selector matches (set it to the workload namespace to instrument,
+// elsewhere to exclude); the eligible_for_restart entry always names the
+// Deployment so the controller re-evaluates it after the rule stops matching.
+func selectorConfigMap(cmName, cmNamespace, targetNS, deployment, discoveryNS, imageVersion string) *corev1.ConfigMap {
+	instrumentation := fmt.Sprintf(`image_version: %s
+rules:
+- k8s_selector:
+    namespaces:
+    - %s
+`, imageVersion, discoveryNS)
 
 	eligible := fmt.Sprintf(`- namespace: %s
   kind: Deployment

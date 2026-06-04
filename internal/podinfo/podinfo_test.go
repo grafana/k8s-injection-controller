@@ -13,6 +13,8 @@ package podinfo
 import (
 	"testing"
 
+	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
+
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 )
 
@@ -24,20 +26,29 @@ func TestWorkload(t *testing.T) {
 		wantName string
 	}{
 		{
-			name:     "DeploymentName wins, reports as Deployment",
-			info:     registry.PodInfo{Name: "hello-abc", OwnerKind: "ReplicaSet", OwnerName: "hello-abc", DeploymentName: "hello"},
+			name: "top-most owner (Deployment) wins, reports as Deployment",
+			info: registry.PodInfo{Name: "hello-abc", OwnerChain: []configmap.Owner{
+				{Kind: "Pod", Name: "hello-abc"},
+				{Kind: "ReplicaSet", Name: "hello-abc"},
+				{Kind: kindDeployment, Name: "hello"},
+			}},
 			wantKind: kindDeployment,
 			wantName: "hello",
 		},
 		{
-			name:     "non-Deployment owner reports the owner kind/name",
-			info:     registry.PodInfo{Name: "db-0", OwnerKind: "StatefulSet", OwnerName: "db"},
+			name: "non-Deployment owner reports the owner kind/name",
+			info: registry.PodInfo{Name: "db-0", OwnerChain: []configmap.Owner{
+				{Kind: "Pod", Name: "db-0"},
+				{Kind: "StatefulSet", Name: "db"},
+			}},
 			wantKind: "StatefulSet",
 			wantName: "db",
 		},
 		{
-			name:     "bare pod with no owner reports as Pod with its own name",
-			info:     registry.PodInfo{Name: "standalone"},
+			name: "bare pod with no owner reports as Pod with its own name",
+			info: registry.PodInfo{Name: "standalone", OwnerChain: []configmap.Owner{
+				{Kind: "Pod", Name: "standalone"},
+			}},
 			wantKind: "Pod",
 			wantName: "standalone",
 		},

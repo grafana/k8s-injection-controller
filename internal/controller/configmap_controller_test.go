@@ -201,7 +201,7 @@ var _ = Describe("ConfigMap controller eviction sweep", func() {
 			Data: map[string]string{
 				// Selection criterion is the dual gate: without it, rolloutMatching
 				// would skip the pod even if the restart target matched.
-				configmap.KeyInstrumentation: "discovery:\n  - k8s_namespace: " + ns + "\n",
+				configmap.KeyInstrumentation: "rules:\n- k8s_selector:\n    namespaces:\n    - " + ns + "\n",
 				configmap.KeyEligibleForRestart: "- namespace: " + ns + "\n" +
 					"  kind: ReplicaSet\n" +
 					"  name: " + rsName + "\n",
@@ -227,7 +227,7 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 		// Selection criterion targets a different namespace, so Registry.Match
 		// returns false and the pod is skipped despite the restart-target match.
 		mkCM(ns, "cm-1",
-			"discovery:\n  - k8s_namespace: somewhere-else\n",
+			"rules:\n- k8s_selector:\n    namespaces:\n    - somewhere-else\n",
 			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: worker-1\n")
 
 		expectKept(ns, "worker-1-001")
@@ -243,7 +243,7 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 		// matchesAnyTarget returns false. Selection criterion would have
 		// matched — but the dual gate blocks the eviction.
 		mkCM(ns, "cm-2",
-			"discovery:\n  - k8s_namespace: "+ns+"\n",
+			"rules:\n- k8s_selector:\n    namespaces:\n    - "+ns+"\n",
 			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: some-other-rs\n")
 
 		expectKept(ns, "worker-2-001")
@@ -261,7 +261,7 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 
 		// Both gates would pass; PreloadsSomethingElse is the skip reason.
 		mkCM(ns, "cm-3",
-			"discovery:\n  - k8s_namespace: "+ns+"\n",
+			"rules:\n- k8s_selector:\n    namespaces:\n    - "+ns+"\n",
 			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: worker-3\n")
 
 		expectKept(ns, "worker-3-001")
@@ -279,7 +279,7 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 
 		// Both gates would pass; version-matched annotation is the skip reason.
 		mkCM(ns, "cm-4",
-			"discovery:\n  - k8s_namespace: "+ns+"\n",
+			"rules:\n- k8s_selector:\n    namespaces:\n    - "+ns+"\n",
 			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: worker-4\n")
 
 		expectKept(ns, "worker-4-001")
@@ -317,7 +317,7 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 		})
 
 		mkCM(ns, "cm-5",
-			"discovery:\n  - k8s_namespace: "+ns+"\n",
+			"rules:\n- k8s_selector:\n    namespaces:\n    - "+ns+"\n",
 			"- namespace: "+ns+"\n  kind: Deployment\n  name: worker-5\n")
 
 		By("asserting the pod is NOT individually evicted")
@@ -337,7 +337,7 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 		// - discovery matches kube-system
 		// - eligible_for_restart targets kube-system/system-worker
 		mkCM(ns, "cm-protected",
-			"discovery:\n - k8s_namespace: "+ns+"\n",
+			"rules:\n- k8s_selector:\n    namespaces:\n    - "+ns+"\n",
 			"- namespace: "+ns+"\n  kind: ReplicaSet\n  name: system-worker\n")
 
 		expectKept(ns, "system-worker-001")
@@ -394,7 +394,7 @@ var _ = Describe("ConfigMap controller rollout sweep", func() {
 
 		By("creating the selector ConfigMap with kind: Deployment in eligible_for_restart.yaml")
 		mkCM(ns, "beyla-selector-rollout",
-			"discovery:\n - k8s_namespace: "+ns+"\n",
+			"rules:\n- k8s_selector:\n    namespaces:\n    - "+ns+"\n",
 			"- namespace: "+ns+"\n  kind: Deployment\n  name: "+depName+"\n")
 
 		By("asserting the pod is NOT evicted")
@@ -459,7 +459,7 @@ var _ = Describe("ConfigMap controller rollout sweep", func() {
 		// workload is still listed in eligible_for_restart so the controller
 		// re-evaluates it and, finding it instrumented-but-unmatched, rolls it.
 		mkCM(uns, "beyla-selector-uninstrument",
-			"discovery:\n - k8s_namespace: "+otherNS+"\n",
+			"rules:\n- k8s_selector:\n    namespaces:\n    - "+otherNS+"\n",
 			"- namespace: "+uns+"\n  kind: Deployment\n  name: "+udep+"\n")
 
 		By("asserting the pod is NOT individually evicted")
