@@ -31,11 +31,19 @@ import (
 	. "github.com/onsi/gomega"
 
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/support/kind"
 
 	"github.com/grafana/beyla-k8s-injector/test/utils"
 )
+
+// allowedConfigMapWriter is the identity on the controller's
+// ALLOWED_CONFIGMAP_WRITERS list (Beyla's ServiceAccount, see
+// config/manager/manager.yaml). The suite impersonates it to write injection
+// ConfigMaps, exactly as Beyla does in production; the kind-admin identity is
+// intentionally rejected by the ConfigMap validating webhook.
+const allowedConfigMapWriter = "system:serviceaccount:beyla-k8s-injector:beyla"
 
 var (
 	// managerImage is the manager image to be built and loaded for testing.
@@ -51,6 +59,10 @@ var (
 	// clientset backs the subresource calls klient does not expose directly
 	// (ServiceAccount token requests and pod log streaming).
 	clientset *kubernetes.Clientset
+	// beylaClientset impersonates allowedConfigMapWriter so the suite can write
+	// the annotated injection ConfigMaps past the validating webhook, the way
+	// Beyla's ServiceAccount does in production.
+	beylaClientset *kubernetes.Clientset
 	// suiteCtx scopes the cluster/client operations to the suite run.
 	suiteCtx = context.Background()
 )
@@ -99,6 +111,11 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred(), "Failed to build the klient client")
 	clientset, err = kubernetes.NewForConfig(k8sClient.RESTConfig())
 	Expect(err).NotTo(HaveOccurred(), "Failed to build the client-go clientset")
+
+	beylaCfg := rest.CopyConfig(k8sClient.RESTConfig())
+	beylaCfg.Impersonate = rest.ImpersonationConfig{UserName: allowedConfigMapWriter}
+	beylaClientset, err = kubernetes.NewForConfig(beylaCfg)
+	Expect(err).NotTo(HaveOccurred(), "Failed to build the impersonating clientset")
 
 	By("installing CertManager")
 	Expect(utils.InstallCertManager(suiteCtx, k8sClient.Resources())).

@@ -165,6 +165,12 @@ demo-deploy: manifests kustomize ## Demo: deploy controller (via deploy-test) pl
 	# 1. Deploy the controller with its sample SDK config.
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
 	"$(KUSTOMIZE)" build config/test | "$(KUBECTL)" apply -f -
+	# 1b. Wait for the controller to be serving. Its ConfigMap validating
+	#     webhook (failurePolicy=Fail, scoped to the beyla-k8s-injector
+	#     namespace) intercepts every ConfigMap write in that namespace,
+	#     including Beyla's own beyla-config below. Applying beyla.yaml before
+	#     the webhook server is up yields "connection refused".
+	"$(KUBECTL)" -n beyla-k8s-injector rollout status deployment/beyla-k8s-injector-controller-manager --timeout=120s
 	# 2. Deploy Beyla as a DaemonSet, with the webhook delegated to the
 	#    beyla-k8s-injector-controller-manager. The per-node ConfigMap Beyla writes is what
 	#    drives the controller in this demo.

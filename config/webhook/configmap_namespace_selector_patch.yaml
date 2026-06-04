@@ -1,0 +1,22 @@
+# Scopes the ConfigMap validating webhook to the single namespace the
+# controller watches (where Beyla writes its state ConfigMaps). This is what
+# makes failurePolicy: Fail safe: an outage of the validator can only block
+# ConfigMap writes in this one namespace, never cluster-wide.
+#
+# The annotation that actually marks a ConfigMap as injection config cannot be
+# used as an admission selector (annotations are not selectable), so the
+# webhook fires for every ConfigMap in this namespace and the handler inspects
+# the annotation in-code.
+#
+# NOTE: the namespace name below must match the install namespace (the
+# `namespace:` value in config/default/kustomization.yaml) and the controller's
+# WATCH_NAMESPACE. Update all three together if you relocate the controller.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: validating-webhook-configuration
+webhooks:
+  - name: vconfigmap-v1.beyla.grafana.com
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: beyla-k8s-injector
