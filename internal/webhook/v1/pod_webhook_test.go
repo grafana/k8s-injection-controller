@@ -21,7 +21,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -82,7 +81,11 @@ var _ = Describe("Pod Webhook", func() {
 			Reader: k8sClient,
 			Mutator: &PodMutator{Cfg: config.SDKInject{
 				ImageVolumeRoot: "ghcr.io/grafana/beyla/inject-sdk-image",
-				ImageVersion:    "0.0.11",
+				ImageVersion:    "0.0.12",
+				// These specs assert direct ImageVolumeSource behavior. In
+				// production "auto" is resolved to a concrete mode at boot; the
+				// tests construct the mutator directly, so set it explicitly.
+				InjectionMode: config.InjectionModeImage,
 			}},
 		}
 
@@ -124,7 +127,7 @@ var _ = Describe("Pod Webhook", func() {
 			Expect(obj.Spec.Volumes[0].Name).To(Equal(injectVolumeName))
 			Expect(obj.Spec.Volumes[0].Image).NotTo(BeNil(),
 				"expected an ImageVolumeSource since that's the only supported mode")
-			Expect(obj.Spec.Volumes[0].Image.Reference).To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.11"))
+			Expect(obj.Spec.Volumes[0].Image.Reference).To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.12"))
 
 			mounts := obj.Spec.Containers[0].VolumeMounts
 			Expect(mounts).To(HaveLen(1))
@@ -179,6 +182,40 @@ var _ = Describe("Pod Webhook", func() {
 			Expect(gotPV).NotTo(BeEmpty())
 			Expect(gotPV).NotTo(Equal(defaultPV),
 				"package-version env should reflect the overridden ImageVersion, not the controller default")
+		})
+	})
+
+	Context("When injection_mode is init_container", func() {
+		BeforeEach(func() {
+			defaulter.Mutator.Cfg.InjectionMode = config.InjectionModeInitContainer
+		})
+
+		It("Should provision an ephemeral volume and a copy init container, and not instrument the copy container", func() {
+			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
+
+			// Ephemeral emptyDir volume rather than an image volume.
+			Expect(obj.Spec.Volumes).To(HaveLen(1))
+			Expect(obj.Spec.Volumes[0].Name).To(Equal(injectVolumeName))
+			Expect(obj.Spec.Volumes[0].EmptyDir).NotTo(BeNil())
+			Expect(obj.Spec.Volumes[0].Image).To(BeNil())
+
+			// Exactly one init container: our copy container.
+			Expect(obj.Spec.InitContainers).To(HaveLen(1))
+			copyC := obj.Spec.InitContainers[0]
+			Expect(copyC.Name).To(Equal(injectInitContainerName))
+			Expect(copyC.Image).To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.12"))
+
+			// The copy container must NOT be instrumented: no LD_PRELOAD, and
+			// its mount is read-write so it can populate the volume.
+			Expect(envNames(copyC.Env)).NotTo(ContainElement("LD_PRELOAD"))
+			Expect(copyC.VolumeMounts).To(HaveLen(1))
+			Expect(copyC.VolumeMounts[0].ReadOnly).To(BeFalse())
+
+			// The app container is still instrumented with a read-only mount.
+			Expect(envNames(obj.Spec.Containers[0].Env)).To(ContainElement("LD_PRELOAD"))
+			appMounts := obj.Spec.Containers[0].VolumeMounts
+			Expect(appMounts).To(HaveLen(1))
+			Expect(appMounts[0].ReadOnly).To(BeTrue())
 		})
 	})
 

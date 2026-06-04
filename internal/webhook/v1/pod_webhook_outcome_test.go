@@ -66,7 +66,7 @@ func matchAll() *registry.Registry {
 // beyla_sdk_injection_requests_total, so a wrong constant would silently split
 // a metric series — this guards against that.
 func TestDefaultRecordsOutcome(t *testing.T) {
-	cfg := config.SDKInject{ImageVolumeRoot: "ghcr.io/grafana/beyla/inject-sdk-image", ImageVersion: "0.0.11"}
+	cfg := config.SDKInject{ImageVolumeRoot: "ghcr.io/grafana/beyla/inject-sdk-image", ImageVersion: "0.0.12"}
 	wantVersion := cfg.PackageVersion()
 
 	tests := []struct {

@@ -336,11 +336,12 @@ var _ = Describe("Manager", Ordered, func() {
 			workload   = "sample-app"
 			cmName     = "beyla-node-state"
 			injectAnno = "beyla.grafana.com/inject"
-			// A valid OCI reference the apiserver accepts as an ImageVolumeSource.
-			// These assertions are spec-level (the inject annotation), so the pod
-			// does not need to actually pull/run this image.
-			sdkImageRoot    = "ghcr.io/grafana/beyla/inject-sdk-image"
-			sdkImageVersion = "0.0.11"
+			// The SDK image root is no longer carried in the ConfigMap (it comes
+			// from the controller's own SDKInject config, defaulting to
+			// ghcr.io/grafana/beyla/inject-sdk-image). The ConfigMap only supplies
+			// the image version. These assertions are spec-level (the inject
+			// annotation), so the pod does not need to actually pull/run the image.
+			sdkImageVersion = "0.0.12"
 		)
 
 		It("instruments a matching workload and uninstruments it once the config excludes it", func() {
@@ -359,7 +360,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// ---- Step 1: Beyla sends a ConfigMap that instruments the workload ----
 			By("applying the Beyla ConfigMap whose criteria select the workload namespace")
 			Expect(applyConfigMap(
-				selectorConfigMap(cmName, workloadNS, workload, workloadNS, sdkImageVersion, sdkImageRoot))).
+				selectorConfigMap(cmName, workloadNS, workload, workloadNS, sdkImageVersion))).
 				To(Succeed())
 
 			By("waiting until the workload pod is instrumented by the webhook")
@@ -388,7 +389,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// The workload stays listed in eligible_for_restart so the controller
 			// re-evaluates it and notices it is instrumented-but-unmatched.
 			Expect(applyConfigMap(
-				selectorConfigMap(cmName, workloadNS, workload, "somewhere-else", sdkImageVersion, sdkImageRoot))).
+				selectorConfigMap(cmName, workloadNS, workload, "somewhere-else", sdkImageVersion))).
 				To(Succeed())
 
 			// ---- Step 3: the workload gets uninstrumented ----
@@ -535,21 +536,19 @@ func sampleDeployment(ns, name string) *appsv1.Deployment {
 	}
 }
 
-// selectorConfigMap renders the per-node ConfigMap Beyla writes: the selection
-// criteria + SDK image under instrumentation.yaml, and the workload under
-// eligible_for_restart.yaml. discoveryNS is the namespace the criterion matches
-// (set it to the workload namespace to instrument, elsewhere to exclude); the
-// eligible_for_restart entry always names the Deployment so the controller
-// re-evaluates it after the criterion stops matching.
-func selectorConfigMap(cmName, targetNS, deployment, discoveryNS, imageVersion, imageRoot string) *corev1.ConfigMap {
-	instrumentation := fmt.Sprintf(`discovery:
-  - k8s_namespace: %s
-image_version: %s
-image_volume_root: %s
-otel_export:
-  endpoint: http://otel-collector:4318
-  protocol: http/protobuf
-`, discoveryNS, imageVersion, imageRoot)
+// selectorConfigMap renders the per-node ConfigMap Beyla writes: the image
+// version + an ordered list of rules under instrumentation.yaml, and the
+// workload under eligible_for_restart.yaml. discoveryNS is the namespace the
+// rule's k8s_selector matches (set it to the workload namespace to instrument,
+// elsewhere to exclude); the eligible_for_restart entry always names the
+// Deployment so the controller re-evaluates it after the rule stops matching.
+func selectorConfigMap(cmName, targetNS, deployment, discoveryNS, imageVersion string) *corev1.ConfigMap {
+	instrumentation := fmt.Sprintf(`image_version: %s
+rules:
+- k8s_selector:
+    namespaces:
+    - %s
+`, imageVersion, discoveryNS)
 
 	eligible := fmt.Sprintf(`- namespace: %s
   kind: Deployment

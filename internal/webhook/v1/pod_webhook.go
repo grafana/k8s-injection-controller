@@ -131,6 +131,8 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 		return nil
 	}
 
+	// Mounts the volume as an image on k8s 1.31+, or as an ephemeral emptyDir
+	// volume on older k8s.
 	mutator.mountVolume(&obj.Spec)
 	for i := range obj.Spec.Containers {
 		mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i], rule.Config.Env)
@@ -138,6 +140,9 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	for i := range obj.Spec.InitContainers {
 		mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.InitContainers[i], rule.Config.Env)
 	}
+	// Add the copy init container if we are running on k8s older than 1.31.
+	// If InjectionModeImage is used, this is a no-op.
+	mutator.addCopyInitContainerIfNeeded(&obj.Spec)
 
 	if obj.Annotations == nil {
 		obj.Annotations = map[string]string{}

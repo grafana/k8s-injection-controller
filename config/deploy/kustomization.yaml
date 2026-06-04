@@ -1,0 +1,23 @@
+# Artifact overlay built by `make yaml`: the production deploy (config/default)
+# plus a default, mounted SDK config so the controller starts with a valid
+# config out of the box. Unlike config/test, this overlay does not downgrade
+# metrics security or change ports — it's meant to be a publishable manifest.
+
+namespace: beyla-k8s-injector
+
+resources:
+  - ../default
+
+# The ConfigMap is regenerated on every build; the suffix hash changes whenever
+# sdk-inject.yaml does, which kustomize threads through into the volume
+# reference, triggering a rollout of the manager pod.
+configMapGenerator:
+  - name: beyla-sdk-config
+    files:
+      - sdk-inject.yaml
+
+patches:
+  - path: manager_sdk_config_patch.yaml
+    target:
+      kind: Deployment
+      name: controller-manager

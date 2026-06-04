@@ -150,10 +150,10 @@ deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in
 	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" apply -f -
 
 .PHONY: yaml
-yaml: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+yaml: manifests kustomize ## Render the deployable controller manifest (with a default mounted SDK config) to yaml/controller.yaml.
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
 	mkdir -p yaml
-	"$(KUSTOMIZE)" build config/default > yaml/controller.yaml
+	"$(KUSTOMIZE)" build config/deploy > yaml/controller.yaml
 	@echo "The controller yaml has been written to yaml/controller.yaml"
 
 .PHONY: undeploy
