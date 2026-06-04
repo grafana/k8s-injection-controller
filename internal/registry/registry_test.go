@@ -8,251 +8,262 @@ import (
 	"testing"
 
 	"go.opentelemetry.io/obi/pkg/appolly/services"
+
+	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 )
 
-// g is a small helper to build a *services.GlobAttr in test struct literals.
-func g(pattern string) *services.GlobAttr {
-	a := services.NewGlob(pattern)
-	return &a
+// rule is a small helper to build a single-rule Instrumentation.
+func rule(sel configmap.K8sSelector) Instrumentation {
+	return Instrumentation{InjectConfig: configmap.InjectConfig{Rules: []configmap.Rule{{Selector: sel}}}}
+}
+
+// globs wraps one or more patterns as a []services.GlobAttr for selector fields.
+func globs(patterns ...string) []services.GlobAttr {
+	out := make([]services.GlobAttr, 0, len(patterns))
+	for _, p := range patterns {
+		out = append(out, services.NewGlob(p))
+	}
+	return out
 }
 
 func TestMatch(t *testing.T) {
+	// Pod fixtures with various owner chain shapes.
 	rsPod := PodInfo{
 		Name: "hello-abc-123", Namespace: "demo",
-		OwnerKind: "ReplicaSet", OwnerName: "hello-abc",
-		DeploymentName: "hello",
+		OwnerChain: []configmap.Owner{
+			{Kind: "Pod", Name: "hello-abc-123"},
+			{Kind: "ReplicaSet", Name: "hello-abc"},
+			{Kind: "Deployment", Name: "hello"},
+		},
 	}
 	stsPod := PodInfo{
 		Name: "db-0", Namespace: "demo",
-		OwnerKind: "StatefulSet", OwnerName: "db",
+		OwnerChain: []configmap.Owner{
+			{Kind: "Pod", Name: "db-0"},
+			{Kind: "StatefulSet", Name: "db"},
+		},
 	}
 	dsPod := PodInfo{
 		Name: "agent-xx", Namespace: "kube-system",
-		OwnerKind: "DaemonSet", OwnerName: "agent",
+		OwnerChain: []configmap.Owner{
+			{Kind: "Pod", Name: "agent-xx"},
+			{Kind: "DaemonSet", Name: "agent"},
+		},
 	}
 	bareRSPod := PodInfo{
 		Name: "raw", Namespace: "demo",
-		OwnerKind: "ReplicaSet", OwnerName: "raw-rs",
+		OwnerChain: []configmap.Owner{
+			{Kind: "Pod", Name: "raw"},
+			{Kind: "ReplicaSet", Name: "raw-rs"},
+			// no Deployment — RS not owned by a Deployment
+		},
+	}
+	barePod := PodInfo{
+		Name: "my-debug-pod", Namespace: "debug",
+		OwnerChain: []configmap.Owner{
+			{Kind: "Pod", Name: "my-debug-pod"},
+		},
 	}
 	labeledPod := PodInfo{
 		Name: "labeled-app-1", Namespace: "test-unmatched",
-		OwnerKind: "ReplicaSet", OwnerName: "labeled-app",
+		OwnerChain: []configmap.Owner{
+			{Kind: "Pod", Name: "labeled-app-1"},
+			{Kind: "ReplicaSet", Name: "labeled-app"},
+		},
 		Labels:      map[string]string{"inject": "true", "tier": "web"},
 		Annotations: map[string]string{"team": "obs"},
 	}
 	unlabeledPod := PodInfo{
 		Name: "unlabeled-app-1", Namespace: "test-unmatched",
-		OwnerKind: "ReplicaSet", OwnerName: "unlabeled-app",
+		OwnerChain: []configmap.Owner{
+			{Kind: "Pod", Name: "unlabeled-app-1"},
+			{Kind: "ReplicaSet", Name: "unlabeled-app"},
+		},
 	}
 
 	tests := []struct {
-		name     string
-		criteria []SelectionCriterion
-		pod      PodInfo
-		want     bool
+		name string
+		inst Instrumentation
+		pod  PodInfo
+		want bool
 	}{
+		// Smoke tests
 		{
-			name:     "empty criterion matches everything",
-			criteria: []SelectionCriterion{{}},
-			pod:      rsPod,
-			want:     true,
+			name: "empty selector matches everything",
+			inst: rule(configmap.K8sSelector{}),
+			pod:  rsPod,
+			want: true,
 		},
 		{
-			name:     "no criteria, no match",
-			criteria: nil,
-			pod:      rsPod,
-			want:     false,
+			name: "no rules — no match",
+			inst: Instrumentation{},
+			pod:  rsPod,
+			want: false,
+		},
+
+		// Owner chain: pod itself is always the first chain entry
+		{
+			name: "owned pod selectable by pod name",
+			inst: rule(configmap.K8sSelector{OwnerNames: globs("hello-abc-123"), OwnerKinds: []string{"Pod"}}),
+			pod:  rsPod,
+			want: true,
 		},
 		{
-			name:     "namespace literal match",
-			criteria: []SelectionCriterion{{K8sNamespace: g("demo")}},
-			pod:      rsPod,
-			want:     true,
+			name: "bare pod selectable by name",
+			inst: rule(configmap.K8sSelector{OwnerNames: globs("my-debug-pod"), OwnerKinds: []string{"Pod"}}),
+			pod:  barePod,
+			want: true,
 		},
 		{
-			name:     "namespace literal miss",
-			criteria: []SelectionCriterion{{K8sNamespace: g("other")}},
-			pod:      rsPod,
-			want:     false,
+			name: "pod name glob",
+			inst: rule(configmap.K8sSelector{OwnerNames: globs("my-debug-*"), OwnerKinds: []string{"Pod"}}),
+			pod:  barePod,
+			want: true,
+		},
+
+		// Owner chain: direct owner
+		{
+			name: "RS direct owner in chain",
+			inst: rule(configmap.K8sSelector{OwnerNames: globs("hello-abc"), OwnerKinds: []string{"ReplicaSet"}}),
+			pod:  rsPod,
+			want: true,
 		},
 		{
-			name:     "namespace glob match",
-			criteria: []SelectionCriterion{{K8sNamespace: g("dem*")}},
-			pod:      rsPod,
-			want:     true,
+			name: "StatefulSet in chain",
+			inst: rule(configmap.K8sSelector{OwnerNames: globs("db"), OwnerKinds: []string{"StatefulSet"}}),
+			pod:  stsPod,
+			want: true,
 		},
 		{
-			name:     "pod name match",
-			criteria: []SelectionCriterion{{K8sPodName: g("hello-abc-123")}},
-			pod:      rsPod,
-			want:     true,
+			name: "DaemonSet in chain",
+			inst: rule(configmap.K8sSelector{OwnerNames: globs("agent"), OwnerKinds: []string{"DaemonSet"}}),
+			pod:  dsPod,
+			want: true,
+		},
+
+		// Owner chain: Deployment ancestor via RS chain
+		{
+			name: "Deployment via RS chain",
+			inst: rule(configmap.K8sSelector{OwnerNames: globs("hello"), OwnerKinds: []string{"Deployment"}}),
+			pod:  rsPod,
+			want: true,
 		},
 		{
-			name:     "pod name glob match",
-			criteria: []SelectionCriterion{{K8sPodName: g("hello-*")}},
-			pod:      rsPod,
-			want:     true,
+			name: "Deployment glob via RS chain",
+			inst: rule(configmap.K8sSelector{OwnerNames: globs("hel*"), OwnerKinds: []string{"Deployment"}}),
+			pod:  rsPod,
+			want: true,
 		},
 		{
-			name:     "deployment via RS chain",
-			criteria: []SelectionCriterion{{K8sDeploymentName: g("hello")}},
-			pod:      rsPod,
-			want:     true,
+			name: "no Deployment when RS has no Deployment ancestor",
+			inst: rule(configmap.K8sSelector{OwnerKinds: []string{"Deployment"}}),
+			pod:  bareRSPod,
+			want: false,
+		},
+
+		// Namespace
+		{
+			name: "namespace match",
+			inst: rule(configmap.K8sSelector{Namespaces: globs("demo")}),
+			pod:  rsPod,
+			want: true,
 		},
 		{
-			name:     "deployment glob via RS chain",
-			criteria: []SelectionCriterion{{K8sDeploymentName: g("hel*")}},
-			pod:      rsPod,
-			want:     true,
+			name: "namespace mismatch",
+			inst: rule(configmap.K8sSelector{Namespaces: globs("other")}),
+			pod:  rsPod,
+			want: false,
 		},
 		{
-			name:     "deployment requires resolved name; bare RS pod misses",
-			criteria: []SelectionCriterion{{K8sDeploymentName: g("raw-rs")}},
-			pod:      bareRSPod,
-			want:     false,
+			name: "AND of namespace + owner name",
+			inst: rule(configmap.K8sSelector{Namespaces: globs("demo"), OwnerNames: globs("hello"), OwnerKinds: []string{"Deployment"}}),
+			pod:  rsPod,
+			want: true,
 		},
 		{
-			name:     "replicaset match (direct owner)",
-			criteria: []SelectionCriterion{{K8sReplicaSetName: g("hello-abc")}},
-			pod:      rsPod,
-			want:     true,
+			name: "AND fails when namespace misses",
+			inst: rule(configmap.K8sSelector{Namespaces: globs("other"), OwnerNames: globs("hello"), OwnerKinds: []string{"Deployment"}}),
+			pod:  rsPod,
+			want: false,
 		},
+
+		// Owner name without kind matches any link by name
 		{
-			name:     "replicaset name on STS pod misses",
-			criteria: []SelectionCriterion{{K8sReplicaSetName: g("db")}},
-			pod:      stsPod,
-			want:     false,
+			name: "owner name glob across owner kinds",
+			inst: rule(configmap.K8sSelector{OwnerNames: globs("*")}),
+			pod:  stsPod,
+			want: true,
 		},
+
+		// Pod labels / annotations
 		{
-			name:     "statefulset match",
-			criteria: []SelectionCriterion{{K8sStatefulSetName: g("db")}},
-			pod:      stsPod,
-			want:     true,
-		},
-		{
-			name:     "daemonset match",
-			criteria: []SelectionCriterion{{K8sDaemonSetName: g("agent")}},
-			pod:      dsPod,
-			want:     true,
-		},
-		{
-			name:     "AND of namespace + deployment",
-			criteria: []SelectionCriterion{{K8sNamespace: g("demo"), K8sDeploymentName: g("hello")}},
-			pod:      rsPod,
-			want:     true,
-		},
-		{
-			name:     "AND fails when one field misses",
-			criteria: []SelectionCriterion{{K8sNamespace: g("other"), K8sDeploymentName: g("hello")}},
-			pod:      rsPod,
-			want:     false,
-		},
-		{
-			name:     "k8s_owner_name matches Deployment via RS chain",
-			criteria: []SelectionCriterion{{K8sOwnerName: g("hello")}},
-			pod:      rsPod,
-			want:     true,
-		},
-		{
-			name:     "k8s_owner_name matches direct RS owner",
-			criteria: []SelectionCriterion{{K8sOwnerName: g("hello-abc")}},
-			pod:      rsPod,
-			want:     true,
-		},
-		{
-			name:     "k8s_owner_name glob across owner kinds",
-			criteria: []SelectionCriterion{{K8sOwnerName: g("*")}},
-			pod:      stsPod,
-			want:     true,
-		},
-		{
-			name:     "k8s_owner_name AND k8s_deployment_name (both match)",
-			criteria: []SelectionCriterion{{K8sOwnerName: g("hello"), K8sDeploymentName: g("hello")}},
-			pod:      rsPod,
-			want:     true,
-		},
-		{
-			name:     "k8s_owner_name AND k8s_deployment_name (owner mismatch)",
-			criteria: []SelectionCriterion{{K8sOwnerName: g("other"), K8sDeploymentName: g("hello")}},
-			pod:      rsPod,
-			want:     false,
-		},
-		{
-			name:     "pod label match",
-			criteria: []SelectionCriterion{{K8sPodLabels: map[string]*services.GlobAttr{"inject": g("true")}}},
-			pod:      labeledPod,
-			want:     true,
-		},
-		{
-			name:     "pod label glob match",
-			criteria: []SelectionCriterion{{K8sPodLabels: map[string]*services.GlobAttr{"tier": g("we*")}}},
-			pod:      labeledPod,
-			want:     true,
-		},
-		{
-			name:     "pod label value mismatch",
-			criteria: []SelectionCriterion{{K8sPodLabels: map[string]*services.GlobAttr{"inject": g("false")}}},
-			pod:      labeledPod,
-			want:     false,
-		},
-		{
-			name:     "pod label missing key misses",
-			criteria: []SelectionCriterion{{K8sPodLabels: map[string]*services.GlobAttr{"inject": g("true")}}},
-			pod:      unlabeledPod,
-			want:     false,
-		},
-		{
-			name: "namespace AND pod label: labeled-app matches",
-			criteria: []SelectionCriterion{{
-				K8sNamespace: g("test-unmatched"),
-				K8sPodLabels: map[string]*services.GlobAttr{"inject": g("true")},
-			}},
+			name: "pod label match",
+			inst: rule(configmap.K8sSelector{PodLabels: map[string]services.GlobAttr{"inject": services.NewGlob("true")}}),
 			pod:  labeledPod,
 			want: true,
 		},
 		{
-			name: "namespace AND pod label: unlabeled-app rejected (regression for dropped label clause)",
-			criteria: []SelectionCriterion{{
-				K8sNamespace: g("test-unmatched"),
-				K8sPodLabels: map[string]*services.GlobAttr{"inject": g("true")},
-			}},
+			name: "pod label glob match",
+			inst: rule(configmap.K8sSelector{PodLabels: map[string]services.GlobAttr{"tier": services.NewGlob("we*")}}),
+			pod:  labeledPod,
+			want: true,
+		},
+		{
+			name: "pod label value mismatch",
+			inst: rule(configmap.K8sSelector{PodLabels: map[string]services.GlobAttr{"inject": services.NewGlob("false")}}),
+			pod:  labeledPod,
+			want: false,
+		},
+		{
+			name: "pod label missing key misses",
+			inst: rule(configmap.K8sSelector{PodLabels: map[string]services.GlobAttr{"inject": services.NewGlob("true")}}),
 			pod:  unlabeledPod,
 			want: false,
 		},
 		{
 			name: "multiple required labels: all must match",
-			criteria: []SelectionCriterion{{
-				K8sPodLabels: map[string]*services.GlobAttr{"inject": g("true"), "tier": g("web")},
-			}},
+			inst: rule(configmap.K8sSelector{PodLabels: map[string]services.GlobAttr{"inject": services.NewGlob("true"), "tier": services.NewGlob("web")}}),
 			pod:  labeledPod,
 			want: true,
 		},
 		{
 			name: "multiple required labels: one missing misses",
-			criteria: []SelectionCriterion{{
-				K8sPodLabels: map[string]*services.GlobAttr{"inject": g("true"), "tier": g("db")},
-			}},
+			inst: rule(configmap.K8sSelector{PodLabels: map[string]services.GlobAttr{"inject": services.NewGlob("true"), "tier": services.NewGlob("db")}}),
 			pod:  labeledPod,
 			want: false,
 		},
 		{
-			name:     "pod annotation match",
-			criteria: []SelectionCriterion{{K8sPodAnnotations: map[string]*services.GlobAttr{"team": g("obs")}}},
-			pod:      labeledPod,
-			want:     true,
+			name: "pod annotation match",
+			inst: rule(configmap.K8sSelector{PodAnnotations: map[string]services.GlobAttr{"team": services.NewGlob("obs")}}),
+			pod:  labeledPod,
+			want: true,
 		},
 		{
-			name:     "pod annotation missing key misses",
-			criteria: []SelectionCriterion{{K8sPodAnnotations: map[string]*services.GlobAttr{"team": g("obs")}}},
-			pod:      unlabeledPod,
-			want:     false,
+			name: "pod annotation missing key misses",
+			inst: rule(configmap.K8sSelector{PodAnnotations: map[string]services.GlobAttr{"team": services.NewGlob("obs")}}),
+			pod:  unlabeledPod,
+			want: false,
 		},
 		{
-			name: "OR across criteria",
-			criteria: []SelectionCriterion{
-				{K8sNamespace: g("nope")},
-				{K8sDeploymentName: g("hello")},
-			},
+			name: "namespace AND pod label: labeled-app matches",
+			inst: rule(configmap.K8sSelector{Namespaces: globs("test-unmatched"), PodLabels: map[string]services.GlobAttr{"inject": services.NewGlob("true")}}),
+			pod:  labeledPod,
+			want: true,
+		},
+		{
+			name: "namespace AND pod label: unlabeled-app rejected",
+			inst: rule(configmap.K8sSelector{Namespaces: globs("test-unmatched"), PodLabels: map[string]services.GlobAttr{"inject": services.NewGlob("true")}}),
+			pod:  unlabeledPod,
+			want: false,
+		},
+
+		// Registry-level: OR across rules (first-match iteration)
+		{
+			name: "OR across rules — second matches",
+			inst: Instrumentation{InjectConfig: configmap.InjectConfig{Rules: []configmap.Rule{
+				{Selector: configmap.K8sSelector{Namespaces: globs("nope")}},
+				{Selector: configmap.K8sSelector{OwnerNames: globs("hello")}},
+			}}},
 			pod:  rsPod,
 			want: true,
 		},
@@ -261,8 +272,8 @@ func TestMatch(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			r := New()
-			r.Set("test/cm", Instrumentation{Criteria: tc.criteria})
-			if _, got := r.Match(tc.pod); got != tc.want {
+			r.Set("test/cm", tc.inst)
+			if _, _, got := r.Match(tc.pod); got != tc.want {
 				t.Fatalf("Match(%+v) = %v, want %v", tc.pod, got, tc.want)
 			}
 		})
@@ -271,29 +282,31 @@ func TestMatch(t *testing.T) {
 
 func TestSetAndDelete(t *testing.T) {
 	r := New()
-	pod := PodInfo{Name: "p", Namespace: "demo"}
+	pod := PodInfo{Name: "p", Namespace: "demo", OwnerChain: []configmap.Owner{{Kind: "Pod", Name: "p"}}}
+
+	nsDemo := rule(configmap.K8sSelector{Namespaces: globs("demo")})
 
 	// Initial set: matches.
-	r.Set("a/cm1", Instrumentation{Criteria: []SelectionCriterion{{K8sNamespace: g("demo")}}})
-	if _, ok := r.Match(pod); !ok {
+	r.Set("a/cm1", nsDemo)
+	if _, _, ok := r.Match(pod); !ok {
 		t.Fatalf("expected match after Set")
 	}
 
-	// Update with empty criteria == delete.
+	// Update with empty rules == delete.
 	r.Set("a/cm1", Instrumentation{})
-	if _, ok := r.Match(pod); ok {
+	if _, _, ok := r.Match(pod); ok {
 		t.Fatalf("expected no match after empty Set")
 	}
 
 	// Two CMs cover the same pod; deleting one keeps the match alive.
-	r.Set("a/cm1", Instrumentation{Criteria: []SelectionCriterion{{K8sNamespace: g("demo")}}})
-	r.Set("a/cm2", Instrumentation{Criteria: []SelectionCriterion{{K8sNamespace: g("demo")}}})
+	r.Set("a/cm1", nsDemo)
+	r.Set("a/cm2", nsDemo)
 	r.Delete("a/cm1")
-	if _, ok := r.Match(pod); !ok {
+	if _, _, ok := r.Match(pod); !ok {
 		t.Fatalf("expected match still covered by cm2")
 	}
 	r.Delete("a/cm2")
-	if _, ok := r.Match(pod); ok {
+	if _, _, ok := r.Match(pod); ok {
 		t.Fatalf("expected no match after deleting all CMs")
 	}
 }

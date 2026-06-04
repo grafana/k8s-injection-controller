@@ -16,70 +16,85 @@ import (
 	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 )
 
-// TestParseConfigMapPodLabels verifies that a discovery entry narrowing a
-// namespace by k8s_pod_labels survives translation into a SelectionCriterion.
-func TestParseConfigMapPodLabels(t *testing.T) {
-	const yaml = `discovery:
-  - k8s_namespace: test-unmatched
-    k8s_pod_labels:
+// TestParseConfigMapRules verifies that the instrumentation.yaml document is
+// parsed into the InjectConfig (image version + rules), and that selector
+// fields — including the pod-label clause — survive unmarshalling.
+func TestParseConfigMapRules(t *testing.T) {
+	const yaml = `image_version: "1.2.3"
+rules:
+- k8s_selector:
+    namespaces:
+    - test-unmatched
+    podLabels:
       inject: "true"
 `
 	inst, _, err := parseConfigMap(map[string]string{configmap.KeyInstrumentation: yaml})
 	if err != nil {
 		t.Fatalf("parseConfigMap returned error: %v", err)
 	}
-	if len(inst.Criteria) != 1 {
-		t.Fatalf("expected 1 criterion, got %d", len(inst.Criteria))
+	if inst.InjectConfig.ImageVersion != "1.2.3" {
+		t.Errorf("ImageVersion = %q, want %q", inst.InjectConfig.ImageVersion, "1.2.3")
 	}
-	crit := inst.Criteria[0]
-	if crit.K8sNamespace == nil || !crit.K8sNamespace.MatchString("test-unmatched") {
-		t.Errorf("namespace not populated: %+v", crit.K8sNamespace)
+	if len(inst.InjectConfig.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(inst.InjectConfig.Rules))
 	}
-	g, ok := crit.K8sPodLabels["inject"]
-	if !ok || g == nil {
-		t.Fatalf("k8s_pod_labels[inject] not populated: %+v", crit.K8sPodLabels)
+	sel := inst.InjectConfig.Rules[0].Selector
+	if len(sel.Namespaces) != 1 || !sel.Namespaces[0].MatchString("test-unmatched") {
+		t.Errorf("namespace not populated/matching: %+v", sel.Namespaces)
+	}
+	g, ok := sel.PodLabels["inject"]
+	if !ok {
+		t.Fatalf("podLabels[inject] not populated: %+v", sel.PodLabels)
 	}
 	if !g.MatchString("true") {
-		t.Errorf("k8s_pod_labels[inject] does not match \"true\"")
+		t.Errorf("podLabels[inject] does not match \"true\"")
 	}
 	if g.MatchString("false") {
-		t.Errorf("k8s_pod_labels[inject] should not match \"false\"")
+		t.Errorf("podLabels[inject] should not match \"false\"")
 	}
 }
 
-// TestParseConfigMapPodAnnotations verifies the same for k8s_pod_annotations.
-func TestParseConfigMapPodAnnotations(t *testing.T) {
-	const yaml = `discovery:
-  - k8s_namespace: demo
-    k8s_pod_annotations:
-      team: obs
+// TestParseConfigMapRestartTargets verifies that eligible_for_restart entries
+// are parsed, and that entries with an unknown kind or missing required fields
+// are dropped without error.
+func TestParseConfigMapRestartTargets(t *testing.T) {
+	const inj = `rules:
+- k8s_selector:
+    namespaces:
+    - demo
 `
-	inst, _, err := parseConfigMap(map[string]string{configmap.KeyInstrumentation: yaml})
+	const restart = `- namespace: demo
+  kind: Deployment
+  name: web
+- namespace: demo
+  kind: BogusKind
+  name: skip-me
+- namespace: demo
+  name: missing-kind
+`
+	inst, targets, err := parseConfigMap(map[string]string{
+		configmap.KeyInstrumentation:    inj,
+		configmap.KeyEligibleForRestart: restart,
+	})
 	if err != nil {
 		t.Fatalf("parseConfigMap returned error: %v", err)
 	}
-	if len(inst.Criteria) != 1 {
-		t.Fatalf("expected 1 criterion, got %d", len(inst.Criteria))
+	if len(inst.InjectConfig.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(inst.InjectConfig.Rules))
 	}
-	g, ok := inst.Criteria[0].K8sPodAnnotations["team"]
-	if !ok || g == nil || !g.MatchString("obs") {
-		t.Fatalf("k8s_pod_annotations[team] not populated/matching: %+v", inst.Criteria[0].K8sPodAnnotations)
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 valid restart target (bogus kind + missing kind dropped), got %d: %+v", len(targets), targets)
+	}
+	if targets[0].Kind != "Deployment" || targets[0].Name != "web" || targets[0].Namespace != "demo" {
+		t.Errorf("unexpected restart target: %+v", targets[0])
 	}
 }
 
-// TestParseConfigMapPodLabelsOnlyIsNotEmpty guards that a discovery entry whose
-// ONLY selector is a pod-label clause still produces a non-empty criterion (so
-// it isn't silently dropped by the IsEmpty filter in parseConfigMap).
-func TestParseConfigMapPodLabelsOnlyIsNotEmpty(t *testing.T) {
-	const yaml = `discovery:
-  - k8s_pod_labels:
-      inject: "true"
-`
-	inst, _, err := parseConfigMap(map[string]string{configmap.KeyInstrumentation: yaml})
-	if err != nil {
-		t.Fatalf("parseConfigMap returned error: %v", err)
-	}
-	if len(inst.Criteria) != 1 {
-		t.Fatalf("expected 1 criterion (label-only entry must not be dropped), got %d", len(inst.Criteria))
+// TestParseConfigMapInvalidYAML verifies that a malformed instrumentation.yaml
+// is surfaced as an error so the reconciler can drop the ConfigMap.
+func TestParseConfigMapInvalidYAML(t *testing.T) {
+	_, _, err := parseConfigMap(map[string]string{configmap.KeyInstrumentation: "rules: [oops"})
+	if err == nil {
+		t.Fatalf("expected an error for malformed YAML")
 	}
 }
