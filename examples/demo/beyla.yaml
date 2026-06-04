@@ -97,6 +97,12 @@ data:
       # ConfigMap as eligible_for_restart and sent to the external controller.
       instrument:
         - k8s_namespace: demo
+      # Workloads matched here are excluded from instrumentation even when they
+      # also match `instrument`. Exclusion always wins. Example: instrument the
+      # whole `demo` namespace except a "legacy" deployment.
+      exclude_instrument:
+        - k8s_namespace: demo
+          k8s_deployment_name: legacy
       # Delegate mutation to the external controller-manager Deployment.
       # When this is set Beyla skips its own TLS webhook server and only
       # publishes the per-node ConfigMap.

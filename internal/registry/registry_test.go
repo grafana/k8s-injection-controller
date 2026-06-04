@@ -310,3 +310,72 @@ func TestSetAndDelete(t *testing.T) {
 		t.Fatalf("expected no match after deleting all CMs")
 	}
 }
+
+// TestMatch_SkipRules verifies that a rule with Mode: skip excludes a matching
+// pod (first-match-wins), which is how Beyla's exclude_instrument is honored:
+// it is emitted as a leading skip rule.
+func TestMatch_SkipRules(t *testing.T) {
+	helloPod := PodInfo{
+		Name: "hello-abc-123", Namespace: "demo",
+		OwnerChain: []configmap.Owner{
+			{Kind: "Pod", Name: "hello-abc-123"},
+			{Kind: "ReplicaSet", Name: "hello-abc"},
+			{Kind: "Deployment", Name: "hello"},
+		},
+	}
+	skip := func(sel configmap.K8sSelector) configmap.Rule {
+		return configmap.Rule{Selector: sel, Config: configmap.RuleConfig{Mode: configmap.ModeSkip}}
+	}
+	install := func(sel configmap.K8sSelector) configmap.Rule {
+		return configmap.Rule{Selector: sel}
+	}
+	inst := func(rules ...configmap.Rule) Instrumentation {
+		return Instrumentation{InjectConfig: configmap.InjectConfig{Rules: rules}}
+	}
+
+	tests := []struct {
+		name string
+		inst Instrumentation
+		want bool
+	}{
+		{
+			name: "leading skip rule excludes a matching pod",
+			inst: inst(
+				skip(configmap.K8sSelector{Namespaces: globs("demo"), OwnerNames: globs("hello")}),
+				install(configmap.K8sSelector{Namespaces: globs("demo")}),
+			),
+			want: false,
+		},
+		{
+			name: "skip rule that does not match falls through to install",
+			inst: inst(
+				skip(configmap.K8sSelector{OwnerNames: globs("other")}),
+				install(configmap.K8sSelector{Namespaces: globs("demo")}),
+			),
+			want: true,
+		},
+		{
+			name: "install before skip — first match wins, pod is instrumented",
+			inst: inst(
+				install(configmap.K8sSelector{Namespaces: globs("demo")}),
+				skip(configmap.K8sSelector{OwnerNames: globs("hello")}),
+			),
+			want: true,
+		},
+		{
+			name: "skip-only rule matching means not instrumented",
+			inst: inst(skip(configmap.K8sSelector{Namespaces: globs("demo")})),
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New()
+			r.Set("test/cm", tc.inst)
+			if _, _, got := r.Match(helloPod); got != tc.want {
+				t.Fatalf("Match() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

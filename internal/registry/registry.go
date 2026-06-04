@@ -89,9 +89,17 @@ func (r *Registry) Match(p PodInfo) (configmap.Rule, configmap.InjectConfig, boo
 	for _, k := range keys {
 		inst := r.instruments[k]
 		for _, rule := range inst.InjectConfig.Rules {
-			if rule.Selector.Match(input) {
-				return rule, inst.InjectConfig, true
+			if !rule.Selector.Match(input) {
+				continue
 			}
+			// First matching rule wins. A skip rule means the pod is explicitly
+			// excluded — return no match so it is not instrumented (and do not
+			// fall through to later install rules, which is how
+			// "instrument everything except X" works).
+			if rule.Config.Mode == configmap.ModeSkip {
+				return configmap.Rule{}, configmap.InjectConfig{}, false
+			}
+			return rule, inst.InjectConfig, true
 		}
 	}
 	return configmap.Rule{}, configmap.InjectConfig{}, false

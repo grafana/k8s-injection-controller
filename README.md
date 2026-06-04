@@ -41,10 +41,13 @@ into pods running in namespaces selected by annotated ConfigMaps. Built with
 
    Within a `k8s_selector`, all populated fields must match (**AND**) and empty
    fields are wildcards; entries within `namespaces` / `ownerNames` are OR'd.
-   Rules are evaluated in order and the **first match wins**. `namespaces` is
-   optional — rules without one match cluster-wide in the webhook, but do not
-   trigger a restart of pre-existing pods. Multiple ConfigMaps are merged
-   (evaluated in sorted key order).
+   Rules are evaluated in order and the **first match wins**. A matched rule
+   whose `config.mode` is `skip` excludes the pod from instrumentation (Beyla
+   emits its `exclude_instrument` selectors as leading `skip` rules, so
+   "instrument everything except X" works). `namespaces` is optional — rules
+   without one match cluster-wide in the webhook, but do not trigger a restart
+   of pre-existing pods. Multiple ConfigMaps are merged (evaluated in sorted
+   key order).
 
    **`eligible_for_restart.yaml`** — list of restart targets. Each entry:
 
