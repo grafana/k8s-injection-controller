@@ -140,6 +140,22 @@ var _ = Describe("Pod Webhook", func() {
 			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
 			Expect(obj.Annotations).To(HaveKeyWithValue(InjectedAnnotation, defaulter.Mutator.Cfg.PackageVersion()))
 		})
+
+		It("Should leave pre-existing init containers uninstrumented", func() {
+			obj.Spec.InitContainers = []corev1.Container{{Name: "setup", Image: "busybox"}}
+
+			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
+
+			// App container is instrumented...
+			Expect(envNames(obj.Spec.Containers[0].Env)).To(ContainElement("LD_PRELOAD"))
+			// ...but the user's init container is left untouched. Init containers
+			// are short-lived setup steps, and in init_container mode the payload
+			// volume isn't populated until the copy init container runs.
+			Expect(obj.Spec.InitContainers).To(HaveLen(1))
+			Expect(obj.Spec.InitContainers[0].Name).To(Equal("setup"))
+			Expect(envNames(obj.Spec.InitContainers[0].Env)).NotTo(ContainElement("LD_PRELOAD"))
+			Expect(obj.Spec.InitContainers[0].VolumeMounts).To(BeEmpty())
+		})
 	})
 
 	Context("When a rule env var conflicts with a fixed injector var", func() {
