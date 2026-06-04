@@ -377,7 +377,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// "webhook unreachable" rather than the actual "not authorized".
 			Eventually(func(g Gomega) {
 				err := k8sClient.Resources().Create(suiteCtx,
-					selectorConfigMap(cmName, namespace, workloadNS, workload, workloadNS, sdkImageVersion, sdkImageRoot))
+					selectorConfigMap(cmName, namespace, workloadNS, workload, workloadNS, sdkImageVersion))
 				g.Expect(err).To(HaveOccurred(), "expected the validating webhook to deny the unauthorized write")
 				g.Expect(err.Error()).To(ContainSubstring("not authorized"))
 			}, time.Minute, 5*time.Second).Should(Succeed())
