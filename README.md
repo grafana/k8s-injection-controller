@@ -11,41 +11,43 @@ into pods running in namespaces selected by annotated ConfigMaps. Built with
    what matters).
 2. Each selector ConfigMap carries two files in its `.data`:
 
-   **`instrumentation.yaml`** — pod selectors under a top-level
-   `discovery:` key, optional exclusions under `exclude_discovery:`, plus the
-   OTLP destination under `otel_export:`. Each `discovery` / `exclude_discovery`
-   entry may set any combination of:
+   **`instrumentation.yaml`** — a Beyla
+   [`InjectConfig`](https://pkg.go.dev/github.com/grafana/beyla/v3/pkg/webhook/configmap)
+   document: an `image_version` plus an ordered list of `rules`. Each rule pairs
+   a `k8s_selector` with the `config` (env vars) to apply when it matches:
 
    ```yaml
-   discovery:
-     - k8s_pod_name: my-pod
-       k8s_namespace: my-app
-       k8s_deployment_name: hello       # walks pod -> ReplicaSet -> Deployment
-       k8s_replicaset_name: hello-abc
-       k8s_statefulset_name: db
-       k8s_daemonset_name: agent
-       k8s_owner_name: hello            # any owner kind, including resolved Deployment
-   exclude_discovery:
-     - k8s_namespace: my-app            # instrument my-app, except...
-       k8s_deployment_name: legacy      # ...the "legacy" deployment
-   otel_export:
-     endpoint: http://otel-collector:4318
-     protocol: http/protobuf
+   image_version: "0.0.11"            # OCI tag appended to the controller's image_volume_root
+   rules:
+     - k8s_selector:
+         namespaces: [my-app]         # globs; empty = all namespaces
+         ownerNames: [hello]          # globs matched against the pod's owner chain
+         ownerKinds: [Deployment]     # Deployment | ReplicaSet | StatefulSet | DaemonSet | Pod
+         podLabels:                   # all entries must match (AND); values are globs
+           app: hello
+         podAnnotations:
+           team: obs
+       config:
+         env:                         # stamped onto matched containers
+           - name: OTEL_EXPORTER_OTLP_ENDPOINT
+             value: http://otel-collector:4318
+           - name: OTEL_EXPORTER_OTLP_PROTOCOL
+             value: http/protobuf
    ```
 
-   `otel_export` is stamped onto mutated pods as `OTEL_EXPORTER_OTLP_ENDPOINT` /
-   `OTEL_EXPORTER_OTLP_PROTOCOL`. Each selector ConfigMap carries its own
-   destination, so a single injector can fan pods out to different collectors.
+   The per-rule `config.env` is Beyla's: it derives the OTLP destination,
+   exporters, sampler, and propagators from its own configuration and writes
+   them here, so a single injector can fan pods out to different collectors.
 
-   Within one entry, all populated fields must match (**AND**); empty fields
-   are wildcards. Across entries the registry applies **OR**. `k8s_namespace`
-   is optional — entries without one match cluster-wide in the webhook, but
-   do not trigger eviction of pre-existing pods. Multiple ConfigMaps are
-   merged.
-
-   `exclude_discovery` entries use the same fields. A pod is instrumented only
-   if it matches at least one `discovery` entry **and** no `exclude_discovery`
-   entry — exclusion always wins (mirroring Beyla's `exclude_instrument`).
+   Within a `k8s_selector`, all populated fields must match (**AND**) and empty
+   fields are wildcards; entries within `namespaces` / `ownerNames` are OR'd.
+   Rules are evaluated in order and the **first match wins**. A matched rule
+   whose `config.mode` is `skip` excludes the pod from instrumentation (Beyla
+   emits its `exclude_instrument` selectors as leading `skip` rules, so
+   "instrument everything except X" works). `namespaces` is optional — rules
+   without one match cluster-wide in the webhook, but do not trigger a restart
+   of pre-existing pods. Multiple ConfigMaps are merged (evaluated in sorted
+   key order).
 
    **`eligible_for_restart.yaml`** — list of restart targets. Each entry:
 
@@ -155,12 +157,18 @@ metadata:
     beyla.grafana.com/node: ""
 data:
   instrumentation.yaml: |
-    discovery:
-      - k8s_namespace: my-app
-        k8s_deployment_name: hello
-    otel_export:
-      endpoint: http://otel-collector.observability.svc.cluster.local:4318
-      protocol: http/protobuf
+    image_version: "0.0.11"
+    rules:
+      - k8s_selector:
+          namespaces: [my-app]
+          ownerNames: [hello]
+          ownerKinds: [Deployment]
+        config:
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://otel-collector.observability.svc.cluster.local:4318
+            - name: OTEL_EXPORTER_OTLP_PROTOCOL
+              value: http/protobuf
   eligible_for_restart.yaml: |
     - namespace: my-app
       kind: Deployment

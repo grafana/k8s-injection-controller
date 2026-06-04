@@ -19,6 +19,8 @@ import (
 
 	"go.opentelemetry.io/obi/pkg/appolly/services"
 
+	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
+
 	"github.com/grafana/beyla-k8s-injector/internal/config"
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 )
@@ -50,11 +52,12 @@ func outcomePod(name string, env []corev1.EnvVar, ann map[string]string) *corev1
 // matchAll returns a registry whose single criterion matches every pod in
 // outcomeTestNS.
 func matchAll() *registry.Registry {
-	g := services.NewGlob(outcomeTestNS)
 	r := registry.New()
-	r.Set("test-cm", registry.Instrumentation{
-		Criteria: []registry.SelectionCriterion{{K8sNamespace: &g}},
-	})
+	r.Set("test-cm", registry.Instrumentation{InjectConfig: configmap.InjectConfig{
+		Rules: []configmap.Rule{{
+			Selector: configmap.K8sSelector{Namespaces: []services.GlobAttr{services.NewGlob(outcomeTestNS)}},
+		}},
+	}})
 	return r
 }
 
@@ -63,7 +66,7 @@ func matchAll() *registry.Registry {
 // beyla_sdk_injection_requests_total, so a wrong constant would silently split
 // a metric series — this guards against that.
 func TestDefaultRecordsOutcome(t *testing.T) {
-	cfg := config.SDKInject{ImageVolumeRoot: "ghcr.io/grafana/beyla/inject-sdk-image", ImageVersion: "0.0.11"}
+	cfg := config.SDKInject{ImageVolumeRoot: "ghcr.io/grafana/beyla/inject-sdk-image", ImageVersion: "0.0.12"}
 	wantVersion := cfg.PackageVersion()
 
 	tests := []struct {

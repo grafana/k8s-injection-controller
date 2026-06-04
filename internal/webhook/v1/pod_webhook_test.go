@@ -21,7 +21,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -41,22 +40,37 @@ var _ = Describe("Pod Webhook", func() {
 		defaulter *PodCustomDefaulter
 	)
 
-	BeforeEach(func() {
-		// Registry with a single criterion that matches every pod in
-		// testNamespace; that's enough to exercise the mutator path.
-		ns := services.NewGlob(testNamespace)
-		reg := registry.New()
-		reg.Set("test-cm", registry.Instrumentation{
-			Criteria: []registry.SelectionCriterion{{K8sNamespace: &ns}},
-			// OTLP destination now travels with the matched ConfigMap, not
-			// with the startup --config.
-			InjectConfig: configmap.InjectConfig{
-				OtelExport: configmap.OtelExport{
-					Endpoint: "http://otel-collector:4318",
-					Protocol: "http/protobuf",
+	// nsRule builds an Instrumentation with a single rule matching every pod in
+	// testNamespace. The rule carries the OTLP destination as env vars (as Beyla
+	// would write them). imageVersion is the CM-level override ("" = use the
+	// controller default).
+	nsRule := func(imageVersion string, env ...corev1.EnvVar) registry.Instrumentation {
+		if env == nil {
+			env = []corev1.EnvVar{
+				{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "http://otel-collector:4318"},
+				{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: "http/protobuf"},
+			}
+		}
+		return registry.Instrumentation{InjectConfig: configmap.InjectConfig{
+			ImageVersion: imageVersion,
+			Rules: []configmap.Rule{{
+				Selector: configmap.K8sSelector{
+					Namespaces: []services.GlobAttr{services.NewGlob(testNamespace)},
 				},
-			},
-		})
+				Config: configmap.RuleConfig{Env: env},
+			}},
+		}}
+	}
+
+	setRule := func(inst registry.Instrumentation) {
+		reg := registry.New()
+		reg.Set("test-cm", inst)
+		defaulter.Registry = reg
+	}
+
+	BeforeEach(func() {
+		reg := registry.New()
+		reg.Set("test-cm", nsRule(""))
 
 		defaulter = &PodCustomDefaulter{
 			Registry: reg,
@@ -66,10 +80,12 @@ var _ = Describe("Pod Webhook", func() {
 			// no-op here.
 			Reader: k8sClient,
 			Mutator: &PodMutator{Cfg: config.SDKInject{
-				// TODO: replace from some auto-updating source
 				ImageVolumeRoot: "ghcr.io/grafana/beyla/inject-sdk-image",
-				ImageVersion:    "0.0.11",
-				Propagators:     []string{"tracecontext"},
+				ImageVersion:    "0.0.12",
+				// These specs assert direct ImageVolumeSource behavior. In
+				// production "auto" is resolved to a concrete mode at boot; the
+				// tests construct the mutator directly, so set it explicitly.
+				InjectionMode: config.InjectionModeImage,
 			}},
 		}
 
@@ -111,7 +127,7 @@ var _ = Describe("Pod Webhook", func() {
 			Expect(obj.Spec.Volumes[0].Name).To(Equal(injectVolumeName))
 			Expect(obj.Spec.Volumes[0].Image).NotTo(BeNil(),
 				"expected an ImageVolumeSource since that's the only supported mode")
-			Expect(obj.Spec.Volumes[0].Image.Reference).To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.11"))
+			Expect(obj.Spec.Volumes[0].Image.Reference).To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.12"))
 
 			mounts := obj.Spec.Containers[0].VolumeMounts
 			Expect(mounts).To(HaveLen(1))
@@ -124,32 +140,51 @@ var _ = Describe("Pod Webhook", func() {
 			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
 			Expect(obj.Annotations).To(HaveKeyWithValue(InjectedAnnotation, defaulter.Mutator.Cfg.PackageVersion()))
 		})
+
+		It("Should leave pre-existing init containers uninstrumented", func() {
+			obj.Spec.InitContainers = []corev1.Container{{Name: "setup", Image: "busybox"}}
+
+			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
+
+			// App container is instrumented...
+			Expect(envNames(obj.Spec.Containers[0].Env)).To(ContainElement("LD_PRELOAD"))
+			// ...but the user's init container is left untouched. Init containers
+			// are short-lived setup steps, and in init_container mode the payload
+			// volume isn't populated until the copy init container runs.
+			Expect(obj.Spec.InitContainers).To(HaveLen(1))
+			Expect(obj.Spec.InitContainers[0].Name).To(Equal("setup"))
+			Expect(envNames(obj.Spec.InitContainers[0].Env)).NotTo(ContainElement("LD_PRELOAD"))
+			Expect(obj.Spec.InitContainers[0].VolumeMounts).To(BeEmpty())
+		})
 	})
 
-	Context("When the matched ConfigMap carries SDK overrides", func() {
-		// Helper: re-register the test CM so its InjectConfig overrides the
-		// controller-wide defaults set in BeforeEach. The criteria stay the
-		// same so the pod still matches.
-		setOverride := func(cfg configmap.InjectConfig) {
-			ns := services.NewGlob(testNamespace)
-			cfg.OtelExport = configmap.OtelExport{
-				Endpoint: "http://otel-collector:4318",
-				Protocol: "http/protobuf",
-			}
-			defaulter.Registry.Set("test-cm", registry.Instrumentation{
-				Criteria:     []registry.SelectionCriterion{{K8sNamespace: &ns}},
-				InjectConfig: cfg,
-			})
-		}
+	Context("When a rule env var conflicts with a fixed injector var", func() {
+		It("should not let the rule override LD_PRELOAD or OTEL_SEMCONV_STABILITY_OPT_IN", func() {
+			setRule(nsRule("",
+				corev1.EnvVar{Name: "LD_PRELOAD", Value: "/attacker/lib.so"},
+				corev1.EnvVar{Name: "OTEL_SEMCONV_STABILITY_OPT_IN", Value: "database"},
+				corev1.EnvVar{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "http://my-collector:4318"},
+			))
 
+			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
+
+			env := obj.Spec.Containers[0].Env
+			Expect(envValue(env, "LD_PRELOAD")).To(Equal(envVarLdPreloadValue),
+				"fixed LD_PRELOAD must win over rule-supplied value")
+			Expect(envValue(env, "OTEL_SEMCONV_STABILITY_OPT_IN")).To(Equal("http"),
+				"fixed semconv opt-in must win over rule-supplied value")
+			Expect(envValue(env, "OTEL_EXPORTER_OTLP_ENDPOINT")).To(Equal("http://my-collector:4318"),
+				"non-conflicting rule env var must be applied")
+		})
+	})
+
+	Context("When the ConfigMap overrides the image version", func() {
 		It("Should override the mounted image and its derived package version", func() {
-			setOverride(configmap.InjectConfig{
-				ImageVersion: "override",
-			})
+			setRule(nsRule("override"))
 
-			// Capture the package-version env the default path would produce, then
-			// run injection and confirm both the volume reference and the env
-			// reflect the override (not the controller default seeded in BeforeEach).
+			// Capture the package-version the controller default would produce,
+			// then confirm both the volume reference and the env reflect the
+			// per-ConfigMap override instead.
 			defaultPV := defaulter.Mutator.Cfg.PackageVersion()
 
 			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
@@ -164,39 +199,39 @@ var _ = Describe("Pod Webhook", func() {
 			Expect(gotPV).NotTo(Equal(defaultPV),
 				"package-version env should reflect the overridden ImageVersion, not the controller default")
 		})
+	})
 
-		It("Should honor Resources flags from the ConfigMap", func() {
-			setOverride(configmap.InjectConfig{
-				Resources: configmap.SDKResource{
-					AddK8sUIDAttributes: true,
-					AddK8sIPAttribute:   true,
-				},
-			})
-
-			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
-
-			names := envNames(obj.Spec.Containers[0].Env)
-			// AddK8sUIDAttributes gates this env var entirely; the default
-			// (false) leaves it absent. Its presence proves the override took
-			// effect.
-			Expect(names).To(ContainElement("OTEL_INJECTOR_K8S_POD_UID"))
-			// Same gate for the IP attribute.
-			Expect(names).To(ContainElement("OTEL_RESOURCE_ATTRIBUTES_POD_IP"))
+	Context("When injection_mode is init_container", func() {
+		BeforeEach(func() {
+			defaulter.Mutator.Cfg.InjectionMode = config.InjectionModeInitContainer
 		})
 
-		It("Should override propagators while preserving other defaults", func() {
-			setOverride(configmap.InjectConfig{
-				Propagators: []string{"b3", "baggage"},
-			})
-
+		It("Should provision an ephemeral volume and a copy init container, and not instrument the copy container", func() {
 			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
 
-			Expect(envValue(obj.Spec.Containers[0].Env, "OTEL_PROPAGATORS")).
-				To(Equal("b3,baggage"))
-			// Volume reference should still come from the controller default —
-			// only propagators was overridden.
-			Expect(obj.Spec.Volumes[0].Image.Reference).
-				To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.11"))
+			// Ephemeral emptyDir volume rather than an image volume.
+			Expect(obj.Spec.Volumes).To(HaveLen(1))
+			Expect(obj.Spec.Volumes[0].Name).To(Equal(injectVolumeName))
+			Expect(obj.Spec.Volumes[0].EmptyDir).NotTo(BeNil())
+			Expect(obj.Spec.Volumes[0].Image).To(BeNil())
+
+			// Exactly one init container: our copy container.
+			Expect(obj.Spec.InitContainers).To(HaveLen(1))
+			copyC := obj.Spec.InitContainers[0]
+			Expect(copyC.Name).To(Equal(injectInitContainerName))
+			Expect(copyC.Image).To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.12"))
+
+			// The copy container must NOT be instrumented: no LD_PRELOAD, and
+			// its mount is read-write so it can populate the volume.
+			Expect(envNames(copyC.Env)).NotTo(ContainElement("LD_PRELOAD"))
+			Expect(copyC.VolumeMounts).To(HaveLen(1))
+			Expect(copyC.VolumeMounts[0].ReadOnly).To(BeFalse())
+
+			// The app container is still instrumented with a read-only mount.
+			Expect(envNames(obj.Spec.Containers[0].Env)).To(ContainElement("LD_PRELOAD"))
+			appMounts := obj.Spec.Containers[0].VolumeMounts
+			Expect(appMounts).To(HaveLen(1))
+			Expect(appMounts[0].ReadOnly).To(BeTrue())
 		})
 	})
 
@@ -232,29 +267,24 @@ var _ = Describe("Pod Webhook", func() {
 		})
 	})
 
-	Context("When the matched criterion is narrowed by a pod label", func() {
-		// Re-register the CM so the namespace criterion ALSO requires an
-		// inject=true label, exercising the K8sPodLabels match path.
+	Context("When the matched rule is narrowed by a pod label", func() {
+		// Register a rule whose selector ALSO requires an inject=true label,
+		// exercising the K8sSelector.PodLabels match path.
 		BeforeEach(func() {
-			ns := services.NewGlob(testNamespace)
-			injectTrue := services.NewGlob("true")
-			defaulter.Registry.Set("test-cm", registry.Instrumentation{
-				Criteria: []registry.SelectionCriterion{{
-					K8sNamespace: &ns,
-					K8sPodLabels: map[string]*services.GlobAttr{"inject": &injectTrue},
-				}},
-				InjectConfig: configmap.InjectConfig{
-					OtelExport: configmap.OtelExport{
-						Endpoint: "http://otel-collector:4318",
-						Protocol: "http/protobuf",
+			setRule(registry.Instrumentation{InjectConfig: configmap.InjectConfig{
+				Rules: []configmap.Rule{{
+					Selector: configmap.K8sSelector{
+						Namespaces: []services.GlobAttr{services.NewGlob(testNamespace)},
+						PodLabels:  map[string]services.GlobAttr{"inject": services.NewGlob("true")},
 					},
-				},
-			})
+					Config: configmap.RuleConfig{Env: []corev1.EnvVar{
+						{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "http://otel-collector:4318"},
+					}},
+				}},
+			}})
 		})
 
 		It("Should NOT mutate a pod missing the inject label", func() {
-			// No inject label, so the criterion must miss and the webhook must
-			// leave the pod untouched.
 			before := obj.DeepCopy()
 			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
 			Expect(obj).To(Equal(before))

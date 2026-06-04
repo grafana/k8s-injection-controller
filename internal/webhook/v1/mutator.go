@@ -9,14 +9,13 @@ import (
 
 	"github.com/distribution/reference"
 	"github.com/grafana/beyla-k8s-injector/internal/config"
-	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
-	"go.opentelemetry.io/obi/pkg/appolly/services"
 	"go.opentelemetry.io/obi/pkg/kube/kubecache/informer"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 	admissionv1 "k8s.io/api/admission/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -40,16 +39,14 @@ var (
 )
 
 const (
-	injectVolumeName = "otel-inject-instrumentation"
-	// this value is hardcoded in the config file
-	internalMountPath = "/__otel_sdk_auto_instrumentation__"
+	injectVolumeName        = "otel-inject-instrumentation"
+	injectInitContainerName = "otel-sdk-inject"
+	internalMountPath       = "/__otel_sdk_auto_instrumentation__"
 
 	envVarLdPreloadName               = "LD_PRELOAD"
 	envVarLdPreloadValue              = internalMountPath + "/dist/injector/libotelinject.so"
 	envOtelInjectorConfigFileName     = "OTEL_INJECTOR_CONFIG_FILE"
 	envOtelInjectorConfigFileValue    = internalMountPath + "/dist/injector/otelinject.conf"
-	envOtelExporterOtlpEndpointName   = "OTEL_EXPORTER_OTLP_ENDPOINT"
-	envOtelExporterOtlpProtocolName   = "OTEL_EXPORTER_OTLP_PROTOCOL"
 	envOtelSemConvStabilityName       = "OTEL_SEMCONV_STABILITY_OPT_IN"
 	envInjectorOtelExtraResourceAttrs = "OTEL_INJECTOR_RESOURCE_ATTRIBUTES"
 	envInjectorOtelServiceName        = "OTEL_INJECTOR_SERVICE_NAME"
@@ -63,12 +60,6 @@ const (
 	envOtelK8sNodeName                = "OTEL_RESOURCE_ATTRIBUTES_NODE_NAME" // stored in OTEL_INJECTOR_RESOURCE_ATTRIBUTES, since there's no individual OTEL_INJECTOR_K8S_NODE_NAME
 	envOtelK8sPodIP                   = "OTEL_RESOURCE_ATTRIBUTES_POD_IP"
 	envVarSDKVersion                  = "BEYLA_INJECTOR_SDK_PKG_VERSION"
-	envOtelTracesSamplerName          = "OTEL_TRACES_SAMPLER"
-	envOtelTracesSamplerArgName       = "OTEL_TRACES_SAMPLER_ARG"
-	envOtelPropagatorsName            = "OTEL_PROPAGATORS"
-	envOtelMetricsExporterName        = "OTEL_METRICS_EXPORTER"
-	envOtelTracesExporterName         = "OTEL_TRACES_EXPORTER"
-	envOtelLogsExporterName           = "OTEL_LOGS_EXPORTER"
 
 	// Enabling/disabling of language specific SDKs
 	envDotnetEnabledName = "DOTNET_AUTO_INSTRUMENTATION_AGENT_PATH_PREFIX"
@@ -110,8 +101,28 @@ func (pm *PodMutator) UpdateConfig(cfg *config.SDKInject) {
 	pm.Cfg = *cfg
 }
 
+// This is the undesirable mode, since it uses a lot of ephemeral storage.
+// Typically it's used on old k8s clusters, version < 1.31.
+func (pm *PodMutator) usesInitContainer() bool {
+	return pm.Cfg.InjectionMode != config.InjectionModeImage
+}
+
 func (pm *PodMutator) buildVolumeDefinition() corev1.Volume {
-	// Kubernetes ImageVolumeSource (k8s 1.31+) is the only supported mode.
+	if pm.usesInitContainer() {
+		// Older clusters (k8s < 1.31) lack ImageVolumeSource. Provision an
+		// ephemeral emptyDir that the copy init container populates from the
+		// SDK image before the app containers start.
+		sizeLimit := resource.MustParse(config.EphemeralVolumeSize)
+		return corev1.Volume{
+			Name: injectVolumeName,
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{
+					SizeLimit: &sizeLimit,
+				},
+			},
+		}
+	}
+	// Kubernetes ImageVolumeSource (k8s 1.31+).
 	return corev1.Volume{
 		Name: injectVolumeName,
 		VolumeSource: corev1.VolumeSource{
@@ -141,9 +152,42 @@ func (pm *PodMutator) mountVolume(spec *corev1.PodSpec) {
 	}
 }
 
-func (pm *PodMutator) instrumentContainer(meta *metav1.ObjectMeta, c *corev1.Container, exp configmap.OtelExport) {
+// addCopyInitContainerIfNeeded adds (or replaces, by name) the init container that
+// copies the SDK payload from the SDK image into the shared ephemeral volume.
+func (pm *PodMutator) addCopyInitContainerIfNeeded(spec *corev1.PodSpec) {
+	if !pm.usesInitContainer() {
+		return
+	}
+	if spec.InitContainers == nil {
+		spec.InitContainers = make([]corev1.Container, 0)
+	}
+
+	c := corev1.Container{
+		Name:            injectInitContainerName,
+		Image:           pm.Cfg.ImageVolumePath(),
+		ImagePullPolicy: corev1.PullIfNotPresent,
+		VolumeMounts: []corev1.VolumeMount{{
+			Name:      injectVolumeName,
+			MountPath: internalMountPath,
+			ReadOnly:  false,
+		}},
+	}
+
+	pos := slices.IndexFunc(spec.InitContainers, func(ic corev1.Container) bool {
+		return ic.Name == injectInitContainerName
+	})
+	// Replace existing if already exists, rather than chaining it. This helps with
+	// customers potentially using this directly in their setup.
+	if pos < 0 {
+		spec.InitContainers = append(spec.InitContainers, c)
+	} else {
+		spec.InitContainers[pos] = c
+	}
+}
+
+func (pm *PodMutator) instrumentContainer(meta *metav1.ObjectMeta, c *corev1.Container, ruleEnv []corev1.EnvVar) {
 	pm.addMount(c)
-	pm.addEnvVars(meta, c, exp)
+	pm.addEnvVars(meta, c, ruleEnv)
 }
 
 func (pm *PodMutator) addMount(c *corev1.Container) {
@@ -200,6 +244,19 @@ func setEnvVarEvenIfEmpty(c *corev1.Container, envVarName, value string) {
 	}
 }
 
+// applyEnvVars merges a list of env vars onto a container, overriding any
+// existing entry with the same name. Rule env vars are Beyla-owned and
+// intentionally take precedence over a value the pod author set themselves.
+func applyEnvVars(c *corev1.Container, vars []corev1.EnvVar) {
+	for _, v := range vars {
+		if pos, ok := findEnvVar(c, v.Name); ok {
+			c.Env[pos] = v
+		} else {
+			c.Env = append(c.Env, v)
+		}
+	}
+}
+
 // setEnvVar is a helper function that sets an environment variable only if the value is not empty
 func setEnvVar(c *corev1.Container, envVarName, value string) {
 	if value != "" {
@@ -207,21 +264,20 @@ func setEnvVar(c *corev1.Container, envVarName, value string) {
 	}
 }
 
-func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container, exp configmap.OtelExport) {
+func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container, ruleEnv []corev1.EnvVar) {
 	if c.Env == nil {
 		c.Env = []corev1.EnvVar{}
 	}
 
+	// Rule env vars are applied first (lowest precedence) so fixed injector
+	// vars below can always override them.
+	applyEnvVars(c, ruleEnv)
 	// we set the SDK version on the environment variable so that
 	// we can tell on start, when we scan the processes of the oldest
 	// SDK version in use.
 	setEnvVar(c, envVarSDKVersion, pm.Cfg.PackageVersion())
 	setEnvVar(c, envVarLdPreloadName, envVarLdPreloadValue)
 	setEnvVar(c, envOtelInjectorConfigFileName, envOtelInjectorConfigFileValue)
-	// Endpoint/protocol come from the matched ConfigMap's otel_export block,
-	// not from --config, so one injector can fan out to different collectors.
-	setEnvVar(c, envOtelExporterOtlpEndpointName, exp.Endpoint)
-	setEnvVar(c, envOtelExporterOtlpProtocolName, exp.Protocol)
 	setEnvVar(c, envOtelSemConvStabilityName, "http")
 	if pm.Cfg.Debug {
 		setEnvVar(c, envInjectorDebugName, "debug")
@@ -238,88 +294,37 @@ func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container, e
 	logger.Info("env vars", "vars", c.Env)
 }
 
-// configureContainerEnvVars sets all environment variables for the container including
-// resource attributes, sampler configuration, and service identification.
-// nolint:gocritic
+// configureContainerEnvVars sets per-pod resource attributes and service identification
+// env vars. Signal exporters, propagators, sampler, and debug are owned by Beyla and
+// arrive via the rule's Config.Env (applied earlier in addEnvVars).
 func (pm *PodMutator) configureContainerEnvVars(meta *metav1.ObjectMeta, container *corev1.Container) {
 	extraResAttrs := pm.setResourceAttributes(meta, container)
-
-	// Configure propagators from default config
-	if len(pm.Cfg.Propagators) > 0 {
-		pm.configurePropagators(container, pm.Cfg.Propagators)
-	}
-
-	// Configure sampler with priority: selector > default
-	var samplerConfig *services.SamplerConfig
-	// ODO: find a way to safely pass connection info per selector
-	// if selector != nil {
-	//	samplerConfig = selector.GetSamplerConfig()
-	// }
-	if samplerConfig == nil {
-		samplerConfig = pm.Cfg.DefaultSampler
-	}
-	if samplerConfig != nil {
-		pm.configureSampler(container, samplerConfig)
-	}
-
-	// Configure exporters: start with SDK export config, then override with selector's export modes
-	// Use SDK-specific export settings which are independent from global Beyla export config
-	tracesEnabled := pm.Cfg.ExportedSignals.TracesEnabled()
-	metricsEnabled := pm.Cfg.ExportedSignals.MetricsEnabled()
-	logsEnabled := pm.Cfg.ExportedSignals.LogsEnabled()
-
-	// Start with a new ExportModes (all blocked by default)
-	exportModes := services.NewExportModes()
-
-	// Enable based on SDK export configuration
-	if tracesEnabled {
-		exportModes.AllowTraces()
-	}
-	if metricsEnabled {
-		exportModes.AllowMetrics()
-	}
-	if logsEnabled {
-		exportModes.AllowLogs()
-	}
-
-	// If selector has export modes, override the global ones
-	// if selector != nil {
-	//	if selectorModes := selector.GetExportModes(); selectorModes != services.ExportModeUnset {
-	//		exportModes = selectorModes
-	//	}
-	// }
-
-	pm.configureExporters(container, exportModes)
-
-	// todo
-	// if pm.cfg.Metrics.Features.AnySpanMetrics() {
-	//	extraResAttrs[attr.SkipSpanMetrics.OTEL()] = "true"
-	// }
-
 	pm.injectEnvVars(extraResAttrs, container)
 }
 
 func (pm *PodMutator) injectEnvVars(extraResAttrs map[attribute.Key]string, container *corev1.Container) {
-	// Set extra resource attributes if any exist
-	if len(extraResAttrs) > 0 {
-		resourceAttributeList := make([]string, 0, len(extraResAttrs))
-		for _, resourceAttributeKey := range slices.Sorted(maps.Keys(extraResAttrs)) {
-			resourceAttributeList = append(
-				resourceAttributeList,
-				fmt.Sprintf("%s=%s", resourceAttributeKey, extraResAttrs[resourceAttributeKey]))
-		}
-		setEnvVar(container, envInjectorOtelExtraResourceAttrs, strings.Join(resourceAttributeList, ","))
+	if len(extraResAttrs) == 0 {
+		return
+	}
+	resourceAttributeList := make([]string, 0, len(extraResAttrs))
+	for _, resourceAttributeKey := range slices.Sorted(maps.Keys(extraResAttrs)) {
+		resourceAttributeList = append(
+			resourceAttributeList,
+			fmt.Sprintf("%s=%s", resourceAttributeKey, extraResAttrs[resourceAttributeKey]))
+	}
+	perPodAttrs := strings.Join(resourceAttributeList, ",")
+	// Append per-pod dynamic attributes to any static attributes already set by the rule env vars.
+	if pos, ok := findEnvVar(container, envInjectorOtelExtraResourceAttrs); ok && container.Env[pos].Value != "" {
+		container.Env[pos].Value = container.Env[pos].Value + "," + perPodAttrs
+	} else {
+		setEnvVar(container, envInjectorOtelExtraResourceAttrs, perPodAttrs)
 	}
 }
 
 func (pm *PodMutator) setResourceAttributes(meta *metav1.ObjectMeta, container *corev1.Container) map[attribute.Key]string {
 	cfg := pm.Cfg.Resources
 
-	// entries from the CRD have the lowest precedence - they are overridden by later values
 	extraResAttrs := map[attribute.Key]string{}
-	for k, v := range cfg.Attributes {
-		extraResAttrs[attribute.Key(k)] = v
-	}
 
 	setEnvVar(container, envInjectorOtelK8sContainerName, container.Name)
 
@@ -360,50 +365,6 @@ func (pm *PodMutator) setResourceAttributes(meta *metav1.ObjectMeta, container *
 	return extraResAttrs
 }
 
-// configureSampler sets sampler environment variables from the provided sampler configuration.
-// The samplerConfig parameter must be non-nil.
-// Respects existing environment variables (won't override user settings).
-func (pm *PodMutator) configureSampler(container *corev1.Container, samplerConfig *services.SamplerConfig) {
-	// Use existing setEnvVar helper (handles empty values and duplicates)
-	setEnvVar(container, envOtelTracesSamplerName, string(samplerConfig.Name))
-	setEnvVar(container, envOtelTracesSamplerArgName, samplerConfig.Arg)
-}
-
-// configurePropagators sets propagators environment variable from the provided list.
-// The propagators parameter must be non-empty.
-// Respects existing environment variables (won't override user settings).
-func (pm *PodMutator) configurePropagators(container *corev1.Container, propagators []string) {
-	// Join propagators with comma separator as per OTEL spec
-	setEnvVar(container, envOtelPropagatorsName, strings.Join(propagators, ","))
-}
-
-// configureExporters sets exporter environment variables based on the export modes.
-// Sets OTEL_METRICS_EXPORTER to "otlp" or "none" based on CanExportMetrics().
-// Sets OTEL_TRACES_EXPORTER to "otlp" or "none" based on CanExportTraces().
-// Sets OTEL_LOGS_EXPORTER to "otlp" or "none" based on CanExportLogs().
-func (pm *PodMutator) configureExporters(container *corev1.Container, exportModes services.ExportModes) {
-	// Set metrics exporter
-	if exportModes.CanExportMetrics() {
-		setEnvVar(container, envOtelMetricsExporterName, "otlp")
-	} else {
-		setEnvVar(container, envOtelMetricsExporterName, "none")
-	}
-
-	// Set traces exporter
-	if exportModes.CanExportTraces() {
-		setEnvVar(container, envOtelTracesExporterName, "otlp")
-	} else {
-		setEnvVar(container, envOtelTracesExporterName, "none")
-	}
-
-	// Set logs exporter
-	if exportModes.CanExportLogs() {
-		setEnvVar(container, envOtelLogsExporterName, "otlp")
-	} else {
-		setEnvVar(container, envOtelLogsExporterName, "none")
-	}
-}
-
 // chooseServiceName returns the service name to be used in the instrumentation.
 // See https://opentelemetry.io/docs/specs/semconv/non-normative/k8s-attributes/#how-servicename-should-be-calculated
 func chooseServiceName(meta *metav1.ObjectMeta, useLabelsForResourceAttributes bool, podName string, resources map[attribute.Key]string) string {
@@ -435,8 +396,8 @@ func chooseServiceName(meta *metav1.ObjectMeta, useLabelsForResourceAttributes b
 // The precedence is as follows:
 // 1. annotation with key resource.opentelemetry.io/<resource>.
 // 2. label with key labelKey.
-func chooseLabelOrAnnotation(meta *metav1.ObjectMeta, useLabelsForResourceAttributes bool, resource attribute.Key, labelKeys []string) string {
-	if v := meta.GetAnnotations()[(ResourceAttributeAnnotationPrefix + string(resource))]; v != "" {
+func chooseLabelOrAnnotation(meta *metav1.ObjectMeta, useLabelsForResourceAttributes bool, res attribute.Key, labelKeys []string) string {
+	if v := meta.GetAnnotations()[(ResourceAttributeAnnotationPrefix + string(res))]; v != "" {
 		return v
 	}
 	if useLabelsForResourceAttributes {
@@ -637,7 +598,7 @@ func AlreadyInstrumented(spec *corev1.PodSpec, meta *metav1.ObjectMeta, wantVers
 // at *any* SDK version. Unlike AlreadyInstrumented — which compares against a
 // specific wanted version to decide whether to (re-)inject — this is the signal
 // the controller uses to decide whether a pod that no longer matches any
-// selection criterion must be restarted to *remove* its instrumentation. We
+// rule must be restarted to *remove* its instrumentation. We
 // treat the in-pod state as the truth, checking both our annotation and the
 // SDK-version env we stamp onto every instrumented container.
 func IsInstrumented(spec *corev1.PodSpec, meta *metav1.ObjectMeta) bool {

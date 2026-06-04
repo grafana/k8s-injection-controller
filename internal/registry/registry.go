@@ -9,100 +9,36 @@ You may obtain a copy of the License at
 */
 
 // Package registry holds the in-memory model of which pods should be touched
-// by the injector. Selector ConfigMaps contribute lists of SelectionCriterion;
-// the webhook and controller test pods against the union via Match.
+// by the injector. Selector ConfigMaps contribute an InjectConfig (a list of
+// rules plus the CM-level image version); the webhook and controller test pods
+// against the rules via Match.
 package registry
 
 import (
 	"sort"
 	"sync"
 
-	"go.opentelemetry.io/obi/pkg/appolly/services"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
-
 	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 )
 
-var regLog = logf.Log.WithName("registry")
-
 // Instrumentation is one selector ConfigMap's contribution to the registry:
-// the criteria that decide which pods to touch and the rest of the wire
-// payload (OTLP destination, per-CM SDK overrides). Criteria are the
-// controller's translation of the on-wire Discovery globs into typed match
-// fields; InjectConfig keeps the raw wire document so callers can read the
-// OtelExport and feed SDKInject.WithConfigMapOverrides.
+// the parsed InjectConfig Beyla wrote, carrying the ordered rules the webhook
+// evaluates against each pod plus the CM-level image version.
 type Instrumentation struct {
-	Criteria []SelectionCriterion
-	// ExcludeCriteria are the negative selectors from the CM's exclude_discovery.
-	// A pod selected by Criteria is skipped when it also matches any
-	// ExcludeCriterion (exclusion wins), mirroring Beyla's exclude_instrument.
-	ExcludeCriteria []SelectionCriterion
-	InjectConfig    configmap.InjectConfig
+	InjectConfig configmap.InjectConfig
 }
 
-// SelectionCriterion is one entry from a selector ConfigMap's
-// selection_criteria.yaml. Within a criterion all populated fields must
-// match (AND); a nil field is a wildcard. Across criteria the registry
-// applies OR.
-//
-// Each field is a *services.GlobAttr (obi's glob wrapper, reused so the
-// injector and Beyla agree on syntax) so values like "hello-*" match a
-// family of names.
-type SelectionCriterion struct {
-	K8sPodName         *services.GlobAttr `json:"k8s_pod_name,omitempty"`
-	K8sNamespace       *services.GlobAttr `json:"k8s_namespace,omitempty"`
-	K8sDeploymentName  *services.GlobAttr `json:"k8s_deployment_name,omitempty"`
-	K8sReplicaSetName  *services.GlobAttr `json:"k8s_replicaset_name,omitempty"`
-	K8sStatefulSetName *services.GlobAttr `json:"k8s_statefulset_name,omitempty"`
-	K8sDaemonSetName   *services.GlobAttr `json:"k8s_daemonset_name,omitempty"`
-	// K8sOwnerName matches the pod's direct owner name (RS / STS / DS) or
-	// the resolved Deployment name reached via the RS chain. Combinable with
-	// the typed fields above (AND).
-	K8sOwnerName *services.GlobAttr `json:"k8s_owner_name,omitempty"`
-	// K8sPodLabels / K8sPodAnnotations narrow a criterion to pods carrying
-	// specific labels / annotations. Each map entry is an AND requirement: the
-	// pod must have the key and its value must match the glob. A missing key is
-	// a non-match. These come from Beyla's k8s_pod_labels / k8s_pod_annotations
-	// discovery clauses, which (unlike open_ports / exe_path) are visible on the
-	// admission Pod object and so can be enforced at admission time.
-	K8sPodLabels      map[string]*services.GlobAttr `json:"k8s_pod_labels,omitempty"`
-	K8sPodAnnotations map[string]*services.GlobAttr `json:"k8s_pod_annotations,omitempty"`
-}
-
-// IsEmpty reports whether no field is populated. An empty criterion would
-// match every pod, which is almost always a misconfiguration; the parser
-// rejects these.
-func (c SelectionCriterion) IsEmpty() bool {
-	return c.K8sPodName == nil &&
-		c.K8sNamespace == nil &&
-		c.K8sDeploymentName == nil &&
-		c.K8sReplicaSetName == nil &&
-		c.K8sStatefulSetName == nil &&
-		c.K8sDaemonSetName == nil &&
-		c.K8sOwnerName == nil &&
-		len(c.K8sPodLabels) == 0 &&
-		len(c.K8sPodAnnotations) == 0
-}
-
-// PodInfo is the projection of a Pod that Match consumes. The caller is
-// responsible for resolving DeploymentName by walking the pod's RS owner
-// (see internal/podinfo).
+// PodInfo is the projection of a Pod that Match consumes. OwnerChain is
+// pre-resolved by podinfo.Resolve so the match hot path needs no API calls.
 type PodInfo struct {
-	Name      string
-	Namespace string
-	// OwnerKind is the kind of the controller OwnerReference on the pod, if
-	// any. Expected values: "ReplicaSet", "StatefulSet", "DaemonSet",
-	// "Deployment", or "".
-	OwnerKind string
-	OwnerName string
-	// DeploymentName is set if the pod's RS owner is itself owned by a
-	// Deployment (or if the pod is directly owned by a Deployment).
-	DeploymentName string
-	// Labels / Annotations are the pod's metadata, consumed by criteria that
-	// carry K8sPodLabels / K8sPodAnnotations requirements. Nil is treated as an
-	// empty map (any label/annotation requirement misses).
+	Name        string
+	Namespace   string
 	Labels      map[string]string
 	Annotations map[string]string
+	// OwnerChain is the resolved ownership chain, starting with the pod itself
+	// (Kind: "Pod") followed by its controller owners in ascending order
+	// (e.g. ReplicaSet, then Deployment). Built by podinfo.Resolve.
+	OwnerChain []configmap.Owner
 }
 
 // Registry is safe for concurrent use.
@@ -117,13 +53,12 @@ func New() *Registry {
 	return &Registry{instruments: map[string]Instrumentation{}}
 }
 
-// Set replaces this CM's contribution. An empty Criteria slice is equivalent
-// to Delete: a CM with no criteria can't match anything regardless of its
-// OtelExport config.
+// Set replaces this CM's contribution. An empty Rules slice is equivalent
+// to Delete: a CM with no rules can't match anything.
 func (r *Registry) Set(cmKey string, inst Instrumentation) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if len(inst.Criteria) == 0 {
+	if len(inst.InjectConfig.Rules) == 0 {
 		delete(r.instruments, cmKey)
 		return
 	}
@@ -137,10 +72,11 @@ func (r *Registry) Delete(cmKey string) {
 	delete(r.instruments, cmKey)
 }
 
-// Match returns the first injection record whose criteria match the pod, plus
-// a boolean indicating any match. Iteration is in sorted cmKey order so when
-// multiple CMs select the same pod, the chosen OtelExport is deterministic.
-func (r *Registry) Match(p PodInfo) (Instrumentation, bool) {
+// Match returns the first rule whose selector matches the pod, the InjectConfig
+// of the owning ConfigMap (for the CM-level image version), and a boolean
+// indicating any match. CMs are evaluated in sorted key order for determinism;
+// within each CM, rules are evaluated in order and first-match wins.
+func (r *Registry) Match(p PodInfo) (configmap.Rule, configmap.InjectConfig, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	keys := make([]string, 0, len(r.instruments))
@@ -148,96 +84,32 @@ func (r *Registry) Match(p PodInfo) (Instrumentation, bool) {
 		keys = append(keys, k)
 	}
 
-	// Look up others
 	sort.Strings(keys)
+	input := buildMatchInput(p)
 	for _, k := range keys {
 		inst := r.instruments[k]
-		regLog.Info("checking criteria", "key", k, "criteria", inst.Criteria, "excludeCriteria", inst.ExcludeCriteria)
-		if !anyCriterionMatches(inst.Criteria, p) {
-			continue
+		for _, rule := range inst.InjectConfig.Rules {
+			if !rule.Selector.Match(input) {
+				continue
+			}
+			// First matching rule wins. A skip rule means the pod is explicitly
+			// excluded — return no match so it is not instrumented (and do not
+			// fall through to later install rules, which is how
+			// "instrument everything except X" works).
+			if rule.Config.Mode == configmap.ModeSkip {
+				return configmap.Rule{}, configmap.InjectConfig{}, false
+			}
+			return rule, inst.InjectConfig, true
 		}
-		// Exclusion wins: a pod selected by this CM's Criteria is skipped when
-		// it also matches any of the CM's ExcludeCriteria.
-		if anyCriterionMatches(inst.ExcludeCriteria, p) {
-			regLog.Info("pod excluded by exclude_discovery", "key", k, "pod", p.Namespace+"/"+p.Name)
-			continue
-		}
-		return inst, true
 	}
-	return Instrumentation{}, false
+	return configmap.Rule{}, configmap.InjectConfig{}, false
 }
 
-// anyCriterionMatches reports whether p satisfies at least one criterion (OR).
-func anyCriterionMatches(criteria []SelectionCriterion, p PodInfo) bool {
-	for _, c := range criteria {
-		if criterionMatches(c, p) {
-			return true
-		}
+func buildMatchInput(p PodInfo) configmap.MatchInput {
+	return configmap.MatchInput{
+		Namespace:   p.Namespace,
+		OwnerChain:  p.OwnerChain,
+		Labels:      p.Labels,
+		Annotations: p.Annotations,
 	}
-	return false
-}
-
-func criterionMatches(c SelectionCriterion, p PodInfo) bool {
-	if c.K8sPodName != nil && !c.K8sPodName.MatchString(p.Name) {
-		return false
-	}
-	if c.K8sNamespace != nil && !c.K8sNamespace.MatchString(p.Namespace) {
-		return false
-	}
-	if c.K8sReplicaSetName != nil && (p.OwnerKind != "ReplicaSet" || !c.K8sReplicaSetName.MatchString(p.OwnerName)) {
-		return false
-	}
-	if c.K8sStatefulSetName != nil && (p.OwnerKind != "StatefulSet" || !c.K8sStatefulSetName.MatchString(p.OwnerName)) {
-		return false
-	}
-	if c.K8sDaemonSetName != nil && (p.OwnerKind != "DaemonSet" || !c.K8sDaemonSetName.MatchString(p.OwnerName)) {
-		return false
-	}
-	if c.K8sDeploymentName != nil {
-		if p.DeploymentName == "" || !c.K8sDeploymentName.MatchString(p.DeploymentName) {
-			return false
-		}
-	}
-	if c.K8sOwnerName != nil && !ownerNameMatches(c.K8sOwnerName, p) {
-		return false
-	}
-	if !mapMatches(c.K8sPodLabels, p.Labels) {
-		return false
-	}
-	if !mapMatches(c.K8sPodAnnotations, p.Annotations) {
-		return false
-	}
-	// An entirely empty criterion (no field set) matches every pod by design;
-	// callers are expected to validate at parse time if they want to forbid that.
-	return true
-}
-
-// mapMatches reports whether every required key in want is present in have
-// with a value matching the required glob (AND semantics). A nil glob entry is
-// skipped. An empty/nil want matches everything; a missing key in have is a
-// non-match.
-func mapMatches(want map[string]*services.GlobAttr, have map[string]string) bool {
-	for key, g := range want {
-		if g == nil {
-			continue
-		}
-		v, ok := have[key]
-		if !ok || !g.MatchString(v) {
-			return false
-		}
-	}
-	return true
-}
-
-func ownerNameMatches(g *services.GlobAttr, p PodInfo) bool {
-	switch p.OwnerKind {
-	case "ReplicaSet", "StatefulSet", "DaemonSet", "Deployment":
-		if g.MatchString(p.OwnerName) {
-			return true
-		}
-	}
-	if p.DeploymentName != "" && g.MatchString(p.DeploymentName) {
-		return true
-	}
-	return false
 }
