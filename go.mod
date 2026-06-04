@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/distribution/reference v0.6.0
-	github.com/grafana/beyla/v3 v3.12.1-0.20260602135611-6ff0bc471de1
+	github.com/grafana/beyla/v3 v3.20.0
 	github.com/onsi/ginkgo/v2 v2.29.0
 	github.com/onsi/gomega v1.41.0
 	github.com/prometheus/client_golang v1.23.2
@@ -14,7 +14,7 @@ require (
 	k8s.io/api v0.36.1
 	k8s.io/apimachinery v0.36.1
 	k8s.io/client-go v0.36.1
-	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5
+	k8s.io/utils v0.0.0-20260507154919-ff6756f316d2
 	sigs.k8s.io/controller-runtime v0.24.1
 	sigs.k8s.io/e2e-framework v0.7.0
 )

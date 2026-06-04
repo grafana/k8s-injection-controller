@@ -14,19 +14,22 @@ jobs:
       packages: write
     runs-on: ubuntu-latest
     steps:
-      - name: Remove GHCR short-SHA image versions older than 15 days
+      - name: Remove GHCR short-SHA and untagged image versions older than 7 days
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OWNER: grafana
           PACKAGE: k8s-injection-controller
-          KEEP_DAYS: "15"
+          KEEP_DAYS: "7"
         run: |
           cutoff="$(date -u -d "${KEEP_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ)"
           gh api "orgs/${OWNER}/packages/container/${PACKAGE}/versions?per_page=100" --paginate --jq '
             .[]
             | select(.created_at < "'"${cutoff}"'")
             | select((.metadata.container.tags // []) | index("main") | not)
-            | select((.metadata.container.tags // []) | any(test("^[0-9a-f]{7}$")))
+            | select(
+                ((.metadata.container.tags // []) | length) == 0
+                or ((.metadata.container.tags // []) | any(test("^[0-9a-f]{7}$")))
+              )
             | .id
           ' | while read -r version_id; do
             [ -n "$version_id" ] || continue
