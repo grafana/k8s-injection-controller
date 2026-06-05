@@ -362,8 +362,8 @@ func (pm *PodMutator) setResourceAttributes(meta *metav1.ObjectMeta, container *
 
 	// attributes from the pod annotations have the highest precedence
 	for k, v := range meta.GetAnnotations() {
-		if attr, ok := strings.CutPrefix(k, ResourceAttributeAnnotationPrefix); ok {
-			extraResAttrs[attribute.Key(attr)] = v
+		if a, ok := strings.CutPrefix(k, ResourceAttributeAnnotationPrefix); ok {
+			extraResAttrs[attribute.Key(a)] = v
 		}
 	}
 	return extraResAttrs
