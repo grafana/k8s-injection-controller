@@ -3,16 +3,24 @@
 # config out of the box. Unlike config/test, this overlay does not downgrade
 # metrics security or change ports — it's meant to be a publishable manifest.
 
-namespace: beyla-k8s-injector
-
+# No top-level namespace transformer here: config/default already namespaces its
+# own resources to beyla-k8s-injector, and the cross-namespace RBAC in
+# monitoring-rbac.yaml must keep its "monitoring" namespace (a transformer would
+# rewrite it). The generated ConfigMap gets its namespace from the generator
+# below instead.
 resources:
   - ../default
+  # Grants the controller's ServiceAccount get/list/watch on ConfigMaps in the
+  # watched namespace (monitoring), required because WATCH_NAMESPACE differs from
+  # the controller's own namespace. See the file header for details.
+  - monitoring-rbac.yaml
 
 # The ConfigMap is regenerated on every build; the suffix hash changes whenever
 # sdk-inject.yaml does, which kustomize threads through into the volume
 # reference, triggering a rollout of the manager pod.
 configMapGenerator:
   - name: beyla-sdk-config
+    namespace: beyla-k8s-injector
     files:
       - sdk-inject.yaml
 
