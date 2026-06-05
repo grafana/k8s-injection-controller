@@ -380,10 +380,10 @@ func TestMatch_SkipRules(t *testing.T) {
 	}
 }
 
-// TestBFPGeneratesSpanMetrics covers the BPF span-metrics gate: a pod only
+// TestBPFGeneratesSpanMetrics covers the BPF span-metrics gate: a pod only
 // generates span metrics when its instrument has BPFConfig.SpanMetrics enabled
 // AND a (non-skip) BPF rule selects it.
-func TestBFPGeneratesSpanMetrics(t *testing.T) {
+func TestBPFGeneratesSpanMetrics(t *testing.T) {
 	helloPod := PodInfo{
 		Name: "hello-abc-123", Namespace: "demo",
 		OwnerChain: []configmap.Owner{
@@ -458,10 +458,10 @@ func TestBFPGeneratesSpanMetrics(t *testing.T) {
 			r := New()
 			// Insert directly rather than via Set: Set treats an empty top-level
 			// Rules slice as a delete, which would drop BPF-only instruments
-			// before BFPGeneratesSpanMetrics ever sees them.
+			// before BPFGeneratesSpanMetrics ever sees them.
 			r.instruments["test/cm"] = tc.inst
 			if _, got := r.BPFGeneratesSpanMetrics(helloPod); got != tc.want {
-				t.Fatalf("BFPGeneratesSpanMetrics() = %v, want %v", got, tc.want)
+				t.Fatalf("BPFGeneratesSpanMetrics() = %v, want %v", got, tc.want)
 			}
 		})
 	}
