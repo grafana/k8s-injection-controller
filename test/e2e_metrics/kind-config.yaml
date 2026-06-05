@@ -1,0 +1,31 @@
+# Kind cluster configuration for the metrics e2e suite.
+#
+# The injector mounts the SDK via a Kubernetes ImageVolumeSource. That volume
+# kind is gated behind the `ImageVolume` feature gate (alpha in k8s 1.31, beta
+# from 1.33); with the gate off the apiserver prunes the volume source and
+# rejects the mutated pod. Enabling it here lets the cluster accept the pods the
+# webhook produces.
+#
+# REQUIRES a recent kind (>= v0.28) whose *default* node image is k8s >= 1.33.
+# Two reasons the node must be >= 1.33 and left at kind's default:
+#   - ImageVolume is only alpha in 1.32, where containerd fails to create the
+#     container ("failed to apply OCI options: failed to mkdir ..."); it is beta
+#     from 1.33, where the mount works and the instrumented pod runs.
+#   - We deliberately do NOT pin nodes[].image: a plain kindest/node:vX.Y.Z tag
+#     is not digest-matched to the kind binary, which makes `kind load` fail with
+#     "failed to detect containerd snapshotter". Kind's default node image is
+#     always the digest the installed kind expects, so load works.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+featureGates:
+  ImageVolume: true
+nodes:
+  - role: control-plane
+    # Maps otel-lgtm's Prometheus NodePort (30090) to the host so the suite can
+    # query http://127.0.0.1:30090/api/v1/query directly, without a long-lived
+    # `kubectl port-forward`. Keep the nodePort in test/e2e_metrics/manifests/
+    # otel-lgtm.yaml and lgtmPromNodePort in the suite in sync with this mapping.
+    extraPortMappings:
+      - containerPort: 30090
+        hostPort: 30090
+        protocol: TCP

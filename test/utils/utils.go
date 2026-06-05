@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -123,14 +124,27 @@ func fetchManifest(ctx context.Context, url string) (string, error) {
 	return string(body), nil
 }
 
-// GetProjectDir will return the directory where the project is
+// GetProjectDir returns the module root (the directory holding go.mod) by
+// walking up from the current working directory. Walking to go.mod keeps this
+// correct regardless of which test/<suite> directory the caller runs from
+// (e.g. test/e2e or test/e2e_metrics), which a fixed path-strip would not.
 func GetProjectDir() (string, error) {
 	wd, err := os.Getwd()
 	if err != nil {
 		return wd, fmt.Errorf("failed to get current working directory: %w", err)
 	}
-	wd = strings.ReplaceAll(wd, "/test/e2e", "")
-	return wd, nil
+	for dir := wd; ; {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached the filesystem root without finding go.mod; fall back to
+			// the legacy behavior so callers still get a best-effort answer.
+			return strings.ReplaceAll(wd, "/test/e2e", ""), nil
+		}
+		dir = parent
+	}
 }
 
 // UncommentCode searches for target in the file and remove the comment prefix
