@@ -23,3 +23,12 @@
     name: sdk-config
     configMap:
       name: beyla-sdk-config
+
+# Default the ConfigMap watch namespace to "monitoring" as per the default helm chart deployment mode.
+# Without this the controller falls back to POD_NAMESPACE (its own namespace);
+# set it explicitly here so the shipped manifest watches "monitoring" by default.
+- op: add
+  path: /spec/template/spec/containers/0/env/-
+  value:
+    name: WATCH_NAMESPACE
+    value: monitoring
