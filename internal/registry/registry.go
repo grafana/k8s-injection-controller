@@ -114,7 +114,7 @@ func (r *Registry) Match(p PodInfo) (configmap.Rule, configmap.InjectConfig, boo
 	return configmap.Rule{}, configmap.InjectConfig{}, false
 }
 
-func (r *Registry) BFPGeneratesSpanMetrics(p PodInfo) (configmap.Rule, bool) {
+func (r *Registry) BPFGeneratesSpanMetrics(p PodInfo) (configmap.Rule, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	keys, input := r.generateMatchInputUnlocked(p)

@@ -460,7 +460,7 @@ func TestBFPGeneratesSpanMetrics(t *testing.T) {
 			// Rules slice as a delete, which would drop BPF-only instruments
 			// before BFPGeneratesSpanMetrics ever sees them.
 			r.instruments["test/cm"] = tc.inst
-			if _, got := r.BFPGeneratesSpanMetrics(helloPod); got != tc.want {
+			if _, got := r.BPFGeneratesSpanMetrics(helloPod); got != tc.want {
 				t.Fatalf("BFPGeneratesSpanMetrics() = %v, want %v", got, tc.want)
 			}
 		})
