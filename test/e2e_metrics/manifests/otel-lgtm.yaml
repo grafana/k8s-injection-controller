@@ -1,6 +1,3 @@
-# grafana/otel-lgtm: an all-in-one Grafana + OTel Collector + Prometheus/Mimir +
-# Loki + Tempo instance used as the telemetry backend for the metrics e2e suite.
-#
 # The injected SDK in the demo app exports OTLP to this instance's collector
 # (ports 4317/4318); the suite then queries the bundled Prometheus (9090) with
 # PromQL to assert the demo app's HTTP metrics arrived. The Service is NodePort

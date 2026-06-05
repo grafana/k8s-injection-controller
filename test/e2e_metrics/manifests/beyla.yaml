@@ -1,23 +1,14 @@
-# Real Beyla DaemonSet for the metrics e2e suite. Beyla runs with its mutating
-# webhook delegated to the k8s-injection-controller: instead of mutating pods
-# itself, it scans local processes, writes a per-node ConfigMap, and the
-# controller consumes it to inject the OTel SDK into matched pods.
-#
-# This is a self-contained copy of examples/demo/beyla.yaml tuned for the e2e:
+# Beyla deployment that is tuned for e2e tests:
 #   - It always pulls grafana/beyla:main (the latest dev image): imagePullPolicy
 #     Always.
+#     TODO: build local Beyla if we end up placing this code within the same repository
 #   - Both otel_traces_export and otel_metrics_export point at the in-cluster
-#     otel-lgtm. The injected SDK's OTLP endpoint is derived from Beyla's traces
-#     export (a single endpoint carries both signals), so traces_export is what
-#     actually wires the demo app to LGTM; metrics_export is set to the same
-#     address to match intent.
+#     otel-lgtm.
 #
 # Beyla runs in the beyla-k8s-injector namespace (created by the controller's
 # config/test deploy): co-located with the controller (its watched namespace)
 # and using the `beyla` ServiceAccount that the controller's
 # ALLOWED_CONFIGMAP_WRITERS allowlist authorizes to write injection ConfigMaps.
-# That namespace must NOT enforce the restricted Pod Security policy — Beyla runs
-# privileged with hostPID.
 ---
 apiVersion: v1
 kind: ServiceAccount
