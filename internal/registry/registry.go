@@ -59,6 +59,10 @@ func (r *Registry) Set(cmKey string, inst Instrumentation) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(inst.InjectConfig.Rules) == 0 {
+		// It's totally fine to ignore the BPFConfig Rules
+		// when doing this delete. The BPFConfig only tells us
+		// if the actually instrumented app (these rules exist)
+		// should also add span.metrics.skip=true
 		delete(r.instruments, cmKey)
 		return
 	}
@@ -72,6 +76,17 @@ func (r *Registry) Delete(cmKey string) {
 	delete(r.instruments, cmKey)
 }
 
+func (r *Registry) generateMatchInputUnlocked(p PodInfo) ([]string, configmap.MatchInput) {
+	keys := make([]string, 0, len(r.instruments))
+	for k := range r.instruments {
+		keys = append(keys, k)
+	}
+
+	sort.Strings(keys)
+
+	return keys, buildMatchInput(p)
+}
+
 // Match returns the first rule whose selector matches the pod, the InjectConfig
 // of the owning ConfigMap (for the CM-level image version), and a boolean
 // indicating any match. CMs are evaluated in sorted key order for determinism;
@@ -79,13 +94,7 @@ func (r *Registry) Delete(cmKey string) {
 func (r *Registry) Match(p PodInfo) (configmap.Rule, configmap.InjectConfig, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	keys := make([]string, 0, len(r.instruments))
-	for k := range r.instruments {
-		keys = append(keys, k)
-	}
-
-	sort.Strings(keys)
-	input := buildMatchInput(p)
+	keys, input := r.generateMatchInputUnlocked(p)
 	for _, k := range keys {
 		inst := r.instruments[k]
 		for _, rule := range inst.InjectConfig.Rules {
@@ -103,6 +112,27 @@ func (r *Registry) Match(p PodInfo) (configmap.Rule, configmap.InjectConfig, boo
 		}
 	}
 	return configmap.Rule{}, configmap.InjectConfig{}, false
+}
+
+func (r *Registry) BPFGeneratesSpanMetrics(p PodInfo) (configmap.Rule, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	keys, input := r.generateMatchInputUnlocked(p)
+	for _, k := range keys {
+		inst := r.instruments[k]
+		if inst.InjectConfig.BPFConfig.SpanMetrics {
+			for _, rule := range inst.InjectConfig.BPFConfig.Rules {
+				if !rule.Selector.Match(input) {
+					continue
+				}
+				if rule.Config.Mode == configmap.ModeSkip {
+					return configmap.Rule{}, false
+				}
+				return rule, true
+			}
+		}
+	}
+	return configmap.Rule{}, false
 }
 
 func buildMatchInput(p PodInfo) configmap.MatchInput {
