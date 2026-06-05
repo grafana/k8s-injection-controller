@@ -379,3 +379,90 @@ func TestMatch_SkipRules(t *testing.T) {
 		})
 	}
 }
+
+// TestBFPGeneratesSpanMetrics covers the BPF span-metrics gate: a pod only
+// generates span metrics when its instrument has BPFConfig.SpanMetrics enabled
+// AND a (non-skip) BPF rule selects it.
+func TestBFPGeneratesSpanMetrics(t *testing.T) {
+	helloPod := PodInfo{
+		Name: "hello-abc-123", Namespace: "demo",
+		OwnerChain: []configmap.Owner{
+			{Kind: "Pod", Name: "hello-abc-123"},
+			{Kind: "ReplicaSet", Name: "hello-abc"},
+			{Kind: "Deployment", Name: "hello"},
+		},
+	}
+
+	bpf := func(spanMetrics bool, rules ...configmap.Rule) Instrumentation {
+		return Instrumentation{InjectConfig: configmap.InjectConfig{
+			BPFConfig: configmap.BPFConfig{SpanMetrics: spanMetrics, Rules: rules},
+		}}
+	}
+	install := func(sel configmap.K8sSelector) configmap.Rule {
+		return configmap.Rule{Selector: sel}
+	}
+	skip := func(sel configmap.K8sSelector) configmap.Rule {
+		return configmap.Rule{Selector: sel, Config: configmap.RuleConfig{Mode: configmap.ModeSkip}}
+	}
+
+	tests := []struct {
+		name string
+		inst Instrumentation
+		want bool
+	}{
+		{
+			// Empty config: no BPFConfig at all.
+			name: "empty bpfconfig — no span metrics",
+			inst: Instrumentation{},
+			want: false,
+		},
+		{
+			// Top-level inject rules exist, but BPF span metrics is off.
+			name: "config with install rules but span metrics not set",
+			inst: Instrumentation{InjectConfig: configmap.InjectConfig{
+				Rules: []configmap.Rule{install(configmap.K8sSelector{Namespaces: globs("demo")})},
+			}},
+			want: false,
+		},
+		{
+			// SpanMetrics off even though a matching BPF rule is present.
+			name: "matching bpf rule but span metrics disabled",
+			inst: bpf(false, install(configmap.K8sSelector{Namespaces: globs("demo")})),
+			want: false,
+		},
+		{
+			// SpanMetrics on but there are no BPF rules to select the pod.
+			name: "span metrics enabled but no bpf rules",
+			inst: bpf(true),
+			want: false,
+		},
+		{
+			name: "span metrics enabled with matching bpf rule",
+			inst: bpf(true, install(configmap.K8sSelector{Namespaces: globs("demo")})),
+			want: true,
+		},
+		{
+			name: "span metrics enabled but bpf rule does not match",
+			inst: bpf(true, install(configmap.K8sSelector{Namespaces: globs("other-ns")})),
+			want: false,
+		},
+		{
+			name: "span metrics enabled but matching bpf rule is skip",
+			inst: bpf(true, skip(configmap.K8sSelector{Namespaces: globs("demo")})),
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := New()
+			// Insert directly rather than via Set: Set treats an empty top-level
+			// Rules slice as a delete, which would drop BPF-only instruments
+			// before BFPGeneratesSpanMetrics ever sees them.
+			r.instruments["test/cm"] = tc.inst
+			if _, got := r.BFPGeneratesSpanMetrics(helloPod); got != tc.want {
+				t.Fatalf("BFPGeneratesSpanMetrics() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

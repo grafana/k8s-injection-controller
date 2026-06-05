@@ -10,6 +10,7 @@ import (
 	"github.com/distribution/reference"
 	"github.com/grafana/beyla-k8s-injector/internal/config"
 	"go.opentelemetry.io/obi/pkg/appolly/app/svc"
+	attr "go.opentelemetry.io/obi/pkg/export/attributes/names"
 	"go.opentelemetry.io/obi/pkg/kube/kubecache/informer"
 	"go.opentelemetry.io/otel/attribute"
 	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
@@ -185,9 +186,9 @@ func (pm *PodMutator) addCopyInitContainerIfNeeded(spec *corev1.PodSpec) {
 	}
 }
 
-func (pm *PodMutator) instrumentContainer(meta *metav1.ObjectMeta, c *corev1.Container, ruleEnv []corev1.EnvVar) {
+func (pm *PodMutator) instrumentContainer(meta *metav1.ObjectMeta, c *corev1.Container, ruleEnv []corev1.EnvVar, spanMetricsSkip bool) {
 	pm.addMount(c)
-	pm.addEnvVars(meta, c, ruleEnv)
+	pm.addEnvVars(meta, c, ruleEnv, spanMetricsSkip)
 }
 
 func (pm *PodMutator) addMount(c *corev1.Container) {
@@ -264,7 +265,7 @@ func setEnvVar(c *corev1.Container, envVarName, value string) {
 	}
 }
 
-func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container, ruleEnv []corev1.EnvVar) {
+func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container, ruleEnv []corev1.EnvVar, spanMetricsSkip bool) {
 	if c.Env == nil {
 		c.Env = []corev1.EnvVar{}
 	}
@@ -283,7 +284,7 @@ func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container, r
 		setEnvVar(c, envInjectorDebugName, "debug")
 	}
 
-	pm.configureContainerEnvVars(meta, c)
+	pm.configureContainerEnvVars(meta, c, spanMetricsSkip)
 	pm.disableUndesiredSDKs(c)
 
 	// TODO: how do we safely pass it from Beyla to here?
@@ -297,8 +298,11 @@ func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container, r
 // configureContainerEnvVars sets per-pod resource attributes and service identification
 // env vars. Signal exporters, propagators, sampler, and debug are owned by Beyla and
 // arrive via the rule's Config.Env (applied earlier in addEnvVars).
-func (pm *PodMutator) configureContainerEnvVars(meta *metav1.ObjectMeta, container *corev1.Container) {
+func (pm *PodMutator) configureContainerEnvVars(meta *metav1.ObjectMeta, container *corev1.Container, spanMetricsSkip bool) {
 	extraResAttrs := pm.setResourceAttributes(meta, container)
+	if spanMetricsSkip {
+		extraResAttrs[attribute.Key(attr.SkipSpanMetrics)] = "true"
+	}
 	pm.injectEnvVars(extraResAttrs, container)
 }
 
