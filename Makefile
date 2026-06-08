@@ -66,11 +66,15 @@ vet: ## Run go vet against code.
 test: manifests generate vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
+# Runs every e2e suite under test/ (the controller/webhook suite plus the full
+# metrics pipeline suite). Each suite creates and destroys its own Kind cluster.
+# The metrics suite is fully self-contained (builds the image with the Docker Go
+# SDK and drives the cluster with Go clients), so a longer timeout is needed.
 # To keep the Kind cluster after the run (e.g. for debugging), set:
 # - KIND_KEEP_CLUSTER=true
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet
-	go test -tags=e2e ./test/e2e/ -v -ginkgo.v
+	go test -tags=e2e ./test/... -v -ginkgo.v -timeout 30m
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

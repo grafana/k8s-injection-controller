@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -37,6 +38,7 @@ import (
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	"sigs.k8s.io/e2e-framework/klient/wait"
 	"sigs.k8s.io/e2e-framework/klient/wait/conditions"
+	"sigs.k8s.io/e2e-framework/support/kind"
 )
 
 const (
@@ -102,13 +104,40 @@ func InstallCertManager(ctx context.Context, r *resources.Resources) error {
 	return nil
 }
 
-// fetchManifest downloads a manifest over HTTP and returns its contents.
+// fetchManifest downloads a manifest over HTTP and returns its contents. It
+// retries on transient failures (e.g. a TLS handshake timeout reaching GitHub),
+// which would otherwise flake the whole suite in BeforeSuite.
 func fetchManifest(ctx context.Context, url string) (string, error) {
+	const attempts = 5
+	client := &http.Client{Timeout: 60 * time.Second}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if attempt > 1 {
+			backoff := time.Duration(attempt-1) * 3 * time.Second
+			_, _ = fmt.Fprintf(GinkgoWriter, "retrying fetch of %s (attempt %d/%d) after %s: %v\n",
+				url, attempt, attempts, backoff, lastErr)
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+		body, err := fetchManifestOnce(ctx, client, url)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+	}
+	return "", fmt.Errorf("fetching %s after %d attempts: %w", url, attempts, lastErr)
+}
+
+// fetchManifestOnce performs a single HTTP GET of url and returns its body.
+func fetchManifestOnce(ctx context.Context, client *http.Client, url string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetching %s: %w", url, err)
 	}
@@ -123,14 +152,54 @@ func fetchManifest(ctx context.Context, url string) (string, error) {
 	return string(body), nil
 }
 
-// GetProjectDir will return the directory where the project is
+// ExportClusterLogs runs `kind export logs` for the given cluster and writes the
+// result (every node's journal plus all pod container logs) into
+// testoutput/<suite>/ under the project root, creating the directory tree if it
+// does not exist. It is best-effort: any failure is logged to GinkgoWriter and
+// swallowed, so collecting logs during teardown can never mask the real test
+// outcome. Call it from AfterSuite before destroying the cluster.
+func ExportClusterLogs(ctx context.Context, cluster *kind.Cluster, suite string) {
+	if cluster == nil {
+		return
+	}
+	projectDir, err := GetProjectDir()
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "skipping log export: %v\n", err)
+		return
+	}
+	dest := filepath.Join(projectDir, "testoutput", suite)
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "skipping log export: creating %s: %v\n", dest, err)
+		return
+	}
+	if err := cluster.ExportLogs(ctx, dest); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "exporting cluster logs to %s: %v\n", dest, err)
+		return
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "exported kind cluster logs to %s\n", dest)
+}
+
+// GetProjectDir returns the module root (the directory holding go.mod) by
+// walking up from the current working directory. Walking to go.mod keeps this
+// correct regardless of which test/<suite> directory the caller runs from
+// (e.g. test/e2e or test/e2e_metrics), which a fixed path-strip would not.
 func GetProjectDir() (string, error) {
 	wd, err := os.Getwd()
 	if err != nil {
 		return wd, fmt.Errorf("failed to get current working directory: %w", err)
 	}
-	wd = strings.ReplaceAll(wd, "/test/e2e", "")
-	return wd, nil
+	for dir := wd; ; {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached the filesystem root without finding go.mod; fall back to
+			// the legacy behavior so callers still get a best-effort answer.
+			return strings.ReplaceAll(wd, "/test/e2e", ""), nil
+		}
+		dir = parent
+	}
 }
 
 // UncommentCode searches for target in the file and remove the comment prefix

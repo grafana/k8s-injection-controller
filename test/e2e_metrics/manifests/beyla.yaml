@@ -1,14 +1,14 @@
-# Beyla DaemonSet for the demo. Beyla runs with its mutating webhook delegated
-# to the k8s-injection-controller: instead of mutating pods itself, Beyla scans
-# local processes and writes a per-node ConfigMap that the controller consumes.
+# Beyla deployment that is tuned for e2e tests:
+#   - It always pulls grafana/beyla:main (the latest dev image): imagePullPolicy
+#     Always.
+#     TODO: build local Beyla if we end up placing this code within the same repository
+#   - Both otel_traces_export and otel_metrics_export point at the in-cluster
+#     otel-lgtm.
 #
-# The controller-manager Deployment that Beyla delegates to is identified by
-# its <namespace>/<name>. `make deploy-test` places it at
-# beyla-k8s-injector/controller-manager, which is the value we set in
-# BEYLA_EXTERNAL_WEBHOOK_DEPLOYMENT_NAME below.
-#
-# Beyla runs in the same namespace as the controller (beyla-k8s-injector),
-# which is created by `make deploy-test`; this file does not create it.
+# Beyla runs in the beyla-k8s-injector namespace (created by the controller's
+# config/test deploy): co-located with the controller (its watched namespace)
+# and using the `beyla` ServiceAccount that the controller's
+# ALLOWED_CONFIGMAP_WRITERS allowlist authorizes to write injection ConfigMaps.
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -21,7 +21,7 @@ metadata:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: beyla-demo
+  name: beyla-e2e
 rules:
   - apiGroups: [""]
     resources: ["pods", "services", "nodes", "namespaces"]
@@ -33,14 +33,14 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: beyla-demo
+  name: beyla-e2e
 subjects:
   - kind: ServiceAccount
     name: beyla
     namespace: beyla-k8s-injector
 roleRef:
   kind: ClusterRole
-  name: beyla-demo
+  name: beyla-e2e
   apiGroup: rbac.authorization.k8s.io
 ---
 # Namespaced ConfigMap permissions: the StateConfigMapWriter creates one
@@ -48,7 +48,7 @@ roleRef:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: beyla-demo
+  name: beyla-e2e
   namespace: beyla-k8s-injector
 rules:
   - apiGroups: [""]
@@ -61,7 +61,7 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: beyla-demo
+  name: beyla-e2e
   namespace: beyla-k8s-injector
 subjects:
   - kind: ServiceAccount
@@ -69,7 +69,7 @@ subjects:
     namespace: beyla-k8s-injector
 roleRef:
   kind: Role
-  name: beyla-demo
+  name: beyla-e2e
   apiGroup: rbac.authorization.k8s.io
 ---
 apiVersion: v1
@@ -79,41 +79,31 @@ metadata:
   namespace: beyla-k8s-injector
 data:
   beyla-config.yaml: |
-    log_level: info
+    log_level: debug
     attributes:
       kubernetes:
         enable: true
-    # OTLP traces export. The endpoint + protocol here are what end up under
-    # `otel_export:` in the per-node ConfigMap that Beyla writes for the
-    # injection controller — that's how the controller learns where to point
-    # the SDKs it injects into matched pods. Override via the standard OTLP
-    # env vars (OTEL_EXPORTER_OTLP_ENDPOINT, OTEL_EXPORTER_OTLP_PROTOCOL) if
-    # you don't run the collector at this address.
+    # OTLP export destinations. The injected SDK's OTLP endpoint is taken from
+    # the traces export (one endpoint carries both signals into the per-node
+    # ConfigMap that the controller reads). otel_metrics_export is set to the
+    # same otel-lgtm address to match the e2e's metrics intent.
     otel_traces_export:
-      endpoint: http://otel-collector.observability.svc.cluster.local:4318
+      endpoint: http://lgtm.e2e-lgtm.svc.cluster.local:4318
+      protocol: http/protobuf
+    otel_metrics_export:
+      endpoint: http://lgtm.e2e-lgtm.svc.cluster.local:4318
       protocol: http/protobuf
     injector:
-      # Workloads matched by these criteria are recorded in the per-node
-      # ConfigMap as eligible_for_restart and sent to the external controller.
+      # Workloads in the `demo` namespace are recorded in the per-node ConfigMap
+      # as eligible_for_restart and sent to the external controller.
       instrument:
         - k8s_namespace: demo
-      # Workloads matched here are excluded from instrumentation even when they
-      # also match `instrument`. Exclusion always wins. Example: instrument the
-      # whole `demo` namespace except a "legacy" deployment.
-      exclude_instrument:
-        - k8s_namespace: demo
-          k8s_deployment_name: legacy
-      # Delegate mutation to the external controller-manager Deployment.
-      # When this is set Beyla skips its own TLS webhook server and only
-      # publishes the per-node ConfigMap.
+      # Delegate mutation to the external controller-manager Deployment. When
+      # set, Beyla skips its own TLS webhook server and only publishes the
+      # per-node ConfigMap.
       webhook:
         external_deployment_name: beyla-k8s-injector/beyla-k8s-injector-controller-manager
-      # The SDK volume / image and other injection defaults are configured
-      # on the controller side (config/test/sdk-inject.yaml). Any of these
-      # may be overridden per-node by uncommenting and setting them here —
-      # the controller honors `image_version`, `trace_sampler`,
-      # `trace_propagators`, `otel_exported_signals`, and `resources` from
-      # the per-node ConfigMap.
+      # Must match the controller's own SDK image version (config/test/sdk-inject.yaml).
       image_version: 0.0.13
 ---
 apiVersion: apps/v1
@@ -137,7 +127,7 @@ spec:
       containers:
         - name: beyla
           image: grafana/beyla:main
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           args: ["--config=/etc/beyla/beyla-config.yaml"]
           env:
             - name: NODE_NAME

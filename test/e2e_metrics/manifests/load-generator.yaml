@@ -1,0 +1,28 @@
+# Drives steady HTTP traffic against the demo app so its injected OTel SDK emits
+# http.server.* metrics. It lives in the e2e-lgtm namespace (NOT `demo`), so it
+# is outside Beyla's instrument criteria and is never itself instrumented.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: load-generator
+  namespace: e2e-lgtm
+  labels:
+    app: load-generator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: load-generator
+  template:
+    metadata:
+      labels:
+        app: load-generator
+    spec:
+      containers:
+        - name: load
+          image: curlimages/curl:8.11.0
+          command:
+            - /bin/sh
+            - -c
+            - "while true; do curl -s -o /dev/null http://hello-node.demo.svc.cluster.local:8080/ || true; sleep 1; done"
