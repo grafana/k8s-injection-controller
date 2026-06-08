@@ -107,9 +107,10 @@ Run them with `make test-e2e` (runs every suite under `./test/...`) or directly 
 `test/e2e_metrics` is intentionally self-contained — **no `docker`/`kubectl`/`kustomize`/`make` CLI is
 invoked at runtime**: it builds the manager image with the Docker Go SDK, drives the cluster with the
 `klient` Go client, and renders `config/test` with the kustomize Go API. It only needs a reachable
-Docker daemon plus the `kind` tooling the e2e-framework drives. It also requires a Kind node on
-**k8s ≥ 1.33** (the `ImageVolume` feature gate is only beta there) and a **glibc** demo image
-(`node:20-slim`, not alpine) because injection is `LD_PRELOAD`-based.
+Docker daemon plus the `kind` tooling the e2e-framework drives. It runs the controller in
+**`init_container` injection mode** (the suite overrides the rendered SDK config), so it needs no
+`ImageVolume` feature gate and works on any Kind node version. The demo app must still use a **glibc**
+image (`node:20-slim`, not alpine) because injection is `LD_PRELOAD`-based.
 
 ## After Making Changes
 

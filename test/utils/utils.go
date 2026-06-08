@@ -103,13 +103,40 @@ func InstallCertManager(ctx context.Context, r *resources.Resources) error {
 	return nil
 }
 
-// fetchManifest downloads a manifest over HTTP and returns its contents.
+// fetchManifest downloads a manifest over HTTP and returns its contents. It
+// retries on transient failures (e.g. a TLS handshake timeout reaching GitHub),
+// which would otherwise flake the whole suite in BeforeSuite.
 func fetchManifest(ctx context.Context, url string) (string, error) {
+	const attempts = 5
+	client := &http.Client{Timeout: 60 * time.Second}
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if attempt > 1 {
+			backoff := time.Duration(attempt-1) * 3 * time.Second
+			_, _ = fmt.Fprintf(GinkgoWriter, "retrying fetch of %s (attempt %d/%d) after %s: %v\n",
+				url, attempt, attempts, backoff, lastErr)
+			select {
+			case <-ctx.Done():
+				return "", ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+		body, err := fetchManifestOnce(ctx, client, url)
+		if err == nil {
+			return body, nil
+		}
+		lastErr = err
+	}
+	return "", fmt.Errorf("fetching %s after %d attempts: %w", url, attempts, lastErr)
+}
+
+// fetchManifestOnce performs a single HTTP GET of url and returns its body.
+func fetchManifestOnce(ctx context.Context, client *http.Client, url string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("fetching %s: %w", url, err)
 	}

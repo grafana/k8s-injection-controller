@@ -72,11 +72,12 @@ var (
 )
 
 // TestE2EMetrics runs the metrics e2e suite. The suite owns its Kind cluster: it
-// builds and loads the manager image, creates the cluster (with the ImageVolume
-// feature gate and the Prometheus NodePort mapping from
-// test/e2e_metrics/kind-config.yaml), installs CertManager, and tears the
-// cluster down afterwards. A Docker daemon and the `kind` tooling the
-// e2e-framework drives must be available.
+// builds and loads the manager image, creates the cluster (with the Prometheus
+// NodePort mapping from test/e2e_metrics/kind-config.yaml), installs CertManager,
+// and tears the cluster down afterwards. The controller is driven in
+// init_container injection mode, so no ImageVolume feature gate or specific node
+// version is required. A Docker daemon and the `kind` tooling the e2e-framework
+// drives must be available.
 //
 // To keep the Kind cluster after the run (e.g. for debugging), set:
 // KIND_KEEP_CLUSTER=true

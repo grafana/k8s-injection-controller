@@ -27,6 +27,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -209,7 +211,12 @@ func applyKustomization(dir string) error {
 	if err != nil {
 		return fmt.Errorf("rendering kustomize output: %w", err)
 	}
-	objs, err := decoder.DecodeAll(suiteCtx, bytes.NewReader(rendered))
+	// Force init_container injection mode (rather than the ImageVolumeSource the
+	// config/test overlay would pick via "auto"): the e2e cluster has no
+	// ImageVolume feature gate, and init_container works on any node. This is
+	// scoped to the suite — config/test (used by `make demo-deploy`) is untouched.
+	objs, err := decoder.DecodeAll(suiteCtx, bytes.NewReader(rendered),
+		decoder.MutateOption(forceInitContainerMode))
 	if err != nil {
 		return fmt.Errorf("decoding kustomize output: %w", err)
 	}
@@ -230,6 +237,33 @@ func applyKustomization(dir string) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// injectionModeLine matches the top-level `injection_mode:` key in the SDK
+// config YAML (anchored at column 0, so commented mentions are ignored).
+var injectionModeLine = regexp.MustCompile(`(?m)^injection_mode:.*$`)
+
+// forceInitContainerMode rewrites the controller's SDK config ConfigMap so the
+// injector uses init_container mode instead of the ImageVolumeSource. It is a
+// decoder MutateFunc applied while rendering config/test; the ConfigMap name
+// keeps kustomize's content hash (we only change the data), so the manager
+// Deployment still mounts it.
+func forceInitContainerMode(obj k8s.Object) error {
+	cm, ok := obj.(*corev1.ConfigMap)
+	if !ok || !strings.Contains(cm.Name, "beyla-sdk-config") {
+		return nil
+	}
+	body, ok := cm.Data["sdk-inject.yaml"]
+	if !ok {
+		return fmt.Errorf("SDK config ConfigMap %s has no sdk-inject.yaml key", cm.Name)
+	}
+	if injectionModeLine.MatchString(body) {
+		body = injectionModeLine.ReplaceAllString(body, "injection_mode: init_container")
+	} else {
+		body += "\ninjection_mode: init_container\n"
+	}
+	cm.Data["sdk-inject.yaml"] = body
 	return nil
 }
 
