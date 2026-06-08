@@ -5,7 +5,7 @@ go 1.26.3
 require (
 	github.com/distribution/reference v0.6.0
 	github.com/docker/docker v28.5.2+incompatible
-	github.com/grafana/beyla/v3 v3.12.1-0.20260603225106-44fd8b94455c
+	github.com/grafana/beyla/v3 v3.12.1-0.20260608085734-78ca4c2350c9
 	github.com/moby/go-archive v0.2.0
 	github.com/onsi/ginkgo/v2 v2.29.0
 	github.com/onsi/gomega v1.41.0

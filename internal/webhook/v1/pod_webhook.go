@@ -131,11 +131,17 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 		return nil
 	}
 
+	bpfRule, spanMetrics := d.Registry.BPFGeneratesSpanMetrics(info)
+
+	if spanMetrics {
+		podlog.Info("Beyla generates span metrics for pod; setting span.metrics.skip", "namespace", obj.Namespace, "name", obj.Name, "rule", bpfRule)
+	}
+
 	// Mounts the volume as an image on k8s 1.31+, or as an ephemeral emptyDir
 	// volume on older k8s.
 	mutator.mountVolume(&obj.Spec)
 	for i := range obj.Spec.Containers {
-		mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i], rule.Config.Env)
+		mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i], rule.Config.Env, spanMetrics)
 	}
 	// Init containers are intentionally left uninstrumented.
 	// Add the copy init container if we are running on k8s older than 1.31.
