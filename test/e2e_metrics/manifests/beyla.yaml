@@ -104,7 +104,7 @@ data:
       webhook:
         external_deployment_name: beyla-k8s-injector/beyla-k8s-injector-controller-manager
       # Must match the controller's own SDK image version (config/test/sdk-inject.yaml).
-      image_version: 0.0.12
+      image_version: 0.0.13
 ---
 apiVersion: apps/v1
 kind: DaemonSet

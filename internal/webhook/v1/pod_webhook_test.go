@@ -81,7 +81,7 @@ var _ = Describe("Pod Webhook", func() {
 			Reader: k8sClient,
 			Mutator: &PodMutator{Cfg: config.SDKInject{
 				ImageVolumeRoot: "ghcr.io/grafana/beyla/inject-sdk-image",
-				ImageVersion:    "0.0.12",
+				ImageVersion:    "0.0.13",
 				// These specs assert direct ImageVolumeSource behavior. In
 				// production "auto" is resolved to a concrete mode at boot; the
 				// tests construct the mutator directly, so set it explicitly.
@@ -127,7 +127,7 @@ var _ = Describe("Pod Webhook", func() {
 			Expect(obj.Spec.Volumes[0].Name).To(Equal(injectVolumeName))
 			Expect(obj.Spec.Volumes[0].Image).NotTo(BeNil(),
 				"expected an ImageVolumeSource since that's the only supported mode")
-			Expect(obj.Spec.Volumes[0].Image.Reference).To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.12"))
+			Expect(obj.Spec.Volumes[0].Image.Reference).To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.13"))
 
 			mounts := obj.Spec.Containers[0].VolumeMounts
 			Expect(mounts).To(HaveLen(1))
@@ -219,7 +219,7 @@ var _ = Describe("Pod Webhook", func() {
 			Expect(obj.Spec.InitContainers).To(HaveLen(1))
 			copyC := obj.Spec.InitContainers[0]
 			Expect(copyC.Name).To(Equal(injectInitContainerName))
-			Expect(copyC.Image).To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.12"))
+			Expect(copyC.Image).To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:0.0.13"))
 
 			// The copy container must NOT be instrumented: no LD_PRELOAD, and
 			// its mount is read-write so it can populate the volume.

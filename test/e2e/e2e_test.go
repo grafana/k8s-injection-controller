@@ -341,7 +341,7 @@ var _ = Describe("Manager", Ordered, func() {
 			// ghcr.io/grafana/beyla/inject-sdk-image). The ConfigMap only supplies
 			// the image version. These assertions are spec-level (the inject
 			// annotation), so the pod does not need to actually pull/run the image.
-			sdkImageVersion = "0.0.12"
+			sdkImageVersion = "0.0.13"
 		)
 
 		It("instruments a matching workload and uninstruments it once the config excludes it", func() {

@@ -9,7 +9,7 @@ debug: false
 
 # OCI image carrying the SDK auto-instrumentation payload.
 image_volume_root: ghcr.io/grafana/beyla/inject-sdk-image
-image_version: 0.0.12
+image_version: 0.0.13
 
 # How the SDK payload is delivered into instrumented pods:
 #   image          - mount the image directly via ImageVolumeSource (k8s 1.31+)
