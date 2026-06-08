@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	"sigs.k8s.io/e2e-framework/klient/wait"
 	"sigs.k8s.io/e2e-framework/klient/wait/conditions"
+	"sigs.k8s.io/e2e-framework/support/kind"
 )
 
 const (
@@ -149,6 +150,33 @@ func fetchManifestOnce(ctx context.Context, client *http.Client, url string) (st
 		return "", fmt.Errorf("reading %s: %w", url, err)
 	}
 	return string(body), nil
+}
+
+// ExportClusterLogs runs `kind export logs` for the given cluster and writes the
+// result (every node's journal plus all pod container logs) into
+// testoutput/<suite>/ under the project root, creating the directory tree if it
+// does not exist. It is best-effort: any failure is logged to GinkgoWriter and
+// swallowed, so collecting logs during teardown can never mask the real test
+// outcome. Call it from AfterSuite before destroying the cluster.
+func ExportClusterLogs(ctx context.Context, cluster *kind.Cluster, suite string) {
+	if cluster == nil {
+		return
+	}
+	projectDir, err := GetProjectDir()
+	if err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "skipping log export: %v\n", err)
+		return
+	}
+	dest := filepath.Join(projectDir, "testoutput", suite)
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "skipping log export: creating %s: %v\n", dest, err)
+		return
+	}
+	if err := cluster.ExportLogs(ctx, dest); err != nil {
+		_, _ = fmt.Fprintf(GinkgoWriter, "exporting cluster logs to %s: %v\n", dest, err)
+		return
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "exported kind cluster logs to %s\n", dest)
 }
 
 // GetProjectDir returns the module root (the directory holding go.mod) by

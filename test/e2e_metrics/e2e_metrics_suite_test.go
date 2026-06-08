@@ -122,6 +122,8 @@ var _ = AfterSuite(func() {
 	if testCluster == nil {
 		return
 	}
+	By("exporting kind cluster logs")
+	utils.ExportClusterLogs(context.Background(), testCluster, "e2e_metrics")
 	if os.Getenv("KIND_KEEP_CLUSTER") == "true" {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Keeping Kind cluster (KIND_KEEP_CLUSTER=true)\n")
 		return
