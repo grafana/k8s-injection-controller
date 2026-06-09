@@ -1,0 +1,24 @@
+{{ .Chart.Name }} {{ .Chart.AppVersion }} has been installed.
+
+Controller namespace : {{ include "k8s-injection-controller.namespace" . }}
+Watched namespace    : {{ include "k8s-injection-controller.watchNamespace" . }} (ConfigMaps written by Beyla)
+Deployment           : {{ include "k8s-injection-controller.fullname" . }}
+
+Check the controller is running:
+
+  kubectl -n {{ include "k8s-injection-controller.namespace" . }} rollout status deployment/{{ include "k8s-injection-controller.fullname" . }}
+  kubectl -n {{ include "k8s-injection-controller.namespace" . }} logs deployment/{{ include "k8s-injection-controller.fullname" . }} -c manager -f
+
+This chart renders cert-manager Issuer/Certificate resources and relies on
+cert-manager to issue the webhook serving certificate and inject the CA into the
+webhook configurations. cert-manager is a PREREQUISITE — if the install above
+succeeded, its CRDs are present. Make sure its pods are Ready, otherwise the
+webhook Secret will never be created and the controller pod will stay un-ready:
+
+  kubectl -n cert-manager rollout status deployment/cert-manager-webhook
+
+{{- if not .Values.sdkConfig.enabled }}
+
+NOTE: sdkConfig.enabled=false — the controller will select matching workloads
+but perform no instrumentation until an SDK config is provided.
+{{- end }}

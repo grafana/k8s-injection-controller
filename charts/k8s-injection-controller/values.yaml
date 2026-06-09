@@ -1,0 +1,146 @@
+# Default values for k8s-injection-controller.
+# This is a YAML-formatted file.
+
+# -- Namespace where the controller and all its namespaced resources are
+# installed. When `namespace.create` is true the chart renders the Namespace
+# object itself; set it to false (and pass `helm install --namespace <ns>`) if
+# you prefer Helm / `--create-namespace` to own the namespace.
+namespace:
+  name: beyla-k8s-injector
+  create: true
+
+# -- Namespace whose ConfigMaps the controller watches for Beyla-managed
+# injection config. Leave empty to watch the controller's own namespace
+# (`namespace.name`); set it to the namespace where Beyla writes its state
+# ConfigMaps (e.g. "monitoring") when the two are not co-located. When it
+# differs from `namespace.name` the chart also renders a Role + RoleBinding in
+# that namespace granting the controller get/list/watch on ConfigMaps.
+watchNamespace: ""
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/grafana/k8s-injection-controller
+  pullPolicy: IfNotPresent
+  # Overrides the image tag
+  # TODO: leave as empty so it would default to the chart version
+  tag: main
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created.
+  create: true
+  # Annotations to add to the service account.
+  annotations: {}
+  # The name of the service account to use.
+  # If not set and create is true, a name is generated using the fullname template.
+  name: ""
+
+# -- Comma-separated allowlist of usernames permitted to create/update the
+# annotated injection ConfigMaps — typically Beyla's ServiceAccount. Members of
+# system:masters are always allowed (break-glass).
+allowedConfigMapWriters: "system:serviceaccount:beyla-k8s-injector:beyla"
+
+# -- Run the controller with leader election enabled.
+leaderElection: true
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - "ALL"
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# -- SDK auto-instrumentation defaults mounted into the controller (the
+# `config.SDKInject` document passed via --config). When disabled the
+# controller still selects matching workloads but performs no mutation.
+sdkConfig:
+  enabled: true
+  debug: false
+  # OCI image carrying the SDK auto-instrumentation payload.
+  imageVolumeRoot: ghcr.io/grafana/beyla/inject-sdk-image
+  imageVersion: 0.0.13
+  # How the SDK payload is delivered into instrumented pods:
+  #   image          - mount the OCI image via ImageVolumeSource (k8s 1.31+)
+  #   init_container - copy the payload via an init container (k8s < 1.31)
+  #   auto           - "image" on k8s 1.31+, "init_container" otherwise
+  injectionMode: auto
+  propagators:
+    - tracecontext
+    - baggage
+  export:
+    traces: true
+    metrics: true
+    logs: false
+  # Languages whose auto-instrumentation should run.
+  enabledSDKs:
+    - nodejs
+    - python
+    - java
+    - dotnet
+
+# -- Pod mutating webhook configuration.
+webhook:
+  # Namespaces excluded from the mutating webhook via namespaceSelector. The
+  # install namespace is always appended automatically (deadlock prevention).
+  excludedNamespaces:
+    - kube-system
+    - kube-public
+    - kube-node-lease
+    - cert-manager
+    - monitoring
+    - local-path-storage
+    - grafana-alloy
+    # GKE-managed namespaces.
+    - gke-connect
+    - gke-gmp-system
+    - gke-managed-cim
+    - gke-managed-filestorecsi
+    - gke-managed-metrics-server
+    - gke-managed-system
+    - gke-system
+    - gke-managed-volumepopulator
+    # AKS-managed namespaces.
+    - gatekeeper-system
+
+# -- Controller Prometheus metrics. Served over plain HTTP and advertised via
+# Pod annotations for annotation-based Prometheus service discovery
+# (`kubernetes_sd_configs` with `role: pod`) — no Prometheus Operator /
+# ServiceMonitor required. The endpoint is unauthenticated; restrict access at
+# the network layer (e.g. a NetworkPolicy tailored to your CNI) if the metrics
+# are sensitive.
+metrics:
+  enabled: true
+  # Port the metrics endpoint binds to (plain HTTP).
+  port: 8080
+  # Annotations added to the controller Pod so a Prometheus scraper configured
+  # for pod discovery picks it up. Keep `prometheus.io/port` in sync with
+  # `metrics.port` above. Set to {} to expose the port without advertising it.
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: /metrics
+

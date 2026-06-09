@@ -1,0 +1,27 @@
+{{- if .Values.sdkConfig.enabled }}
+{{- $sdk := .Values.sdkConfig -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "k8s-injection-controller.fullname" . }}-sdk-config
+  namespace: {{ include "k8s-injection-controller.namespace" . }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+data:
+  # config.SDKInject document consumed by the controller via --config. The
+  # controller selects matching workloads but performs no mutation when this is
+  # absent (image_volume_root empty).
+  sdk-inject.yaml: |
+    debug: {{ $sdk.debug }}
+    image_volume_root: {{ $sdk.imageVolumeRoot }}
+    image_version: {{ $sdk.imageVersion | quote }}
+    injection_mode: {{ $sdk.injectionMode }}
+    propagators:
+      {{- toYaml $sdk.propagators | nindent 6 }}
+    export:
+      traces: {{ $sdk.export.traces }}
+      metrics: {{ $sdk.export.metrics }}
+      logs: {{ $sdk.export.logs }}
+    enabled_sdks:
+      {{- toYaml $sdk.enabledSDKs | nindent 6 }}
+{{- end }}

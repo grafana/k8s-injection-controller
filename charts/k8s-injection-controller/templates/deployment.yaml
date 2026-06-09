@@ -1,0 +1,135 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "k8s-injection-controller.fullname" . }}
+  namespace: {{ include "k8s-injection-controller.namespace" . }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "k8s-injection-controller.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        kubectl.kubernetes.io/default-container: manager
+        {{- if .Values.sdkConfig.enabled }}
+        # Roll the pod whenever the mounted SDK config changes.
+        checksum/sdk-config: {{ include (print $.Template.BasePath "/sdk-config.yaml") . | sha256sum }}
+        {{- end }}
+        {{- if .Values.metrics.enabled }}
+        {{- with .Values.metrics.annotations }}
+        # Advertise the metrics endpoint for annotation-based Prometheus discovery.
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "k8s-injection-controller.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "k8s-injection-controller.serviceAccountName" . }}
+      terminationGracePeriodSeconds: 10
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: manager
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /manager
+          args:
+            - --health-probe-bind-address=:8081
+            {{- if .Values.leaderElection }}
+            - --leader-elect
+            {{- end }}
+            - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
+            {{- if .Values.metrics.enabled }}
+            - --metrics-bind-address=:{{ .Values.metrics.port }}
+            - --metrics-secure=false
+            {{- else }}
+            - --metrics-bind-address=0
+            {{- end }}
+            {{- if .Values.sdkConfig.enabled }}
+            - --config=/etc/beyla-injector/sdk-inject.yaml
+            {{- end }}
+          env:
+            # Dialed by the controller before its first eviction sweep so it
+            # waits for the webhook Service VIP to be programmed.
+            - name: WEBHOOK_SERVICE_ADDR
+              value: {{ printf "%s.%s.svc:443" (include "k8s-injection-controller.webhookServiceName" .) (include "k8s-injection-controller.namespace" .) }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: WATCH_NAMESPACE
+              value: {{ include "k8s-injection-controller.watchNamespace" . | quote }}
+            - name: ALLOWED_CONFIGMAP_WRITERS
+              value: {{ .Values.allowedConfigMapWriters | quote }}
+          ports:
+            - name: health
+              containerPort: 8081
+              protocol: TCP
+            - name: webhook-server
+              containerPort: 9443
+              protocol: TCP
+            {{- if .Values.metrics.enabled }}
+            - name: metrics
+              containerPort: {{ .Values.metrics.port }}
+              protocol: TCP
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: webhook-certs
+              mountPath: /tmp/k8s-webhook-server/serving-certs
+              readOnly: true
+            {{- if .Values.sdkConfig.enabled }}
+            - name: sdk-config
+              mountPath: /etc/beyla-injector
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: webhook-certs
+          secret:
+            secretName: {{ include "k8s-injection-controller.servingCertName" . }}
+        {{- if .Values.sdkConfig.enabled }}
+        - name: sdk-config
+          configMap:
+            name: {{ include "k8s-injection-controller.fullname" . }}-sdk-config
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
