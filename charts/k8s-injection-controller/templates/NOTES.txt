@@ -9,16 +9,13 @@ Check the controller is running:
   kubectl -n {{ include "k8s-injection-controller.namespace" . }} rollout status deployment/{{ include "k8s-injection-controller.fullname" . }}
   kubectl -n {{ include "k8s-injection-controller.namespace" . }} logs deployment/{{ include "k8s-injection-controller.fullname" . }} -c manager -f
 
-{{ if not (index .Values "cert-manager" "enabled") -}}
 This chart renders cert-manager Issuer/Certificate resources and relies on
 cert-manager to issue the webhook serving certificate and inject the CA into the
-webhook configurations. cert-manager was NOT installed by this release
-(`cert-manager.enabled=false`) — make sure it is already running in the cluster,
-otherwise the webhook Secret will never be created and the controller pod will
-stay un-ready.
-{{- else -}}
-cert-manager was installed as a subchart dependency of this release.
-{{- end }}
+webhook configurations. cert-manager is a PREREQUISITE — if the install above
+succeeded, its CRDs are present. Make sure its pods are Ready, otherwise the
+webhook Secret will never be created and the controller pod will stay un-ready:
+
+  kubectl -n cert-manager rollout status deployment/cert-manager-webhook
 
 {{- if not .Values.sdkConfig.enabled }}
 

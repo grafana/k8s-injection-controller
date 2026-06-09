@@ -20,10 +20,11 @@ watchNamespace: ""
 replicaCount: 1
 
 image:
-  repository: ghcr.io/grafana/beyla-k8s-injector
+  repository: ghcr.io/grafana/k8s-injection-controller
   pullPolicy: IfNotPresent
-  # Overrides the image tag whose default is the chart appVersion.
-  tag: ""
+  # Overrides the image tag
+  # TODO: leave as empty so it would default to the chart version
+  tag: main
 
 imagePullSecrets: []
 nameOverride: ""
@@ -143,17 +144,3 @@ metrics:
     prometheus.io/port: "8080"
     prometheus.io/path: /metrics
 
-# -- cert-manager subchart. The chart always renders a self-signed cert-manager
-# Issuer + Certificate and wires CA injection into the webhook configurations,
-# so cert-manager CRDs must be present in the cluster. Set `enabled: true` to
-# have this chart install cert-manager (via its official subchart) for you;
-# leave it false if cert-manager is already installed.
-#
-# Everything under this `cert-manager:` key is forwarded to the cert-manager
-# subchart (https://artifacthub.io/packages/helm/cert-manager/cert-manager),
-# except `enabled`, which only toggles whether the subchart is installed.
-cert-manager:
-  enabled: false
-  # Install cert-manager's CRDs together with the subchart.
-  crds:
-    enabled: true

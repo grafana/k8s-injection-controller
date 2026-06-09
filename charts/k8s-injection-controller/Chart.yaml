@@ -25,12 +25,9 @@ version: 0.1.0
 # It is recommended to use it with quotes.
 appVersion: "0.1.0"
 
-# cert-manager is an optional dependency. It is only pulled in when
-# `cert-manager.enabled=true`; otherwise the chart assumes cert-manager is
-# already running in the cluster. Run `helm dependency build` (or
-# `helm dependency update`) before packaging/installing to vendor it.
-dependencies:
-  - name: cert-manager
-    version: "v1.20.2"
-    repository: "https://charts.jetstack.io"
-    condition: cert-manager.enabled
+# NOTE: cert-manager is a *prerequisite*, not a dependency of this chart. It
+# must be installed (CRDs + webhook ready) before installing this chart, since
+# the chart creates cert-manager Issuer/Certificate resources. See the chart
+# README for the two-step install. cert-manager is intentionally not vendored
+# as a subchart: its CRDs and validating webhook cannot be created and used
+# within the same `helm install`.
