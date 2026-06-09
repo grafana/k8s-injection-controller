@@ -1,0 +1,78 @@
+{{- $namespace := include "k8s-injection-controller.namespace" . -}}
+{{- $watchNamespace := include "k8s-injection-controller.watchNamespace" . -}}
+{{- $webhookService := include "k8s-injection-controller.webhookServiceName" . -}}
+{{- $caInject := printf "%s/%s" $namespace (include "k8s-injection-controller.servingCertName" .) -}}
+{{- /* Excluded namespaces = configured list plus the controller's own namespace (deadlock prevention), de-duplicated. */ -}}
+{{- $excluded := concat .Values.webhook.excludedNamespaces (list $namespace) | uniq -}}
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "k8s-injection-controller.fullname" . }}-mutating-webhook
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ $caInject }}
+webhooks:
+- name: mpod-v1.beyla.grafana.com
+  admissionReviewVersions:
+  - v1
+  sideEffects: None
+  # A broken injector must never block pod creation.
+  failurePolicy: Ignore
+  clientConfig:
+    service:
+      name: {{ $webhookService }}
+      namespace: {{ $namespace }}
+      path: /mutate--v1-pod
+  namespaceSelector:
+    matchExpressions:
+    - key: kubernetes.io/metadata.name
+      operator: NotIn
+      values:
+        {{- range $excluded }}
+        - {{ . }}
+        {{- end }}
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    resources:
+    - pods
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: {{ include "k8s-injection-controller.fullname" . }}-validating-webhook
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ $caInject }}
+webhooks:
+- name: vconfigmap-v1.beyla.grafana.com
+  admissionReviewVersions:
+  - v1
+  sideEffects: None
+  # Scoped to the single watched namespace, which is what makes failurePolicy
+  # Fail safe: a validator outage can only block ConfigMap writes there.
+  failurePolicy: Fail
+  clientConfig:
+    service:
+      name: {{ $webhookService }}
+      namespace: {{ $namespace }}
+      path: /validate--v1-configmap
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: {{ $watchNamespace }}
+  rules:
+  - apiGroups:
+    - ""
+    apiVersions:
+    - v1
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - configmaps

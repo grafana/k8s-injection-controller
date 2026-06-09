@@ -1,6 +1,8 @@
 apiVersion: v2
 name: k8s-injection-controller
-description: A Helm chart for Kubernetes
+description: |
+  A Kubernetes mutating-admission controller that injects an environment variable
+  into pods running in namespaces selected by annotated ConfigMaps.
 
 # A chart can be either an 'application' or a 'library' chart.
 #
@@ -21,4 +23,14 @@ version: 0.1.0
 # incremented each time you make changes to the application. Versions are not expected to
 # follow Semantic Versioning. They should reflect the version the application is using.
 # It is recommended to use it with quotes.
-appVersion: "1.16.0"
+appVersion: "0.1.0"
+
+# cert-manager is an optional dependency. It is only pulled in when
+# `cert-manager.enabled=true`; otherwise the chart assumes cert-manager is
+# already running in the cluster. Run `helm dependency build` (or
+# `helm dependency update`) before packaging/installing to vendor it.
+dependencies:
+  - name: cert-manager
+    version: "v1.20.2"
+    repository: "https://charts.jetstack.io"
+    condition: cert-manager.enabled

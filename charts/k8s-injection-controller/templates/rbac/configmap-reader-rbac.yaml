@@ -1,0 +1,40 @@
+{{- $fullName := include "k8s-injection-controller.fullname" . -}}
+{{- $namespace := include "k8s-injection-controller.namespace" . -}}
+{{- $watchNamespace := include "k8s-injection-controller.watchNamespace" . -}}
+{{- $saName := include "k8s-injection-controller.serviceAccountName" . -}}
+# Grants the controller get/list/watch on ConfigMaps in the watched namespace
+# (where Beyla writes its injection-config ConfigMaps). The controller's
+# ConfigMap informer LISTs this namespace on startup, so it must be allowed
+# even when the watch namespace differs from the controller's own namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullName }}-configmap-reader
+  namespace: {{ $watchNamespace }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullName }}-configmap-reader
+  namespace: {{ $watchNamespace }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullName }}-configmap-reader
+subjects:
+- kind: ServiceAccount
+  name: {{ $saName }}
+  namespace: {{ $namespace }}

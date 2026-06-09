@@ -1,0 +1,34 @@
+{{- if and .Values.metrics.enabled .Values.metrics.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "k8s-injection-controller.fullname" . }}-metrics
+  namespace: {{ include "k8s-injection-controller.namespace" . }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "k8s-injection-controller.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - path: /metrics
+      port: https
+      {{- if .Values.metrics.secure }}
+      scheme: https
+      bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+      tlsConfig:
+        {{- if .Values.metrics.certManager }}
+        serverName: {{ printf "%s-metrics.%s.svc" (include "k8s-injection-controller.fullname" .) (include "k8s-injection-controller.namespace" .) }}
+        ca:
+          secret:
+            name: {{ include "k8s-injection-controller.fullname" . }}-metrics-cert
+            key: ca.crt
+        {{- else }}
+        # No cert-manager-issued metrics cert: skip verification. Not
+        # recommended for production — set metrics.certManager=true instead.
+        insecureSkipVerify: true
+        {{- end }}
+      {{- else }}
+      scheme: http
+      {{- end }}
+{{- end }}

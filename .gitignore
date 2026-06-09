@@ -31,3 +31,7 @@ vendor
 yaml
 
 testoutput
+
+# Vendored Helm subchart archives (reproducible via `helm dependency build`
+# from Chart.lock). Chart.lock itself is committed.
+charts/*/charts/*.tgz

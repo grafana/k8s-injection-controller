@@ -1,0 +1,49 @@
+{{- $namespace := include "k8s-injection-controller.namespace" . -}}
+{{- $fullName := include "k8s-injection-controller.fullname" . -}}
+{{- $webhookService := include "k8s-injection-controller.webhookServiceName" . -}}
+# Self-signed issuer + serving certificate for the webhook server. cert-manager
+# stores the cert in the Secret mounted by the manager and injects the CA into
+# the webhook configurations via the `cert-manager.io/inject-ca-from` annotation.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ $fullName }}-selfsigned-issuer
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "k8s-injection-controller.servingCertName" . }}
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+spec:
+  dnsNames:
+    - {{ printf "%s.%s.svc" $webhookService $namespace }}
+    - {{ printf "%s.%s.svc.cluster.local" $webhookService $namespace }}
+  issuerRef:
+    kind: Issuer
+    name: {{ $fullName }}-selfsigned-issuer
+  secretName: {{ include "k8s-injection-controller.servingCertName" . }}
+{{- if and .Values.metrics.enabled .Values.metrics.certManager }}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ $fullName }}-metrics-cert
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+spec:
+  dnsNames:
+    - {{ printf "%s-metrics.%s.svc" $fullName $namespace }}
+    - {{ printf "%s-metrics.%s.svc.cluster.local" $fullName $namespace }}
+  issuerRef:
+    kind: Issuer
+    name: {{ $fullName }}-selfsigned-issuer
+  secretName: {{ $fullName }}-metrics-cert
+{{- end }}
