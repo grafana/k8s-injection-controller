@@ -125,21 +125,23 @@ webhook:
     # AKS-managed namespaces.
     - gatekeeper-system
 
-# -- Controller metrics endpoint (HTTPS on :8443, protected by authn/authz).
+# -- Controller Prometheus metrics. Served over plain HTTP and advertised via
+# Pod annotations for annotation-based Prometheus service discovery
+# (`kubernetes_sd_configs` with `role: pod`) — no Prometheus Operator /
+# ServiceMonitor required. The endpoint is unauthenticated; restrict access at
+# the network layer (e.g. a NetworkPolicy tailored to your CNI) if the metrics
+# are sensitive.
 metrics:
   enabled: true
-  secure: true
-  # Protect the metrics server with a cert-manager-issued certificate.
-  # Requires a working cert-manager in the cluster.
-  certManager: false
-  # Render a Prometheus Operator ServiceMonitor for the metrics endpoint.
-  serviceMonitor:
-    enabled: false
-
-# -- NetworkPolicies restricting access to the webhook (:443) and metrics
-# (:8443) ports to namespaces labeled `webhook: enabled` / `metrics: enabled`.
-networkPolicy:
-  enabled: false
+  # Port the metrics endpoint binds to (plain HTTP).
+  port: 8080
+  # Annotations added to the controller Pod so a Prometheus scraper configured
+  # for pod discovery picks it up. Keep `prometheus.io/port` in sync with
+  # `metrics.port` above. Set to {} to expose the port without advertising it.
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: /metrics
 
 # -- cert-manager subchart. The chart always renders a self-signed cert-manager
 # Issuer + Certificate and wires CA injection into the webhook configurations,
