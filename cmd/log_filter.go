@@ -7,7 +7,12 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
-const certRotationLoggerName = "cert-rotation"
+const (
+	certRotationLoggerName          = "cert-rotation"
+	malformedSecretWebhookConfigMsg = "secret is not well-formed, cannot update webhook configurations"
+	missingCACertSecretErr          = "Cert secret is not well-formed, missing ca.crt"
+	missingCAKeySecretErr           = "Cert secret is not well-formed, missing ca.key"
+)
 
 var suppressibleCertRotationConflictMessages = map[string]struct{}{
 	"could not refresh CA and server certs": {},
@@ -66,11 +71,29 @@ func (f *certRotationConflictFilter) WithCallDepth(depth int) logr.LogSink {
 }
 
 func (f *certRotationConflictFilter) suppresses(err error, msg string) bool {
-	if !isCertRotationLogger(f.name) || !apierrors.IsConflict(err) {
+	if !isCertRotationLogger(f.name) {
+		return false
+	}
+	if isSuppressibleCertRotationConflict(err, msg) {
+		return true
+	}
+	return isSuppressibleMalformedSecret(err, msg)
+}
+
+func isSuppressibleCertRotationConflict(err error, msg string) bool {
+	if !apierrors.IsConflict(err) {
 		return false
 	}
 	_, ok := suppressibleCertRotationConflictMessages[msg]
 	return ok
+}
+
+func isSuppressibleMalformedSecret(err error, msg string) bool {
+	if msg != malformedSecretWebhookConfigMsg || err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	return errMsg == missingCACertSecretErr || errMsg == missingCAKeySecretErr
 }
 
 func isCertRotationLogger(name string) bool {

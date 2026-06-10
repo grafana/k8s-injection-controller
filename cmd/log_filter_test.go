@@ -23,6 +23,29 @@ func TestFilterCertRotationConflictsSuppressesExpectedConflict(t *testing.T) {
 	}
 }
 
+func TestFilterCertRotationConflictsSuppressesStaleMalformedSecret(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "missing CA cert", err: errors.New(missingCACertSecretErr)},
+		{name: "missing CA key", err: errors.New(missingCAKeySecretErr)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sink := newRecordingSink()
+			logger := filterCertRotationConflicts(logr.New(sink))
+
+			logger.WithName("cert-rotation").Error(tt.err, malformedSecretWebhookConfigMsg)
+
+			if len(*sink.errors) != 0 {
+				t.Fatalf("expected stale malformed Secret log to be suppressed, got %d entries", len(*sink.errors))
+			}
+		})
+	}
+}
+
 func TestFilterCertRotationConflictsLogsOtherErrors(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -46,6 +69,24 @@ func TestFilterCertRotationConflictsLogsOtherErrors(t *testing.T) {
 			name:       "same conflict but different message",
 			loggerName: "cert-rotation",
 			err:        newSecretConflict(),
+			msg:        "could not refresh cert on startup",
+		},
+		{
+			name:       "malformed secret from different logger",
+			loggerName: "setup",
+			err:        errors.New(missingCACertSecretErr),
+			msg:        malformedSecretWebhookConfigMsg,
+		},
+		{
+			name:       "malformed secret with different detail",
+			loggerName: "cert-rotation",
+			err:        errors.New("bad CA cert"),
+			msg:        malformedSecretWebhookConfigMsg,
+		},
+		{
+			name:       "malformed secret error with different message",
+			loggerName: "cert-rotation",
+			err:        errors.New(missingCACertSecretErr),
 			msg:        "could not refresh cert on startup",
 		},
 	}
