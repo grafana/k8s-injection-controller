@@ -15,11 +15,14 @@ or any demo application.
 - Kubernetes **1.31+** (required for `image` injection mode via
   `ImageVolumeSource`; older clusters work with `sdkConfig.injectionMode:
   init_container`).
-- **[cert-manager](https://cert-manager.io/)** must already be installed and
-  Ready. The chart creates `Issuer`/`Certificate` resources, so cert-manager's
+- *Optional*: [cert-manager](https://cert-manager.io/) can be and
+  deployed. The chart creates `Issuer`/`Certificate` resources, so cert-manager's
   CRDs and validating webhook must exist *before* you install this chart.
   cert-manager is intentionally **not** bundled as a subchart: its CRDs and
   webhook cannot be created and consumed within a single `helm install`.
+  If `cert-manager` is not present, self-signed certificate will be used
+  for the webhook, which is automatically created and rotated on every start
+  of the controller.
 
 ## Install
 
@@ -52,6 +55,7 @@ See [`values.yaml`](./values.yaml) for the full list. Common knobs:
 | `allowedConfigMapWriters` | `system:serviceaccount:beyla-k8s-injector:beyla` | Identities allowed to write injection ConfigMaps. |
 | `sdkConfig.*` | see values | Default SDK auto-instrumentation config; `sdkConfig.enabled=false` selects but does not mutate. |
 | `webhook.excludedNamespaces` | system/infra namespaces | Namespaces the mutating webhook never touches (install namespace is always added). |
+| `webhook.certManager.mode` | auto | How the webhook serving certificate is provisioned: auto, cert-manager, self-signed. |
 | `metrics.enabled` / `metrics.port` | `true` / `8080` | Plain-HTTP Prometheus metrics, advertised via pod annotations (no Prometheus Operator required). |
 
 ## Uninstall
