@@ -15,7 +15,11 @@ webhook configurations.
 {{- if .Values.certManager.installHook.enabled }}
 
 A pre-install hook ensured cert-manager is present (install it yourself and set
-certManager.installHook.enabled=false to skip it). Confirm it is Ready:
+certManager.installHook.enabled=false to skip it). The webhook Issuer/Certificate
+are then applied by a POST-INSTALL hook, so the controller pod stays in
+ContainerCreating for a few seconds until the serving-cert Secret is issued.
+NOTE: `--wait` / `--atomic` do not work on the first install in this mode (see
+the chart README). Confirm cert-manager is Ready:
 {{- else }}
 
 cert-manager is a PREREQUISITE and the install hook is disabled. Make sure

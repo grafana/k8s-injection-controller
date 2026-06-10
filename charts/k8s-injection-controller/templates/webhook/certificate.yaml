@@ -4,6 +4,27 @@
 # Self-signed issuer + serving certificate for the webhook server. cert-manager
 # stores the cert in the Secret mounted by the manager and injects the CA into
 # the webhook configurations via the `cert-manager.io/inject-ca-from` annotation.
+#
+# When the cert-manager install hook is ENABLED these are rendered as
+# POST-INSTALL hooks rather than part of the main release manifest. Reason: the
+# pre-install hook installs cert-manager on the fly, so the cert-manager.io CRDs
+# do not exist yet when Helm REST-mapping–validates the main manifest, and a
+# `cert-manager.io/v1` kind there fails with "no matches for kind Certificate".
+# As a post-install hook the resource is only built/validated *after* the
+# pre-install installer Pod has registered the CRDs and waited for the
+# cert-manager webhook to be Ready, so it always resolves. The Issuer is
+# weighted before the Certificate; kept post-install only (not post-upgrade) so
+# upgrades never churn the cert / rotate the Secret.
+#
+# Consequence of the hook: `helm install --wait` / `--atomic` does NOT work on
+# the FIRST install — Helm waits for the controller Deployment to become Ready
+# before running post-install hooks, but the Deployment cannot start until this
+# hook issues the serving-cert Secret. Without --wait the pod just waits in
+# ContainerCreating for the few seconds the hook takes. Upgrades are unaffected.
+#
+# When the install hook is DISABLED, cert-manager is expected to pre-exist, its
+# CRDs are already registered, and these become plain inline resources — which
+# DO support --wait on the first install.
 apiVersion: cert-manager.io/v1
 kind: Issuer
 metadata:
@@ -11,6 +32,12 @@ metadata:
   namespace: {{ $namespace }}
   labels:
     {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+  {{- if .Values.certManager.installHook.enabled }}
+  annotations:
+    helm.sh/hook: post-install
+    helm.sh/hook-weight: "0"
+    helm.sh/hook-delete-policy: before-hook-creation
+  {{- end }}
 spec:
   selfSigned: {}
 ---
@@ -21,6 +48,12 @@ metadata:
   namespace: {{ $namespace }}
   labels:
     {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+  {{- if .Values.certManager.installHook.enabled }}
+  annotations:
+    helm.sh/hook: post-install
+    helm.sh/hook-weight: "5"
+    helm.sh/hook-delete-policy: before-hook-creation
+  {{- end }}
 spec:
   dnsNames:
     - {{ printf "%s.%s.svc" $webhookService $namespace }}

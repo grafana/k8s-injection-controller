@@ -47,6 +47,25 @@ objects (CRDs, ClusterRoles, webhook configs, a Namespace), so that role is
 cluster-admin–equivalent — but it lives only for the duration of the hook and
 is deleted as soon as the hook succeeds (`helm.sh/hook-delete-policy`).
 
+### How the webhook serving certificate is provisioned
+
+Because cert-manager is installed on the fly by the pre-install hook above, its
+`cert-manager.io/v1` CRDs do not exist when Helm validates the main manifest.
+The `Issuer` and `Certificate` are therefore rendered as **`post-install`
+hooks**: they are created only after the pre-install Pod has registered the CRDs
+and waited for the cert-manager webhook to be Ready, so they always resolve.
+
+> **`--wait` / `--atomic` caveat:** on the **first install** these flags do not
+> work. Helm waits for the controller Deployment to be Ready *before* running
+> post-install hooks, but the Deployment cannot start until the hook issues the
+> serving-cert Secret it mounts. Install **without** `--wait` (the default): the
+> pod waits a few seconds in `ContainerCreating` until the Secret appears, then
+> starts. Upgrades are unaffected — the Secret already exists by then.
+>
+> If you require `--wait` on first install, install cert-manager beforehand (see
+> below) so the CRDs pre-exist; the cert resources can then be applied inline
+> instead of via the post-install hook.
+
 ### Installing cert-manager yourself
 
 If you prefer to manage cert-manager out of band, disable the hook and install

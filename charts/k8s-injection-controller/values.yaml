@@ -39,8 +39,10 @@ fullnameOverride: ""
 # succeeds. Disable it if you manage cert-manager out of band.
 certManager:
   installHook:
+    # TODO: shall we disable it by default
     enabled: true
     # Image carrying both `kubectl` and `helm` (used by the hook Pod).
+    # TODO: look for an official image or use our own
     image:
       repository: dtzar/helm-kubectl
       tag: "3.16"
