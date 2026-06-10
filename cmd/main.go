@@ -120,6 +120,12 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
+	// the ctrl logger may display errors in logs while the certificate generation
+	// is still happening. This manifests in two separate exception forms:
+	// - cert-rotation    secret is not well-formed, cannot update webhook configurations
+	// - cert-rotation    could not refresh CA and server certs
+	// These transient errors go away soon, but they pollute the logs, we wrap the
+	// logger into one that eliminates those errors.
 	ctrl.SetLogger(filterCertRotationConflicts(zap.New(zap.UseFlagOptions(&opts))))
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
