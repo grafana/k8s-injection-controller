@@ -60,6 +60,6 @@ spec:
     - name: prometheus
       port: 9090
       targetPort: 9090
-      # Must match the extraPortMapping in test/e2e_metrics/kind-config.yaml and
+      # Must match the extraPortMapping in test/e2e/kind-config.yaml and
       # lgtmPromNodePort in the suite so the host can query PromQL directly.
       nodePort: 30090

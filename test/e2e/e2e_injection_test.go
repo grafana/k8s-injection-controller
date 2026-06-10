@@ -1,5 +1,4 @@
 //go:build e2e
-// +build e2e
 
 /*
 Copyright 2026.
@@ -22,7 +21,6 @@ package e2e
 import (
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -31,7 +29,6 @@ import (
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
-	authenticationv1 "k8s.io/api/authentication/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -39,8 +36,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
-
-	"github.com/grafana/beyla-k8s-injector/test/utils"
 )
 
 // These names track the kustomize namePrefix (config/default/kustomization.yaml)
@@ -49,53 +44,14 @@ import (
 const namespace = "beyla-k8s-injector"
 const serviceAccountName = "beyla-k8s-injector-controller-manager"
 const metricsServiceName = "beyla-k8s-injector-controller-manager-metrics-service"
-const metricsRoleBindingName = "beyla-k8s-injector-metrics-binding"
-const metricsReaderRoleName = "beyla-k8s-injector-metrics-reader"
 const webhookServiceName = "beyla-k8s-injector-webhook-service"
 const mutatingWebhookConfigName = "beyla-k8s-injector-mutating-webhook-configuration"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
 
-	// Before running the tests, set up the environment by creating the namespace,
-	// enforce the restricted security policy to the namespace, installing CRDs,
-	// and deploying the controller.
-	BeforeAll(func() {
-		By("creating manager namespace with the restricted security policy enforced")
-		ns := &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   namespace,
-				Labels: map[string]string{"pod-security.kubernetes.io/enforce": "restricted"},
-			},
-		}
-		Expect(k8sClient.Resources().Create(suiteCtx, ns)).To(Succeed(), "Failed to create namespace")
-
-		By("installing CRDs")
-		_, err := utils.Run(exec.Command("make", "install"))
-		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
-
-		By("deploying the controller-manager")
-		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage)))
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
-	})
-
-	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
-	// and deleting the namespace.
-	AfterAll(func() {
-		By("cleaning up the curl pod for metrics")
-		_ = k8sClient.Resources().Delete(suiteCtx,
-			&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "curl-metrics", Namespace: namespace}})
-
-		By("undeploying the controller-manager")
-		_, _ = utils.Run(exec.Command("make", "undeploy"))
-
-		By("uninstalling CRDs")
-		_, _ = utils.Run(exec.Command("make", "uninstall"))
-
-		By("removing manager namespace")
-		_ = k8sClient.Resources().Delete(suiteCtx,
-			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})
-	})
+	// The controller, webhook and cert-manager are stood up once for the whole
+	// suite (see BeforeSuite); these specs run against that shared deployment.
 
 	// After each test, check for failures and collect logs, events,
 	// and pod descriptions for debugging.
@@ -170,35 +126,15 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
-			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
-			crb := &rbacv1.ClusterRoleBinding{
-				ObjectMeta: metav1.ObjectMeta{Name: metricsRoleBindingName},
-				RoleRef: rbacv1.RoleRef{
-					APIGroup: rbacv1.GroupName,
-					Kind:     "ClusterRole",
-					Name:     metricsReaderRoleName,
-				},
-				Subjects: []rbacv1.Subject{{
-					Kind:      "ServiceAccount",
-					Name:      serviceAccountName,
-					Namespace: namespace,
-				}},
-			}
-			Expect(k8sClient.Resources().Create(suiteCtx, crb)).To(Succeed(), "Failed to create ClusterRoleBinding")
-			DeferCleanup(func() {
-				_ = k8sClient.Resources().Delete(suiteCtx,
-					&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: metricsRoleBindingName}})
-			})
-
 			By("validating that the metrics service is available")
+			// config/test runs the manager with --metrics-secure=false, so the
+			// metrics endpoint is plain HTTP on :8443 with no authn/authz filter
+			// (this is how the controller's metrics are scraped in production too,
+			// see the Helm chart). The curl below therefore uses HTTP and needs no
+			// bearer token / metrics-reader RBAC.
 			var metricsSvc corev1.Service
 			Expect(k8sClient.Resources().Get(suiteCtx, metricsServiceName, namespace, &metricsSvc)).
 				To(Succeed(), "Metrics service should exist")
-
-			By("getting the service account token")
-			token, err := serviceAccountToken()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(token).NotTo(BeEmpty())
 
 			By("ensuring the controller pod is ready")
 			verifyControllerPodReady := func(g Gomega) {
@@ -244,15 +180,15 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting additional time for webhook server to stabilize")
 			time.Sleep(5 * time.Second)
 
-			// +kubebuilder:scaffold:e2e-metrics-webhooks-readiness
+			// +kubebuilder:scaffold:e2e-webhooks-readiness
 
 			By("creating the curl-metrics pod to access the metrics endpoint")
-			// The assertions are spec-level; the pod retries the in-cluster HTTPS
+			// The assertions are spec-level; the pod retries the in-cluster HTTP
 			// request a few times to ride out the metrics server warming up.
 			curlScript := fmt.Sprintf(
-				"for i in $(seq 1 30); do curl -v -k -H 'Authorization: Bearer %s' "+
-					"https://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1",
-				token, metricsServiceName, namespace)
+				"for i in $(seq 1 30); do curl -v "+
+					"http://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1",
+				metricsServiceName, namespace)
 			curlPod := &corev1.Pod{
 				ObjectMeta: metav1.ObjectMeta{Name: "curl-metrics", Namespace: namespace},
 				Spec: corev1.PodSpec{
@@ -275,6 +211,10 @@ var _ = Describe("Manager", Ordered, func() {
 				},
 			}
 			Expect(k8sClient.Resources().Create(suiteCtx, curlPod)).To(Succeed(), "Failed to create curl-metrics pod")
+			DeferCleanup(func() {
+				_ = k8sClient.Resources().Delete(suiteCtx,
+					&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "curl-metrics", Namespace: namespace}})
+			})
 
 			By("waiting for the curl-metrics pod to complete.")
 			verifyCurlUp := func(g Gomega) {
@@ -314,16 +254,6 @@ var _ = Describe("Manager", Ordered, func() {
 		})
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
-
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput, err := getMetricsOutput()
-		// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
 	})
 
 	// Exercises the full instrument → re-configure → uninstrument lifecycle
@@ -335,7 +265,6 @@ var _ = Describe("Manager", Ordered, func() {
 			workloadNS = "beyla-inject-e2e"
 			workload   = "sample-app"
 			cmName     = "beyla-node-state"
-			injectAnno = "beyla.grafana.com/inject"
 			// The SDK image root is no longer carried in the ConfigMap (it comes
 			// from the controller's own SDKInject config, defaulting to
 			// ghcr.io/grafana/beyla/inject-sdk-image). The ConfigMap only supplies
@@ -450,17 +379,6 @@ var _ = Describe("Manager", Ordered, func() {
 	})
 })
 
-// serviceAccountToken returns a token for the suite's service account using the
-// Kubernetes TokenRequest API.
-func serviceAccountToken() (string, error) {
-	tr, err := clientset.CoreV1().ServiceAccounts(namespace).CreateToken(
-		suiteCtx, serviceAccountName, &authenticationv1.TokenRequest{}, metav1.CreateOptions{})
-	if err != nil {
-		return "", err
-	}
-	return tr.Status.Token, nil
-}
-
 // getMetricsOutput returns the logs from the curl pod used to access the metrics endpoint.
 func getMetricsOutput() (string, error) {
 	return podLogs(namespace, "curl-metrics")
@@ -504,16 +422,6 @@ func mutatingWebhookCABundle() ([]byte, error) {
 		bundle = append(bundle, w.ClientConfig.CABundle...)
 	}
 	return bundle, nil
-}
-
-// podReady reports whether the pod's Ready condition is True.
-func podReady(pod *corev1.Pod) bool {
-	for _, c := range pod.Status.Conditions {
-		if c.Type == corev1.PodReady {
-			return c.Status == corev1.ConditionTrue
-		}
-	}
-	return false
 }
 
 // podsWithLabel lists pods in ns matching the label selector.

@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package e2emetrics
+package e2e
 
 import (
 	"bytes"
@@ -70,50 +70,9 @@ const (
 )
 
 var _ = Describe("Metrics pipeline", Ordered, func() {
-	var manifestsDir string
-
-	BeforeAll(func() {
-		manifestsDir = filepath.Join(projectDir, "test", "e2e_metrics", "manifests")
-
-		By("deploying grafana/otel-lgtm")
-		Expect(applyManifestFile(filepath.Join(manifestsDir, "otel-lgtm.yaml"))).To(Succeed())
-
-		By("ensuring the controller namespace exists")
-		// krusty does not reorder (ReorderOptionNone), so the rendered config/test
-		// lists the namespaced RBAC before the Namespace object. Pre-create the
-		// namespace so the subsequent apply never races resource ordering.
-		Expect(ensureNamespace(ctrlNamespace)).To(Succeed())
-
-		By("deploying the controller-manager (config/test overlay, rendered with the kustomize Go API)")
-		// config/test mounts a --config that enables the SDK languages (enabled_sdks).
-		// Without it EnabledSDKs is empty and the injector blanks every language
-		// agent path, so injected pods emit no telemetry.
-		Expect(applyKustomization(filepath.Join(projectDir, "config", "test"))).To(Succeed())
-
-		By("pointing the controller-manager at the locally-built image")
-		// config/manager ships a committed image ref; swap in the image we built
-		// and loaded into kind. This also triggers the rollout waited on below.
-		overrideManagerImage()
-
-		By("waiting for the controller-manager rollout to finish")
-		waitDeploymentReady(ctrlDeployment, ctrlNamespace, 3*time.Minute)
-
-		By("waiting for the webhook to be reachable (CA injected + endpoints ready)")
-		// Beyla's beyla-config ConfigMap is written into ctrlNamespace, where the
-		// controller's ConfigMap validating webhook runs failurePolicy=Fail. The
-		// webhook must be reachable before we apply beyla.yaml, or the apply fails
-		// with "connection refused".
-		waitWebhookReachable()
-
-		By("deploying the demo application")
-		Expect(applyManifestFile(filepath.Join(manifestsDir, "sample-app.yaml"))).To(Succeed())
-
-		By("deploying the real Beyla DaemonSet wired to the controller")
-		Expect(applyManifestFile(filepath.Join(manifestsDir, "beyla.yaml"))).To(Succeed())
-
-		By("deploying the load generator")
-		Expect(applyManifestFile(filepath.Join(manifestsDir, "load-generator.yaml"))).To(Succeed())
-	})
+	// otel-lgtm, the controller, the real Beyla DaemonSet and the demo app are all
+	// deployed once in BeforeSuite (see e2e_metrics_suite_test.go); these specs
+	// run against that shared deployment.
 
 	AfterEach(func() {
 		if !CurrentSpecReport().Failed() {
