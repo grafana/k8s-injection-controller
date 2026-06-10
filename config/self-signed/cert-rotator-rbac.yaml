@@ -1,0 +1,101 @@
+# RBAC for the in-process webhook cert rotator (self-signed strategy). The
+# rotator persists the serving cert into the webhook-server-cert Secret and
+# injects the caBundle into the webhook configurations.
+#
+# resourceNames below are the FINAL (namePrefix-applied) names. kustomize does
+# NOT rewrite resourceNames in RBAC rules, so they are spelled out explicitly —
+# keep them in sync with namePrefix (beyla-k8s-injector-). Subjects and roleRefs
+# use the un-prefixed base names; kustomize's reference transformer rewrites
+# those automatically (same as config/rbac/role_binding.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: k8s-injection-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: cert-rotator-role
+rules:
+# list/watch cannot be resourceNames-scoped.
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - mutatingwebhookconfigurations
+  - validatingwebhookconfigurations
+  verbs:
+  - get
+  - list
+  - watch
+# Mutating writes scoped to this deploy's two webhook configurations.
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - mutatingwebhookconfigurations
+  - validatingwebhookconfigurations
+  resourceNames:
+  - beyla-k8s-injector-mutating-webhook-configuration
+  - beyla-k8s-injector-validating-webhook-configuration
+  verbs:
+  - update
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/name: k8s-injection-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: cert-rotator-rolebinding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cert-rotator-role
+subjects:
+- kind: ServiceAccount
+  name: controller-manager
+  namespace: system
+---
+# Secret persistence is in the controller's own namespace. list/watch cannot be
+# resourceNames-scoped (the rotator's cache lists Secrets in the namespace);
+# get/update are scoped to the serving-cert Secret.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: k8s-injection-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: cert-rotator-role
+  namespace: system
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  resourceNames:
+  - beyla-k8s-injector-webhook-server-cert
+  verbs:
+  - get
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/name: k8s-injection-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: cert-rotator-rolebinding
+  namespace: system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: cert-rotator-role
+subjects:
+- kind: ServiceAccount
+  name: controller-manager
+  namespace: system

@@ -1,0 +1,20 @@
+# Turn on the in-process webhook cert rotator. The cert-dir volume mount,
+# --webhook-cert-path and the webhook server port all come from ../default's
+# manager_webhook_patch.yaml (they are cert-strategy-agnostic). This patch only
+# enables rotation and names the Secret to persist into + the webhook configs to
+# inject the caBundle into.
+#
+# The names are the FINAL namePrefix-applied names (kustomize does not rewrite
+# arg strings); keep them in sync with namePrefix (beyla-k8s-injector-).
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --enable-cert-rotation
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --webhook-cert-secret=beyla-k8s-injector-webhook-server-cert
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --mutating-webhook-name=beyla-k8s-injector-mutating-webhook-configuration
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --validating-webhook-name=beyla-k8s-injector-validating-webhook-configuration

@@ -9,7 +9,9 @@
 # rewrite it). The generated ConfigMap gets its namespace from the generator
 # below instead.
 resources:
-  - ../default
+  # Self-signed cert strategy (no cert-manager prerequisite); namespace +
+  # namePrefix come from here.
+  - ../self-signed
   # Grants the controller's ServiceAccount get/list/watch on ConfigMaps in the
   # watched namespace (monitoring), required because WATCH_NAMESPACE differs from
   # the controller's own namespace. See the file header for details.
@@ -29,3 +31,11 @@ patches:
     target:
       kind: Deployment
       name: controller-manager
+  # Scope the ConfigMap validating webhook to WATCH_NAMESPACE (monitoring), not
+  # the install namespace. config/webhook's default selector targets the install
+  # namespace, which is only correct when watch ns == install ns (config/test).
+  # See the patch header.
+  - path: validating_webhook_watchns_patch.yaml
+    target:
+      kind: ValidatingWebhookConfiguration
+      name: validating-webhook-configuration
