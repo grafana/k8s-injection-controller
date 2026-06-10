@@ -125,6 +125,15 @@ webhook:
     - gke-managed-volumepopulator
     # AKS-managed namespaces.
     - gatekeeper-system
+  # -- How the webhook serving certificate is provisioned:
+  #   auto         - use cert-manager if its API (cert-manager.io/v1) is present
+  #                  on the cluster, otherwise the controller self-signs and
+  #                  rotates its own cert (no cert-manager required).
+  #   cert-manager - always use cert-manager (renders Issuer/Certificate);
+  #                  fails to render if the cert-manager API is absent.
+  #   self-signed  - always self-sign in-controller, ignoring any cert-manager.
+  certManager:
+    mode: auto
 
 # -- Controller Prometheus metrics. Served over plain HTTP and advertised via
 # Pod annotations for annotation-based Prometheus service discovery

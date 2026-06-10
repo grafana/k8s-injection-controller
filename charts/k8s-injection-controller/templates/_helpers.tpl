@@ -94,3 +94,27 @@ Name of the cert-manager Certificate / serving cert Secret for the webhook.
 {{- define "k8s-injection-controller.servingCertName" -}}
 {{- printf "%s-serving-cert" (include "k8s-injection-controller.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
+
+{{/*
+Resolve the effective webhook cert mode to either "cert-manager" or
+"self-signed". `auto` (the default) picks cert-manager when the cluster
+exposes the cert-manager.io/v1 API, otherwise self-signed. An explicit
+`cert-manager` with the API absent is a hard error (fail fast on a missing
+prerequisite). Any other value is rejected.
+*/}}
+{{- define "k8s-injection-controller.certMode" -}}
+{{- $mode := .Values.webhook.certManager.mode | default "auto" -}}
+{{- $hasCM := .Capabilities.APIVersions.Has "cert-manager.io/v1" -}}
+{{- if eq $mode "auto" -}}
+{{- if $hasCM }}cert-manager{{ else }}self-signed{{ end -}}
+{{- else if eq $mode "cert-manager" -}}
+{{- if not $hasCM -}}
+{{- fail "webhook.certManager.mode=cert-manager but the cert-manager.io/v1 API is not present on the cluster. Install cert-manager, or use mode 'auto' / 'self-signed'." -}}
+{{- end -}}
+cert-manager
+{{- else if eq $mode "self-signed" -}}
+self-signed
+{{- else -}}
+{{- fail (printf "invalid webhook.certManager.mode %q: must be auto, cert-manager, or self-signed" $mode) -}}
+{{- end -}}
+{{- end -}}

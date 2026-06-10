@@ -1,3 +1,4 @@
+{{- if eq (include "k8s-injection-controller.certMode" .) "cert-manager" -}}
 {{- $namespace := include "k8s-injection-controller.namespace" . -}}
 {{- $fullName := include "k8s-injection-controller.fullname" . -}}
 {{- $webhookService := include "k8s-injection-controller.webhookServiceName" . -}}
@@ -29,3 +30,4 @@ spec:
     kind: Issuer
     name: {{ $fullName }}-selfsigned-issuer
   secretName: {{ include "k8s-injection-controller.servingCertName" . }}
+{{- end }}

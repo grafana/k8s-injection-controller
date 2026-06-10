@@ -10,8 +10,10 @@ metadata:
   name: {{ include "k8s-injection-controller.fullname" . }}-mutating-webhook
   labels:
     {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+  {{- if eq (include "k8s-injection-controller.certMode" .) "cert-manager" }}
   annotations:
     cert-manager.io/inject-ca-from: {{ $caInject }}
+  {{- end }}
 webhooks:
 - name: mpod-v1.beyla.grafana.com
   admissionReviewVersions:
@@ -48,8 +50,10 @@ metadata:
   name: {{ include "k8s-injection-controller.fullname" . }}-validating-webhook
   labels:
     {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+  {{- if eq (include "k8s-injection-controller.certMode" .) "cert-manager" }}
   annotations:
     cert-manager.io/inject-ca-from: {{ $caInject }}
+  {{- end }}
 webhooks:
 - name: vconfigmap-v1.beyla.grafana.com
   admissionReviewVersions:
