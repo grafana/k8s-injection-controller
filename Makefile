@@ -76,6 +76,19 @@ test: manifests generate vet setup-envtest ## Run tests.
 test-e2e: manifests generate fmt vet
 	go test -tags=e2e ./test/... -v -ginkgo.v -timeout 30m
 
+.PHONY: helm-template-check
+helm-template-check: ## Assert the chart renders correctly in cert-manager and self-signed modes.
+	@set -e; set +o pipefail; CHART=charts/k8s-injection-controller; \
+	echo "[auto, no cert-manager API] -> self-signed"; \
+	helm template t $$CHART | grep -q "enable-cert-rotation" || { echo "FAIL: expected self-signed rotation"; exit 1; }; \
+	helm template t $$CHART | grep -q "kind: Certificate" && { echo "FAIL: unexpected Certificate"; exit 1; } || true; \
+	echo "[auto, cert-manager API present] -> cert-manager"; \
+	helm template t $$CHART --api-versions cert-manager.io/v1 | grep -q "kind: Certificate" || { echo "FAIL: expected Certificate"; exit 1; }; \
+	helm template t $$CHART --api-versions cert-manager.io/v1 | grep -q "enable-cert-rotation" && { echo "FAIL: unexpected rotation flag"; exit 1; } || true; \
+	echo "[mode=cert-manager without API] -> fail fast"; \
+	helm template t $$CHART --set webhook.certManager.mode=cert-manager 2>&1 | grep -q "cert-manager.io/v1 API is not present" || { echo "FAIL: expected fail-fast"; exit 1; }; \
+	echo "helm-template-check OK"
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	"$(GOLANGCI_LINT)" run
@@ -92,11 +105,11 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build -o bin/manager cmd/main.go cmd/log_filter.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+	go run ./cmd/main.go cmd/log_filter.go
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
@@ -130,7 +143,7 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default > dist/install.yaml
+	"$(KUSTOMIZE)" build config/cert-manager > dist/install.yaml
 
 ##@ Deployment
 
@@ -151,7 +164,7 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" apply -f -
+	"$(KUSTOMIZE)" build config/cert-manager | "$(KUBECTL)" apply -f -
 
 .PHONY: yaml
 yaml: manifests kustomize ## Render the deployable controller manifest (with a default mounted SDK config) to yaml/controller.yaml.
@@ -162,7 +175,7 @@ yaml: manifests kustomize ## Render the deployable controller manifest (with a d
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
+	"$(KUSTOMIZE)" build config/cert-manager | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: demo-deploy
 demo-deploy: manifests kustomize ## Demo: deploy controller (via deploy-test) plus a Beyla DaemonSet wired to it and a sample workload.
