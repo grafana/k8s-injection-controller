@@ -1,0 +1,41 @@
+# Artifact overlay: same as config/deploy but using the cert-manager cert
+# strategy instead of the in-process self-signed rotator. Produces a publishable
+# manifest (a default mounted SDK config so the controller starts ready) that
+# requires cert-manager (CRDs + webhook) to be installed on the cluster.
+#
+# No top-level namespace transformer here: ../cert-manager already namespaces its
+# own resources to beyla-k8s-injector, and the cross-namespace RBAC in
+# monitoring-rbac.yaml must keep its "monitoring" namespace (a transformer would
+# rewrite it). The generated ConfigMap gets its namespace from the generator
+# below instead.
+resources:
+  # cert-manager cert strategy (Issuer/Certificate + CA injection); namespace +
+  # namePrefix come from here.
+  - ../cert-manager
+  # Grants the controller's ServiceAccount get/list/watch on ConfigMaps in the
+  # watched namespace (monitoring), required because WATCH_NAMESPACE differs from
+  # the controller's own namespace. See the file header for details.
+  - monitoring-rbac.yaml
+
+# The ConfigMap is regenerated on every build; the suffix hash changes whenever
+# sdk-inject.yaml does, which kustomize threads through into the volume
+# reference, triggering a rollout of the manager pod.
+configMapGenerator:
+  - name: beyla-sdk-config
+    namespace: beyla-k8s-injector
+    files:
+      - sdk-inject.yaml
+
+patches:
+  - path: manager_sdk_config_patch.yaml
+    target:
+      kind: Deployment
+      name: controller-manager
+  # Scope the ConfigMap validating webhook to WATCH_NAMESPACE (monitoring), not
+  # the install namespace. config/webhook's default selector targets the install
+  # namespace, which is only correct when watch ns == install ns (config/test).
+  # See the patch header.
+  - path: validating_webhook_watchns_patch.yaml
+    target:
+      kind: ValidatingWebhookConfiguration
+      name: validating-webhook-configuration

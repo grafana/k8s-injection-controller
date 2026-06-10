@@ -1,0 +1,39 @@
+# Default sample config.SDKInject shipped in the artifact built by `make yaml`.
+# It exists so the controller comes up with a valid, mounted config out of the
+# box. Edit these values (or replace the ConfigMap) to match your cluster.
+#
+# The OTLP endpoint / protocol no longer live here — they're per-ConfigMap,
+# under `otel_export:` inside each selector's instrumentation.yaml.
+
+debug: false
+
+# OCI image carrying the SDK auto-instrumentation payload.
+image_volume_root: ghcr.io/grafana/beyla/inject-sdk-image
+image_version: 0.0.13
+
+# How the SDK payload is delivered into instrumented pods:
+#   image          - mount the image directly via ImageVolumeSource (k8s 1.31+)
+#   init_container - provisions a 250Mi ephemeral volume and adds an init
+#                    container that copies the payload into it (k8s < 1.31)
+#   auto           - picks "image" on k8s 1.31+, "init_container" otherwise,
+#                    checked once against the cluster's server version at boot
+# Defaults to "auto" when unset.
+injection_mode: auto
+
+propagators:
+  - tracecontext
+  - baggage
+
+export:
+  traces: true
+  metrics: true
+  logs: false
+
+# Languages whose auto-instrumentation should run. Anything omitted gets the
+# corresponding *_AUTO_INSTRUMENTATION_AGENT_PATH env var blanked, which the
+# injector reads as "disabled".
+enabled_sdks:
+  - nodejs
+  - python
+  - java
+  - dotnet

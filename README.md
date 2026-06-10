@@ -77,13 +77,17 @@ into pods running in namespaces selected by annotated ConfigMaps. Built with
 - Go 1.26+
 - Docker (or any OCI builder) for image builds
 - `kubectl` configured against the target cluster
-- [cert-manager](https://cert-manager.io/) installed in the cluster — the
+- *Optional*: [cert-manager](https://cert-manager.io/) installed in the cluster — the
   generated kustomize wires it up to issue the webhook serving certificate
 
 To install a dev certificate manager:
 ```
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
 ```
+
+If you haven't installed `cert-manager`, the injection controller will use self-signed
+certificates, rotated on each start. For an example deployment in this mode, check out
+the `config/deploy` kustomize configuration.
 
 ## Build
 

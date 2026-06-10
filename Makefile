@@ -173,6 +173,13 @@ yaml: manifests kustomize ## Render the deployable controller manifest (with a d
 	"$(KUSTOMIZE)" build config/deploy > yaml/controller.yaml
 	@echo "The controller yaml has been written to yaml/controller.yaml"
 
+.PHONY: yaml-cert
+yaml-cert: manifests kustomize ## Render the deployable controller manifest (with a default mounted SDK config) to yaml/controller.yaml.
+	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
+	mkdir -p yaml
+	"$(KUSTOMIZE)" build config/deploy-manager > yaml/controller.yaml
+	@echo "The controller yaml with cert-manager has been written to yaml/controller.yaml"
+
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	"$(KUSTOMIZE)" build config/cert-manager | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
