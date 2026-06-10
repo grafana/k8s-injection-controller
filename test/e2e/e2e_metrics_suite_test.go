@@ -26,7 +26,7 @@ limitations under the License.
 // builds the manager image with the Docker Go SDK, drives Kubernetes through the
 // e2e-framework Go clients (kind + klient), and renders the controller overlay
 // with the kustomize Go API. No docker/kubectl/kustomize/make CLI is invoked.
-package e2emetrics
+package e2e
 
 import (
 	"context"
@@ -34,6 +34,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -43,11 +44,20 @@ import (
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/moby/go-archive"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/support/kind"
 
 	"github.com/grafana/beyla-k8s-injector/test/utils"
 )
+
+// allowedConfigMapWriter is the identity on the controller's
+// ALLOWED_CONFIGMAP_WRITERS list (Beyla's ServiceAccount, see
+// config/manager/manager.yaml). The injection-lifecycle specs impersonate it to
+// write injection ConfigMaps, exactly as Beyla does in production; the
+// kind-admin identity is intentionally rejected by the ConfigMap validating
+// webhook.
+const allowedConfigMapWriter = "system:serviceaccount:beyla-k8s-injector:beyla"
 
 var (
 	// managerImage is the manager image built and loaded into the Kind cluster.
@@ -55,7 +65,7 @@ var (
 
 	// clusterName is the Kind cluster this suite creates and destroys. It is
 	// distinct from the test/e2e cluster so both suites can run independently.
-	clusterName = "k8s-injection-controller-e2e-metrics"
+	clusterName = "k8s-injection-controller-e2e"
 
 	// projectDir is the module root, resolved once in BeforeSuite.
 	projectDir string
@@ -65,15 +75,19 @@ var (
 	// k8sClient is the typed client the specs use to drive Kubernetes.
 	k8sClient klient.Client
 	// clientset backs the subresource calls klient does not expose directly
-	// (pod log streaming for failure diagnostics).
+	// (ServiceAccount token requests and pod log streaming for diagnostics).
 	clientset *kubernetes.Clientset
+	// beylaClientset impersonates allowedConfigMapWriter so the injection-lifecycle
+	// specs can write the annotated injection ConfigMaps past the validating
+	// webhook, the way Beyla's ServiceAccount does in production.
+	beylaClientset *kubernetes.Clientset
 	// suiteCtx scopes the cluster/client operations to the suite run.
 	suiteCtx = context.Background()
 )
 
 // TestE2EMetrics runs the metrics e2e suite. The suite owns its Kind cluster: it
 // builds and loads the manager image, creates the cluster (with the Prometheus
-// NodePort mapping from test/e2e_metrics/kind-config.yaml), installs CertManager,
+// NodePort mapping from test/e2e/kind-config.yaml), installs CertManager,
 // and tears the cluster down afterwards. The controller is driven in
 // init_container injection mode, so no ImageVolume feature gate or specific node
 // version is required. A Docker daemon and the `kind` tooling the e2e-framework
@@ -91,7 +105,7 @@ var _ = BeforeSuite(func() {
 	var err error
 	projectDir, err = utils.GetProjectDir()
 	Expect(err).NotTo(HaveOccurred(), "Failed to resolve project directory")
-	kindConfig := filepath.Join(projectDir, "test", "e2e_metrics", "kind-config.yaml")
+	kindConfig := filepath.Join(projectDir, "test", "e2e", "kind-config.yaml")
 
 	By("building the manager image with the Docker Go SDK")
 	Expect(buildManagerImage(suiteCtx, projectDir, managerImage)).
@@ -113,9 +127,59 @@ var _ = BeforeSuite(func() {
 	clientset, err = kubernetes.NewForConfig(k8sClient.RESTConfig())
 	Expect(err).NotTo(HaveOccurred(), "Failed to build the client-go clientset")
 
+	beylaCfg := rest.CopyConfig(k8sClient.RESTConfig())
+	beylaCfg.Impersonate = rest.ImpersonationConfig{UserName: allowedConfigMapWriter}
+	beylaClientset, err = kubernetes.NewForConfig(beylaCfg)
+	Expect(err).NotTo(HaveOccurred(), "Failed to build the impersonating clientset")
+
 	By("installing CertManager")
 	Expect(utils.InstallCertManager(suiteCtx, k8sClient.Resources())).
 		To(Succeed(), "Failed to install CertManager")
+
+	// The controller, webhook, telemetry backend, real Beyla and demo app are all
+	// stood up here, once, so both the controller/webhook specs (Manager,
+	// Injection lifecycle) and the metrics-pipeline specs share a single Kind
+	// cluster instead of each suite creating its own.
+	manifestsDir := filepath.Join(projectDir, "test", "e2e", "manifests")
+
+	By("deploying grafana/otel-lgtm")
+	Expect(applyManifestFile(filepath.Join(manifestsDir, "otel-lgtm.yaml"))).To(Succeed())
+
+	By("ensuring the controller namespace exists")
+	// krusty does not reorder (ReorderOptionNone), so the rendered config/test
+	// lists the namespaced RBAC before the Namespace object. Pre-create the
+	// namespace so the subsequent apply never races resource ordering.
+	Expect(ensureNamespace(ctrlNamespace)).To(Succeed())
+
+	By("deploying the controller-manager (config/test overlay, rendered with the kustomize Go API)")
+	// config/test mounts a --config that enables the SDK languages (enabled_sdks).
+	// Without it EnabledSDKs is empty and the injector blanks every language
+	// agent path, so injected pods emit no telemetry.
+	Expect(applyKustomization(filepath.Join(projectDir, "config", "test"))).To(Succeed())
+
+	By("pointing the controller-manager at the locally-built image")
+	// config/manager ships a committed image ref; swap in the image we built
+	// and loaded into kind. This also triggers the rollout waited on below.
+	overrideManagerImage()
+
+	By("waiting for the controller-manager rollout to finish")
+	waitDeploymentReady(ctrlDeployment, ctrlNamespace, 3*time.Minute)
+
+	By("waiting for the webhook to be reachable (CA injected + endpoints ready)")
+	// Beyla's beyla-config ConfigMap is written into ctrlNamespace, where the
+	// controller's ConfigMap validating webhook runs failurePolicy=Fail. The
+	// webhook must be reachable before we apply beyla.yaml, or the apply fails
+	// with "connection refused".
+	waitWebhookReachable()
+
+	By("deploying the demo application")
+	Expect(applyManifestFile(filepath.Join(manifestsDir, "sample-app.yaml"))).To(Succeed())
+
+	By("deploying the real Beyla DaemonSet wired to the controller")
+	Expect(applyManifestFile(filepath.Join(manifestsDir, "beyla.yaml"))).To(Succeed())
+
+	By("deploying the load generator")
+	Expect(applyManifestFile(filepath.Join(manifestsDir, "load-generator.yaml"))).To(Succeed())
 })
 
 var _ = AfterSuite(func() {
@@ -123,7 +187,7 @@ var _ = AfterSuite(func() {
 		return
 	}
 	By("exporting kind cluster logs")
-	utils.ExportClusterLogs(context.Background(), testCluster, "e2e_metrics")
+	utils.ExportClusterLogs(context.Background(), testCluster, "e2e")
 	if os.Getenv("KIND_KEEP_CLUSTER") == "true" {
 		_, _ = fmt.Fprintf(GinkgoWriter, "Keeping Kind cluster (KIND_KEEP_CLUSTER=true)\n")
 		return

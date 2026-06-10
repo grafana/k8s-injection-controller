@@ -182,7 +182,7 @@ func ExportClusterLogs(ctx context.Context, cluster *kind.Cluster, suite string)
 // GetProjectDir returns the module root (the directory holding go.mod) by
 // walking up from the current working directory. Walking to go.mod keeps this
 // correct regardless of which test/<suite> directory the caller runs from
-// (e.g. test/e2e or test/e2e_metrics), which a fixed path-strip would not.
+// (e.g. test/e2e), which a fixed path-strip would not.
 func GetProjectDir() (string, error) {
 	wd, err := os.Getwd()
 	if err != nil {
