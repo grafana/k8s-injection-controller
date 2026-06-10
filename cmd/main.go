@@ -120,7 +120,7 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	ctrl.SetLogger(filterCertRotationConflicts(zap.New(zap.UseFlagOptions(&opts))))
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -374,6 +374,10 @@ func main() {
 				{Name: mutatingWebhookName, Type: rotator.Mutating},
 				{Name: validatingWebhookName, Type: rotator.Validating},
 			},
+			// Keep the webhook reconcile path from racing the startup cert
+			// refresh; it only needs to inject the CA after the Secret has been
+			// projected into this pod.
+			EnableReadinessCheck: true,
 			// Every replica must provision its own on-disk cert from the shared
 			// Secret, so the rotator must run on all replicas, not just the leader.
 			RequireLeaderElection: false,
