@@ -30,6 +30,29 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
+# -- cert-manager is a prerequisite (the chart renders Issuer/Certificate
+# resources). When `installHook.enabled` is true the chart runs a short-lived
+# `pre-install` hook Pod that executes hooks/install-cert-manager.sh: it checks
+# whether cert-manager is already present and, if not, installs it via Helm and
+# waits for its webhook to become Ready. The hook Pod uses a temporary
+# ServiceAccount + (Cluster)Role(Binding) that are deleted as soon as the hook
+# succeeds. Disable it if you manage cert-manager out of band.
+certManager:
+  installHook:
+    enabled: true
+    # Image carrying both `kubectl` and `helm` (used by the hook Pod).
+    image:
+      repository: dtzar/helm-kubectl
+      tag: "3.16"
+      pullPolicy: IfNotPresent
+    resources:
+      limits:
+        cpu: 500m
+        memory: 256Mi
+      requests:
+        cpu: 50m
+        memory: 64Mi
+
 serviceAccount:
   # Specifies whether a service account should be created.
   create: true
