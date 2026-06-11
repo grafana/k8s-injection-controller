@@ -20,6 +20,8 @@ spec:
             - --leader-elect
             - --health-probe-bind-address=:8081
             - --config=/etc/beyla-injector/sdk-inject.yaml
+            # Harden the (Ignore-shipped) ConfigMap validating webhook to Fail.
+            - --validating-webhook-name=beyla-k8s-injector-validating-webhook-configuration
           volumeMounts:
             - name: sdk-config
               mountPath: /etc/beyla-injector

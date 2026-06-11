@@ -6,6 +6,13 @@
   path: /spec/template/spec/containers/0/args/-
   value: --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
 
+# Cert-strategy-agnostic: the controller hardens the (Ignore-shipped) ConfigMap
+# validating webhook to Fail by patching this configuration once it is serving.
+# Final namePrefix-applied name (kustomize does not rewrite arg strings).
+- op: add
+  path: /spec/template/spec/containers/0/args/-
+  value: --validating-webhook-name=beyla-k8s-injector-validating-webhook-configuration
+
 # Add the volumeMount for the webhook certificates
 - op: add
   path: /spec/template/spec/containers/0/volumeMounts/-

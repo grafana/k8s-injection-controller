@@ -53,11 +53,13 @@ spec:
             - --leader-elect
             {{- end }}
             - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
+            # Both modes: the controller hardens the (Ignore-shipped) ConfigMap
+            # validating webhook to Fail by patching this configuration.
+            - --validating-webhook-name={{ include "k8s-injection-controller.fullname" . }}-validating-webhook
             {{- if eq (include "k8s-injection-controller.certMode" .) "self-signed" }}
             - --enable-cert-rotation
             - --webhook-cert-secret={{ include "k8s-injection-controller.servingCertName" . }}
             - --mutating-webhook-name={{ include "k8s-injection-controller.fullname" . }}-mutating-webhook
-            - --validating-webhook-name={{ include "k8s-injection-controller.fullname" . }}-validating-webhook
             {{- end }}
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}

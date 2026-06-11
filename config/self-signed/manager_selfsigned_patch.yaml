@@ -15,6 +15,3 @@
 - op: add
   path: /spec/template/spec/containers/0/args/-
   value: --mutating-webhook-name=beyla-k8s-injector-mutating-webhook-configuration
-- op: add
-  path: /spec/template/spec/containers/0/args/-
-  value: --validating-webhook-name=beyla-k8s-injector-validating-webhook-configuration

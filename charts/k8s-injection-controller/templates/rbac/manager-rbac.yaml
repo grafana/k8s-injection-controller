@@ -35,6 +35,19 @@ rules:
   - get
   - list
   - watch
+# Both cert modes: the controller hardens the ConfigMap validating webhook to
+# failurePolicy=Fail at runtime (it ships as Ignore to avoid a fresh-install
+# bootstrap deadlock — see templates/webhook/webhook-configuration.yaml), so it
+# needs get/patch on the configuration.
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - validatingwebhookconfigurations
+  resourceNames:
+  - {{ $fullName }}-validating-webhook
+  verbs:
+  - get
+  - patch
 {{- if eq (include "k8s-injection-controller.certMode" .) "self-signed" }}
 # Self-managed webhook cert: the in-process rotator watches the webhook
 # configurations and injects the caBundle. list/watch cannot be name-scoped;

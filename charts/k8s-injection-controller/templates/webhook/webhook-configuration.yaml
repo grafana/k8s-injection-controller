@@ -59,9 +59,15 @@ webhooks:
   admissionReviewVersions:
   - v1
   sideEffects: None
-  # Scoped to the single watched namespace, which is what makes failurePolicy
-  # Fail safe: a validator outage can only block ConfigMap writes there.
-  failurePolicy: Fail
+  # SHIPS as Ignore; the controller hardens it to Fail at runtime (see
+  # cmd/webhook_activation.go). Shipping Fail would deadlock a fresh install: the
+  # webhook is scoped to the watched namespace (usually the controller's own), so
+  # Fail would block the apiserver from publishing kube-root-ca.crt there while
+  # the backend (this pod) is still starting — but the pod can't start without
+  # that ConfigMap. Ignore fails open during bootstrap; once the controller is
+  # serving it patches this to Fail (the steady-state security policy). The blast
+  # radius stays bounded by the namespaceSelector below.
+  failurePolicy: Ignore
   clientConfig:
     service:
       name: {{ $webhookService }}
