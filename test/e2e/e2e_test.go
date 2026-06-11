@@ -54,400 +54,420 @@ const metricsReaderRoleName = "beyla-k8s-injector-metrics-reader"
 const webhookServiceName = "beyla-k8s-injector-webhook-service"
 const mutatingWebhookConfigName = "beyla-k8s-injector-mutating-webhook-configuration"
 
-var _ = Describe("Manager", Ordered, func() {
-	var controllerPodName string
+var _ = Describe("Manager", func() {
+	// Run the full Manager behavior suite once per cert strategy (cert-manager
+	// and self-signed), each in its own Kind cluster. Both run under
+	// `make test-e2e`.
+	for _, m := range certModes {
+		m := m
+		Context(fmt.Sprintf("with %s certificates", m.name), Ordered, func() {
+			var controllerPodName string
 
-	// Before running the tests, set up the environment by creating the namespace,
-	// enforce the restricted security policy to the namespace, installing CRDs,
-	// and deploying the controller.
-	BeforeAll(func() {
-		By("creating manager namespace with the restricted security policy enforced")
-		ns := &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:   namespace,
-				Labels: map[string]string{"pod-security.kubernetes.io/enforce": "restricted"},
-			},
-		}
-		Expect(k8sClient.Resources().Create(suiteCtx, ns)).To(Succeed(), "Failed to create namespace")
+			// Before running the tests: bring up this mode's cluster, create the
+			// namespace, install CRDs, and deploy the controller with this mode's
+			// cert strategy.
+			BeforeAll(func() {
+				startClusterForMode(m)
 
-		By("installing CRDs")
-		_, err := utils.Run(exec.Command("make", "install"))
-		Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
-
-		By("deploying the controller-manager")
-		_, err = utils.Run(exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage)))
-		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
-	})
-
-	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
-	// and deleting the namespace.
-	AfterAll(func() {
-		By("cleaning up the curl pod for metrics")
-		_ = k8sClient.Resources().Delete(suiteCtx,
-			&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "curl-metrics", Namespace: namespace}})
-
-		By("undeploying the controller-manager")
-		_, _ = utils.Run(exec.Command("make", "undeploy"))
-
-		By("uninstalling CRDs")
-		_, _ = utils.Run(exec.Command("make", "uninstall"))
-
-		By("removing manager namespace")
-		_ = k8sClient.Resources().Delete(suiteCtx,
-			&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})
-	})
-
-	// After each test, check for failures and collect logs, events,
-	// and pod descriptions for debugging.
-	AfterEach(func() {
-		specReport := CurrentSpecReport()
-		if specReport.Failed() {
-			if controllerPodName != "" {
-				By("Fetching controller manager pod logs")
-				if controllerLogs, err := podLogs(namespace, controllerPodName); err == nil {
-					_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
-				} else {
-					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
+				By("creating manager namespace with the restricted security policy enforced")
+				ns := &corev1.Namespace{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:   namespace,
+						Labels: map[string]string{"pod-security.kubernetes.io/enforce": "restricted"},
+					},
 				}
-			}
+				Expect(k8sClient.Resources().Create(suiteCtx, ns)).To(Succeed(), "Failed to create namespace")
 
-			By("Fetching Kubernetes events")
-			if eventsOutput, err := events(namespace); err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s", eventsOutput)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Kubernetes events: %s", err)
-			}
+				By("installing CRDs")
+				_, err := utils.Run(exec.Command("make", "install"))
+				Expect(err).NotTo(HaveOccurred(), "Failed to install CRDs")
 
-			By("Fetching curl-metrics logs")
-			if metricsOutput, err := podLogs(namespace, "curl-metrics"); err == nil {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Metrics logs:\n %s", metricsOutput)
-			} else {
-				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get curl-metrics logs: %s", err)
-			}
-
-			if controllerPodName != "" {
-				By("Fetching controller manager pod status")
-				var pod corev1.Pod
-				if err := k8sClient.Resources().Get(suiteCtx, controllerPodName, namespace, &pod); err == nil {
-					fmt.Printf("Pod status:\n phase=%s\n conditions=%+v\n containerStatuses=%+v\n",
-						pod.Status.Phase, pod.Status.Conditions, pod.Status.ContainerStatuses)
-				} else {
-					fmt.Println("Failed to fetch controller pod status")
-				}
-			}
-		}
-	})
-
-	SetDefaultEventuallyTimeout(2 * time.Minute)
-	SetDefaultEventuallyPollingInterval(time.Second)
-
-	Context("Manager", func() {
-		It("should run successfully", func() {
-			By("validating that the controller-manager pod is running as expected")
-			verifyControllerUp := func(g Gomega) {
-				By("getting the name of the controller-manager pod")
-				var pods corev1.PodList
-				g.Expect(k8sClient.Resources(namespace).List(suiteCtx, &pods,
-					resources.WithLabelSelector("control-plane=controller-manager"))).
-					To(Succeed(), "Failed to retrieve controller-manager pod information")
-
-				var names []string
-				for i := range pods.Items {
-					if pods.Items[i].DeletionTimestamp == nil {
-						names = append(names, pods.Items[i].Name)
-					}
-				}
-				g.Expect(names).To(HaveLen(1), "expected 1 controller pod running")
-				controllerPodName = names[0]
-				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
-
-				By("validating the pod's status")
-				var pod corev1.Pod
-				g.Expect(k8sClient.Resources().Get(suiteCtx, controllerPodName, namespace, &pod)).To(Succeed())
-				g.Expect(pod.Status.Phase).To(Equal(corev1.PodRunning), "Incorrect controller-manager pod status")
-			}
-			Eventually(verifyControllerUp).Should(Succeed())
-		})
-
-		It("should ensure the metrics endpoint is serving metrics", func() {
-			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
-			crb := &rbacv1.ClusterRoleBinding{
-				ObjectMeta: metav1.ObjectMeta{Name: metricsRoleBindingName},
-				RoleRef: rbacv1.RoleRef{
-					APIGroup: rbacv1.GroupName,
-					Kind:     "ClusterRole",
-					Name:     metricsReaderRoleName,
-				},
-				Subjects: []rbacv1.Subject{{
-					Kind:      "ServiceAccount",
-					Name:      serviceAccountName,
-					Namespace: namespace,
-				}},
-			}
-			Expect(k8sClient.Resources().Create(suiteCtx, crb)).To(Succeed(), "Failed to create ClusterRoleBinding")
-			DeferCleanup(func() {
-				_ = k8sClient.Resources().Delete(suiteCtx,
-					&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: metricsRoleBindingName}})
+				By("deploying the controller-manager (" + m.name + ")")
+				_, err = utils.Run(exec.Command("make", "deploy",
+					fmt.Sprintf("IMG=%s", managerImage), "DEPLOY_CONFIG="+m.deployConfig))
+				Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
 			})
 
-			By("validating that the metrics service is available")
-			var metricsSvc corev1.Service
-			Expect(k8sClient.Resources().Get(suiteCtx, metricsServiceName, namespace, &metricsSvc)).
-				To(Succeed(), "Metrics service should exist")
+			// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
+			// and deleting the namespace.
+			AfterAll(func() {
+				By("cleaning up the curl pod for metrics")
+				_ = k8sClient.Resources().Delete(suiteCtx,
+					&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "curl-metrics", Namespace: namespace}})
 
-			By("getting the service account token")
-			token, err := serviceAccountToken()
-			Expect(err).NotTo(HaveOccurred())
-			Expect(token).NotTo(BeEmpty())
+				By("undeploying the controller-manager")
+				_, _ = utils.Run(exec.Command("make", "undeploy", "DEPLOY_CONFIG="+m.deployConfig))
 
-			By("ensuring the controller pod is ready")
-			verifyControllerPodReady := func(g Gomega) {
-				var pod corev1.Pod
-				g.Expect(k8sClient.Resources().Get(suiteCtx, controllerPodName, namespace, &pod)).To(Succeed())
-				g.Expect(podReady(&pod)).To(BeTrue(), "Controller pod not ready")
-			}
-			Eventually(verifyControllerPodReady, 3*time.Minute, time.Second).Should(Succeed())
+				By("uninstalling CRDs")
+				_, _ = utils.Run(exec.Command("make", "uninstall"))
 
-			By("verifying that the controller manager is serving the metrics server")
-			verifyMetricsServerStarted := func(g Gomega) {
-				output, err := podLogs(namespace, controllerPodName)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("Serving metrics server"),
-					"Metrics server not yet started")
-			}
-			Eventually(verifyMetricsServerStarted, 3*time.Minute, time.Second).Should(Succeed())
+				By("removing manager namespace")
+				_ = k8sClient.Resources().Delete(suiteCtx,
+					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}})
 
-			By("waiting for the webhook service endpoints to be ready")
-			verifyWebhookEndpointsReady := func(g Gomega) {
-				var slices discoveryv1.EndpointSliceList
-				g.Expect(k8sClient.Resources(namespace).List(suiteCtx, &slices,
-					resources.WithLabelSelector("kubernetes.io/service-name="+webhookServiceName))).
-					To(Succeed(), "Webhook endpoints should exist")
-				var addresses []string
-				for _, slice := range slices.Items {
-					for _, ep := range slice.Endpoints {
-						addresses = append(addresses, ep.Addresses...)
+				By("destroying the " + m.name + " Kind cluster")
+				teardownCluster(m.name)
+			})
+
+			// After each test, check for failures and collect logs, events,
+			// and pod descriptions for debugging.
+			AfterEach(func() {
+				specReport := CurrentSpecReport()
+				if specReport.Failed() {
+					if controllerPodName != "" {
+						By("Fetching controller manager pod logs")
+						if controllerLogs, err := podLogs(namespace, controllerPodName); err == nil {
+							_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
+						} else {
+							_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
+						}
+					}
+
+					By("Fetching Kubernetes events")
+					if eventsOutput, err := events(namespace); err == nil {
+						_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s", eventsOutput)
+					} else {
+						_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Kubernetes events: %s", err)
+					}
+
+					By("Fetching curl-metrics logs")
+					if metricsOutput, err := podLogs(namespace, "curl-metrics"); err == nil {
+						_, _ = fmt.Fprintf(GinkgoWriter, "Metrics logs:\n %s", metricsOutput)
+					} else {
+						_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get curl-metrics logs: %s", err)
+					}
+
+					if controllerPodName != "" {
+						By("Fetching controller manager pod status")
+						var pod corev1.Pod
+						if err := k8sClient.Resources().Get(suiteCtx, controllerPodName, namespace, &pod); err == nil {
+							fmt.Printf("Pod status:\n phase=%s\n conditions=%+v\n containerStatuses=%+v\n",
+								pod.Status.Phase, pod.Status.Conditions, pod.Status.ContainerStatuses)
+						} else {
+							fmt.Println("Failed to fetch controller pod status")
+						}
 					}
 				}
-				g.Expect(addresses).ShouldNot(BeEmpty(), "Webhook endpoints not yet ready")
-			}
-			Eventually(verifyWebhookEndpointsReady, 3*time.Minute, time.Second).Should(Succeed())
+			})
 
-			By("verifying the mutating webhook server is ready")
-			verifyMutatingWebhookReady := func(g Gomega) {
-				caBundle, err := mutatingWebhookCABundle()
-				g.Expect(err).NotTo(HaveOccurred(), "MutatingWebhookConfiguration should exist")
-				g.Expect(caBundle).ShouldNot(BeEmpty(), "Mutating webhook CA bundle not yet injected")
-			}
-			Eventually(verifyMutatingWebhookReady, 3*time.Minute, time.Second).Should(Succeed())
+			SetDefaultEventuallyTimeout(2 * time.Minute)
+			SetDefaultEventuallyPollingInterval(time.Second)
 
-			By("waiting additional time for webhook server to stabilize")
-			time.Sleep(5 * time.Second)
+			Context("Manager", func() {
+				It("should run successfully", func() {
+					By("validating that the controller-manager pod is running as expected")
+					verifyControllerUp := func(g Gomega) {
+						By("getting the name of the controller-manager pod")
+						var pods corev1.PodList
+						g.Expect(k8sClient.Resources(namespace).List(suiteCtx, &pods,
+							resources.WithLabelSelector("control-plane=controller-manager"))).
+							To(Succeed(), "Failed to retrieve controller-manager pod information")
 
-			// +kubebuilder:scaffold:e2e-metrics-webhooks-readiness
+						var names []string
+						for i := range pods.Items {
+							if pods.Items[i].DeletionTimestamp == nil {
+								names = append(names, pods.Items[i].Name)
+							}
+						}
+						g.Expect(names).To(HaveLen(1), "expected 1 controller pod running")
+						controllerPodName = names[0]
+						g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
 
-			By("creating the curl-metrics pod to access the metrics endpoint")
-			// The assertions are spec-level; the pod retries the in-cluster HTTPS
-			// request a few times to ride out the metrics server warming up.
-			curlScript := fmt.Sprintf(
-				"for i in $(seq 1 30); do curl -v -k -H 'Authorization: Bearer %s' "+
-					"https://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1",
-				token, metricsServiceName, namespace)
-			curlPod := &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{Name: "curl-metrics", Namespace: namespace},
-				Spec: corev1.PodSpec{
-					RestartPolicy:      corev1.RestartPolicyNever,
-					ServiceAccountName: serviceAccountName,
-					Containers: []corev1.Container{{
-						Name:    "curl",
-						Image:   "curlimages/curl:latest",
-						Command: []string{"/bin/sh", "-c"},
-						Args:    []string{curlScript},
-						SecurityContext: &corev1.SecurityContext{
-							ReadOnlyRootFilesystem:   ptr.To(true),
-							AllowPrivilegeEscalation: ptr.To(false),
-							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
-							RunAsNonRoot:             ptr.To(true),
-							RunAsUser:                ptr.To(int64(1000)),
-							SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+						By("validating the pod's status")
+						var pod corev1.Pod
+						g.Expect(k8sClient.Resources().Get(suiteCtx, controllerPodName, namespace, &pod)).To(Succeed())
+						g.Expect(pod.Status.Phase).To(Equal(corev1.PodRunning), "Incorrect controller-manager pod status")
+					}
+					Eventually(verifyControllerUp).Should(Succeed())
+				})
+
+				It("should ensure the metrics endpoint is serving metrics", func() {
+					By("creating a ClusterRoleBinding for the service account to allow access to metrics")
+					crb := &rbacv1.ClusterRoleBinding{
+						ObjectMeta: metav1.ObjectMeta{Name: metricsRoleBindingName},
+						RoleRef: rbacv1.RoleRef{
+							APIGroup: rbacv1.GroupName,
+							Kind:     "ClusterRole",
+							Name:     metricsReaderRoleName,
 						},
-					}},
-				},
-			}
-			Expect(k8sClient.Resources().Create(suiteCtx, curlPod)).To(Succeed(), "Failed to create curl-metrics pod")
+						Subjects: []rbacv1.Subject{{
+							Kind:      "ServiceAccount",
+							Name:      serviceAccountName,
+							Namespace: namespace,
+						}},
+					}
+					Expect(k8sClient.Resources().Create(suiteCtx, crb)).To(Succeed(), "Failed to create ClusterRoleBinding")
+					DeferCleanup(func() {
+						_ = k8sClient.Resources().Delete(suiteCtx,
+							&rbacv1.ClusterRoleBinding{ObjectMeta: metav1.ObjectMeta{Name: metricsRoleBindingName}})
+					})
 
-			By("waiting for the curl-metrics pod to complete.")
-			verifyCurlUp := func(g Gomega) {
-				var pod corev1.Pod
-				g.Expect(k8sClient.Resources().Get(suiteCtx, "curl-metrics", namespace, &pod)).To(Succeed())
-				g.Expect(pod.Status.Phase).To(Equal(corev1.PodSucceeded), "curl pod in wrong status")
-			}
-			Eventually(verifyCurlUp, 5*time.Minute).Should(Succeed())
+					By("validating that the metrics service is available")
+					var metricsSvc corev1.Service
+					Expect(k8sClient.Resources().Get(suiteCtx, metricsServiceName, namespace, &metricsSvc)).
+						To(Succeed(), "Metrics service should exist")
 
-			By("getting the metrics by checking curl-metrics logs")
-			verifyMetricsAvailable := func(g Gomega) {
-				metricsOutput, err := getMetricsOutput()
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-				g.Expect(metricsOutput).NotTo(BeEmpty())
-				g.Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"))
-			}
-			Eventually(verifyMetricsAvailable, 2*time.Minute).Should(Succeed())
-		})
+					By("getting the service account token")
+					token, err := serviceAccountToken()
+					Expect(err).NotTo(HaveOccurred())
+					Expect(token).NotTo(BeEmpty())
 
-		It("should provisioned cert-manager", func() {
-			By("validating that cert-manager has the certificate Secret")
-			verifyCertManager := func(g Gomega) {
-				var secret corev1.Secret
-				g.Expect(k8sClient.Resources().Get(suiteCtx, "webhook-server-cert", namespace, &secret)).To(Succeed())
-			}
-			Eventually(verifyCertManager).Should(Succeed())
-		})
+					By("ensuring the controller pod is ready")
+					verifyControllerPodReady := func(g Gomega) {
+						var pod corev1.Pod
+						g.Expect(k8sClient.Resources().Get(suiteCtx, controllerPodName, namespace, &pod)).To(Succeed())
+						g.Expect(podReady(&pod)).To(BeTrue(), "Controller pod not ready")
+					}
+					Eventually(verifyControllerPodReady, 3*time.Minute, time.Second).Should(Succeed())
 
-		It("should have CA injection for mutating webhooks", func() {
-			By("checking CA injection for mutating webhooks")
-			verifyCAInjection := func(g Gomega) {
-				caBundle, err := mutatingWebhookCABundle()
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(len(caBundle)).To(BeNumerically(">", 10))
-			}
-			Eventually(verifyCAInjection).Should(Succeed())
-		})
+					By("verifying that the controller manager is serving the metrics server")
+					verifyMetricsServerStarted := func(g Gomega) {
+						output, err := podLogs(namespace, controllerPodName)
+						g.Expect(err).NotTo(HaveOccurred())
+						g.Expect(output).To(ContainSubstring("Serving metrics server"),
+							"Metrics server not yet started")
+					}
+					Eventually(verifyMetricsServerStarted, 3*time.Minute, time.Second).Should(Succeed())
 
-		// +kubebuilder:scaffold:e2e-webhooks-checks
+					By("waiting for the webhook service endpoints to be ready")
+					verifyWebhookEndpointsReady := func(g Gomega) {
+						var slices discoveryv1.EndpointSliceList
+						g.Expect(k8sClient.Resources(namespace).List(suiteCtx, &slices,
+							resources.WithLabelSelector("kubernetes.io/service-name="+webhookServiceName))).
+							To(Succeed(), "Webhook endpoints should exist")
+						var addresses []string
+						for _, slice := range slices.Items {
+							for _, ep := range slice.Endpoints {
+								addresses = append(addresses, ep.Addresses...)
+							}
+						}
+						g.Expect(addresses).ShouldNot(BeEmpty(), "Webhook endpoints not yet ready")
+					}
+					Eventually(verifyWebhookEndpointsReady, 3*time.Minute, time.Second).Should(Succeed())
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput, err := getMetricsOutput()
-		// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
-	})
+					By("verifying the mutating webhook server is ready")
+					verifyMutatingWebhookReady := func(g Gomega) {
+						caBundle, err := mutatingWebhookCABundle()
+						g.Expect(err).NotTo(HaveOccurred(), "MutatingWebhookConfiguration should exist")
+						g.Expect(caBundle).ShouldNot(BeEmpty(), "Mutating webhook CA bundle not yet injected")
+					}
+					Eventually(verifyMutatingWebhookReady, 3*time.Minute, time.Second).Should(Succeed())
 
-	// Exercises the full instrument → re-configure → uninstrument lifecycle
-	// against the deployed controller + webhook, the way Beyla drives it via the
-	// per-node ConfigMap. Runs after the readiness checks above so the webhook is
-	// known to be serving.
-	Context("Injection lifecycle", func() {
-		const (
-			workloadNS = "beyla-inject-e2e"
-			workload   = "sample-app"
-			cmName     = "beyla-node-state"
-			injectAnno = "beyla.grafana.com/inject"
-			// The SDK image root is no longer carried in the ConfigMap (it comes
-			// from the controller's own SDKInject config, defaulting to
-			// ghcr.io/grafana/beyla/inject-sdk-image). The ConfigMap only supplies
-			// the image version. These assertions are spec-level (the inject
-			// annotation), so the pod does not need to actually pull/run the image.
-			sdkImageVersion = "0.0.13"
-		)
+					By("waiting additional time for webhook server to stabilize")
+					time.Sleep(5 * time.Second)
 
-		It("instruments a matching workload and uninstruments it once the config excludes it", func() {
-			By("creating an isolated namespace for the sample workload")
-			Expect(k8sClient.Resources().Create(suiteCtx,
-				&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: workloadNS}})).
-				To(Succeed(), "Failed to create workload namespace")
-			DeferCleanup(func() {
-				_ = k8sClient.Resources().Delete(suiteCtx,
-					&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: workloadNS}})
+					// +kubebuilder:scaffold:e2e-metrics-webhooks-readiness
+
+					By("creating the curl-metrics pod to access the metrics endpoint")
+					// The assertions are spec-level; the pod retries the in-cluster HTTPS
+					// request a few times to ride out the metrics server warming up.
+					curlScript := fmt.Sprintf(
+						"for i in $(seq 1 30); do curl -v -k -H 'Authorization: Bearer %s' "+
+							"https://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1",
+						token, metricsServiceName, namespace)
+					curlPod := &corev1.Pod{
+						ObjectMeta: metav1.ObjectMeta{Name: "curl-metrics", Namespace: namespace},
+						Spec: corev1.PodSpec{
+							RestartPolicy:      corev1.RestartPolicyNever,
+							ServiceAccountName: serviceAccountName,
+							Containers: []corev1.Container{{
+								Name:    "curl",
+								Image:   "curlimages/curl:latest",
+								Command: []string{"/bin/sh", "-c"},
+								Args:    []string{curlScript},
+								SecurityContext: &corev1.SecurityContext{
+									ReadOnlyRootFilesystem:   ptr.To(true),
+									AllowPrivilegeEscalation: ptr.To(false),
+									Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+									RunAsNonRoot:             ptr.To(true),
+									RunAsUser:                ptr.To(int64(1000)),
+									SeccompProfile:           &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault},
+								},
+							}},
+						},
+					}
+					Expect(k8sClient.Resources().Create(suiteCtx, curlPod)).To(Succeed(), "Failed to create curl-metrics pod")
+
+					By("waiting for the curl-metrics pod to complete.")
+					verifyCurlUp := func(g Gomega) {
+						var pod corev1.Pod
+						g.Expect(k8sClient.Resources().Get(suiteCtx, "curl-metrics", namespace, &pod)).To(Succeed())
+						g.Expect(pod.Status.Phase).To(Equal(corev1.PodSucceeded), "curl pod in wrong status")
+					}
+					Eventually(verifyCurlUp, 5*time.Minute).Should(Succeed())
+
+					By("getting the metrics by checking curl-metrics logs")
+					verifyMetricsAvailable := func(g Gomega) {
+						metricsOutput, err := getMetricsOutput()
+						g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
+						g.Expect(metricsOutput).NotTo(BeEmpty())
+						g.Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"))
+					}
+					Eventually(verifyMetricsAvailable, 2*time.Minute).Should(Succeed())
+				})
+
+				It("provisions a populated webhook serving certificate", func() {
+					// Mode-agnostic: cert-manager issues the serving cert into its
+					// Secret, while the self-signed rotator generates one and writes it
+					// into the pre-created Secret. Either way the Secret must exist and
+					// carry a tls.crt. The Secret name differs per mode (see certMode).
+					By("validating the serving-cert Secret exists and carries a cert")
+					verifyServingCert := func(g Gomega) {
+						var secret corev1.Secret
+						g.Expect(k8sClient.Resources().Get(suiteCtx, m.servingCertSecret, namespace, &secret)).To(Succeed())
+						g.Expect(secret.Data).To(HaveKey("tls.crt"))
+						g.Expect(secret.Data["tls.crt"]).NotTo(BeEmpty())
+					}
+					Eventually(verifyServingCert).Should(Succeed())
+				})
+
+				It("should have CA injection for mutating webhooks", func() {
+					By("checking CA injection for mutating webhooks")
+					verifyCAInjection := func(g Gomega) {
+						caBundle, err := mutatingWebhookCABundle()
+						g.Expect(err).NotTo(HaveOccurred())
+						g.Expect(len(caBundle)).To(BeNumerically(">", 10))
+					}
+					Eventually(verifyCAInjection).Should(Succeed())
+				})
+
+				// +kubebuilder:scaffold:e2e-webhooks-checks
+
+				// TODO: Customize the e2e test suite with scenarios specific to your project.
+				// Consider applying sample/CR(s) and check their status and/or verifying
+				// the reconciliation by using the metrics, i.e.:
+				// metricsOutput, err := getMetricsOutput()
+				// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
+				// Expect(metricsOutput).To(ContainSubstring(
+				//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
+				//    strings.ToLower(<Kind>),
+				// ))
 			})
 
-			By("deploying the sample workload")
-			Expect(k8sClient.Resources().Create(suiteCtx, sampleDeployment(workloadNS, workload))).To(Succeed())
+			// Exercises the full instrument → re-configure → uninstrument lifecycle
+			// against the deployed controller + webhook, the way Beyla drives it via the
+			// per-node ConfigMap. Runs after the readiness checks above so the webhook is
+			// known to be serving.
+			Context("Injection lifecycle", func() {
+				const (
+					workloadNS = "beyla-inject-e2e"
+					workload   = "sample-app"
+					cmName     = "beyla-node-state"
+					injectAnno = "beyla.grafana.com/inject"
+					// The SDK image root is no longer carried in the ConfigMap (it comes
+					// from the controller's own SDKInject config, defaulting to
+					// ghcr.io/grafana/beyla/inject-sdk-image). The ConfigMap only supplies
+					// the image version. These assertions are spec-level (the inject
+					// annotation), so the pod does not need to actually pull/run the image.
+					sdkImageVersion = "0.0.13"
+				)
 
-			By("granting Beyla's ServiceAccount RBAC to write injection ConfigMaps")
-			Expect(k8sClient.Resources().Create(suiteCtx, beylaWriterRole(namespace))).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Resources().Delete(suiteCtx, beylaWriterRole(namespace)) })
-			Expect(k8sClient.Resources().Create(suiteCtx, beylaWriterRoleBinding(namespace, allowedConfigMapWriter))).
-				To(Succeed())
-			DeferCleanup(func() {
-				_ = k8sClient.Resources().Delete(suiteCtx, beylaWriterRoleBinding(namespace, allowedConfigMapWriter))
+				It("instruments a matching workload and uninstruments it once the config excludes it", func() {
+					By("creating an isolated namespace for the sample workload")
+					Expect(k8sClient.Resources().Create(suiteCtx,
+						&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: workloadNS}})).
+						To(Succeed(), "Failed to create workload namespace")
+					DeferCleanup(func() {
+						_ = k8sClient.Resources().Delete(suiteCtx,
+							&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: workloadNS}})
+					})
+
+					By("deploying the sample workload")
+					Expect(k8sClient.Resources().Create(suiteCtx, sampleDeployment(workloadNS, workload))).To(Succeed())
+
+					By("granting Beyla's ServiceAccount RBAC to write injection ConfigMaps")
+					Expect(k8sClient.Resources().Create(suiteCtx, beylaWriterRole(namespace))).To(Succeed())
+					DeferCleanup(func() { _ = k8sClient.Resources().Delete(suiteCtx, beylaWriterRole(namespace)) })
+					Expect(k8sClient.Resources().Create(suiteCtx, beylaWriterRoleBinding(namespace, allowedConfigMapWriter))).
+						To(Succeed())
+					DeferCleanup(func() {
+						_ = k8sClient.Resources().Delete(suiteCtx, beylaWriterRoleBinding(namespace, allowedConfigMapWriter))
+					})
+
+					// ---- Step 1: Beyla sends a ConfigMap that instruments the workload ----
+					By("asserting an unauthorized identity cannot write an injection ConfigMap")
+					// The kind-admin is neither on ALLOWED_CONFIGMAP_WRITERS nor in
+					// system:masters, so the validating webhook must reject it. This is
+					// the security control that stops an unprivileged principal from
+					// steering instrumentation by planting an annotated ConfigMap.
+					// Retry through the cert-manager CA-injection window: until the
+					// apiserver can reach the webhook (failurePolicy=Fail), the error is
+					// "webhook unreachable" rather than the actual "not authorized".
+					Eventually(func(g Gomega) {
+						err := k8sClient.Resources().Create(suiteCtx,
+							selectorConfigMap(cmName, namespace, workloadNS, workload, workloadNS, sdkImageVersion))
+						g.Expect(err).To(HaveOccurred(), "expected the validating webhook to deny the unauthorized write")
+						g.Expect(err.Error()).To(ContainSubstring("not authorized"))
+					}, time.Minute, 5*time.Second).Should(Succeed())
+
+					By("applying the Beyla ConfigMap whose criteria select the workload namespace")
+					// The ConfigMap lives in the controller's own namespace (the single
+					// watched namespace), mirroring how Beyla writes it into its own
+					// namespace; its criteria/eligible entries target workloadNS. The
+					// ConfigMap validating webhook runs failurePolicy=Fail in this
+					// namespace, so retry to wait out the brief cert-manager
+					// CA-injection window before the apiserver can reach the webhook.
+					// The suite's kind-admin identity passes the webhook via the
+					// system:masters break-glass path.
+					Eventually(func(g Gomega) {
+						g.Expect(applyConfigMap(
+							selectorConfigMap(cmName, namespace, workloadNS, workload, workloadNS, sdkImageVersion))).
+							To(Succeed())
+					}, time.Minute, 5*time.Second).Should(Succeed())
+
+					By("waiting until the workload pod is instrumented by the webhook")
+					// The controller loads the ConfigMap into its in-memory registry
+					// asynchronously, so a pod admitted before that comes up clean. Deleting
+					// such a pod lets the ReplicaSet recreate it; the loop converges once the
+					// registry is populated (or the controller's own rollout sweep fires).
+					Eventually(func(g Gomega) {
+						pods := podsWithLabel(g, workloadNS, "app="+workload)
+						g.Expect(pods).NotTo(BeEmpty(), "no workload pods yet")
+						p := pods[0]
+						if p.Annotations[injectAnno] == "" {
+							_ = k8sClient.Resources().Delete(suiteCtx, &p)
+						}
+						g.Expect(p.Annotations).To(HaveKey(injectAnno),
+							"workload pod was not instrumented")
+					}, 3*time.Minute, 5*time.Second).Should(Succeed())
+
+					// The controller may instrument pre-existing pods by rolling the
+					// Deployment, so capture the current rollout marker to tell that roll
+					// apart from the uninstrument roll triggered in step 3.
+					revBefore, _ := restartedAt(workloadNS, workload)
+
+					// ---- Step 2: Beyla updates the config to exclude the workload ----
+					By("updating the ConfigMap so the criteria no longer match the workload")
+					// The workload stays listed in eligible_for_restart so the controller
+					// re-evaluates it and notices it is instrumented-but-unmatched.
+					Eventually(func(g Gomega) {
+						g.Expect(applyConfigMap(
+							selectorConfigMap(cmName, namespace, workloadNS, workload, "somewhere-else", sdkImageVersion))).
+							To(Succeed())
+					}, time.Minute, 5*time.Second).Should(Succeed())
+
+					// ---- Step 3: the workload gets uninstrumented ----
+					By("asserting the controller rolls the now-unmatched Deployment")
+					Eventually(func(g Gomega) {
+						rev, err := restartedAt(workloadNS, workload)
+						g.Expect(err).NotTo(HaveOccurred())
+						g.Expect(rev).NotTo(BeEmpty(), "Deployment was not rolled for uninstrumentation")
+						g.Expect(rev).NotTo(Equal(revBefore), "expected a fresh rollout for uninstrumentation")
+					}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+					By("asserting the recreated pods come back without instrumentation")
+					Eventually(func(g Gomega) {
+						pods := podsWithLabel(g, workloadNS, "app="+workload)
+						g.Expect(pods).NotTo(BeEmpty())
+						for _, p := range pods {
+							g.Expect(p.Annotations).NotTo(HaveKey(injectAnno),
+								"pod %s is still instrumented after the config excluded it", p.Name)
+						}
+					}, 3*time.Minute, 5*time.Second).Should(Succeed())
+				})
 			})
-
-			// ---- Step 1: Beyla sends a ConfigMap that instruments the workload ----
-			By("asserting an unauthorized identity cannot write an injection ConfigMap")
-			// The kind-admin is neither on ALLOWED_CONFIGMAP_WRITERS nor in
-			// system:masters, so the validating webhook must reject it. This is
-			// the security control that stops an unprivileged principal from
-			// steering instrumentation by planting an annotated ConfigMap.
-			// Retry through the cert-manager CA-injection window: until the
-			// apiserver can reach the webhook (failurePolicy=Fail), the error is
-			// "webhook unreachable" rather than the actual "not authorized".
-			Eventually(func(g Gomega) {
-				err := k8sClient.Resources().Create(suiteCtx,
-					selectorConfigMap(cmName, namespace, workloadNS, workload, workloadNS, sdkImageVersion))
-				g.Expect(err).To(HaveOccurred(), "expected the validating webhook to deny the unauthorized write")
-				g.Expect(err.Error()).To(ContainSubstring("not authorized"))
-			}, time.Minute, 5*time.Second).Should(Succeed())
-
-			By("applying the Beyla ConfigMap whose criteria select the workload namespace")
-			// The ConfigMap lives in the controller's own namespace (the single
-			// watched namespace), mirroring how Beyla writes it into its own
-			// namespace; its criteria/eligible entries target workloadNS. The
-			// ConfigMap validating webhook runs failurePolicy=Fail in this
-			// namespace, so retry to wait out the brief cert-manager
-			// CA-injection window before the apiserver can reach the webhook.
-			// The suite's kind-admin identity passes the webhook via the
-			// system:masters break-glass path.
-			Eventually(func(g Gomega) {
-				g.Expect(applyConfigMap(
-					selectorConfigMap(cmName, namespace, workloadNS, workload, workloadNS, sdkImageVersion))).
-					To(Succeed())
-			}, time.Minute, 5*time.Second).Should(Succeed())
-
-			By("waiting until the workload pod is instrumented by the webhook")
-			// The controller loads the ConfigMap into its in-memory registry
-			// asynchronously, so a pod admitted before that comes up clean. Deleting
-			// such a pod lets the ReplicaSet recreate it; the loop converges once the
-			// registry is populated (or the controller's own rollout sweep fires).
-			Eventually(func(g Gomega) {
-				pods := podsWithLabel(g, workloadNS, "app="+workload)
-				g.Expect(pods).NotTo(BeEmpty(), "no workload pods yet")
-				p := pods[0]
-				if p.Annotations[injectAnno] == "" {
-					_ = k8sClient.Resources().Delete(suiteCtx, &p)
-				}
-				g.Expect(p.Annotations).To(HaveKey(injectAnno),
-					"workload pod was not instrumented")
-			}, 3*time.Minute, 5*time.Second).Should(Succeed())
-
-			// The controller may instrument pre-existing pods by rolling the
-			// Deployment, so capture the current rollout marker to tell that roll
-			// apart from the uninstrument roll triggered in step 3.
-			revBefore, _ := restartedAt(workloadNS, workload)
-
-			// ---- Step 2: Beyla updates the config to exclude the workload ----
-			By("updating the ConfigMap so the criteria no longer match the workload")
-			// The workload stays listed in eligible_for_restart so the controller
-			// re-evaluates it and notices it is instrumented-but-unmatched.
-			Eventually(func(g Gomega) {
-				g.Expect(applyConfigMap(
-					selectorConfigMap(cmName, namespace, workloadNS, workload, "somewhere-else", sdkImageVersion))).
-					To(Succeed())
-			}, time.Minute, 5*time.Second).Should(Succeed())
-
-			// ---- Step 3: the workload gets uninstrumented ----
-			By("asserting the controller rolls the now-unmatched Deployment")
-			Eventually(func(g Gomega) {
-				rev, err := restartedAt(workloadNS, workload)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(rev).NotTo(BeEmpty(), "Deployment was not rolled for uninstrumentation")
-				g.Expect(rev).NotTo(Equal(revBefore), "expected a fresh rollout for uninstrumentation")
-			}, 2*time.Minute, 5*time.Second).Should(Succeed())
-
-			By("asserting the recreated pods come back without instrumentation")
-			Eventually(func(g Gomega) {
-				pods := podsWithLabel(g, workloadNS, "app="+workload)
-				g.Expect(pods).NotTo(BeEmpty())
-				for _, p := range pods {
-					g.Expect(p.Annotations).NotTo(HaveKey(injectAnno),
-						"pod %s is still instrumented after the config excluded it", p.Name)
-				}
-			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 		})
-	})
+	}
 })
 
 // serviceAccountToken returns a token for the suite's service account using the

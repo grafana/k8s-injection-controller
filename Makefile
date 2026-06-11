@@ -161,10 +161,15 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 	@out="$$( "$(KUSTOMIZE)" build config/crd 2>/dev/null || true )"; \
 	if [ -n "$$out" ]; then echo "$$out" | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -; else echo "No CRDs to delete; skipping."; fi
 
+# Cert strategy used by `make deploy`/`make undeploy`. Override to deploy the
+# self-signed assembly, e.g. `make deploy DEPLOY_CONFIG=config/self-signed`
+# (the e2e suite does this to exercise both cert modes).
+DEPLOY_CONFIG ?= config/cert-manager
+
 .PHONY: deploy
-deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config. Override the cert strategy with DEPLOY_CONFIG=config/self-signed.
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/cert-manager | "$(KUBECTL)" apply -f -
+	"$(KUSTOMIZE)" build $(DEPLOY_CONFIG) | "$(KUBECTL)" apply -f -
 
 .PHONY: yaml
 yaml: manifests kustomize ## Render the deployable controller manifest (with a default mounted SDK config) to yaml/controller.yaml.
@@ -181,8 +186,8 @@ yaml-cert: manifests kustomize ## Render the deployable controller manifest (wit
 	@echo "The controller yaml with cert-manager has been written to yaml/controller.yaml"
 
 .PHONY: undeploy
-undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	"$(KUSTOMIZE)" build config/cert-manager | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
+undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion. Honors DEPLOY_CONFIG.
+	"$(KUSTOMIZE)" build $(DEPLOY_CONFIG) | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: demo-deploy
 demo-deploy: manifests kustomize ## Demo: deploy controller (via deploy-test) plus a Beyla DaemonSet wired to it and a sample workload.
