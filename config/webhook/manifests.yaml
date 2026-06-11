@@ -36,7 +36,7 @@ webhooks:
       name: webhook-service
       namespace: system
       path: /validate--v1-configmap
-  failurePolicy: Ignore
+  failurePolicy: Fail
   name: vconfigmap-v1.beyla.grafana.com
   rules:
   - apiGroups:

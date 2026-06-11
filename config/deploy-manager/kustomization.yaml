@@ -39,3 +39,10 @@ patches:
     target:
       kind: ValidatingWebhookConfiguration
       name: validating-webhook-configuration
+  # This overlay watches a separate namespace, so the kube-root-ca self-deadlock
+  # can't occur; drop the matchConditions exclusion that config/webhook adds for
+  # the co-located overlays so this manifest also applies on Kubernetes < 1.28.
+  - path: validating_webhook_no_matchconditions_patch.yaml
+    target:
+      kind: ValidatingWebhookConfiguration
+      name: validating-webhook-configuration

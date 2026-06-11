@@ -39,26 +39,21 @@ const breakGlassGroup = "system:masters"
 
 var cmlog = logf.Log.WithName("configmap-webhook")
 
-// The validator SHIPS with failurePolicy=ignore and is hardened to Fail at
-// runtime by the controller (see cmd/webhook_activation.go). Shipping Ignore
-// avoids a fresh-install bootstrap deadlock: this webhook is scoped (by
-// namespaceSelector) to the namespace the controller watches, which is usually
-// the controller's own namespace. If it shipped Fail, the apiserver would reject
-// the kube-controller-manager's attempt to publish kube-root-ca.crt into that
-// namespace while the webhook backend (this pod) is still starting — but the pod
-// cannot start without kube-root-ca.crt (its ServiceAccount-token volume needs
-// it). With Ignore the apiserver fails open during that window, the pod starts,
-// and the controller patches failurePolicy to Fail. Fail is the steady state (a
-// security control: an outage must not silently re-open the injection-steering
-// hole); the blast radius is bounded by the namespaceSelector (see
-// config/webhook/configmap_namespace_selector_patch.yaml).
+// failurePolicy=fail is deliberate: this is a security control, so an outage of
+// the validator must not silently re-open the injection-steering hole. The blast
+// radius is bounded by the ValidatingWebhookConfiguration's namespaceSelector
+// (see config/webhook/configmap_namespace_selector_patch.yaml), which scopes the
+// webhook to the single namespace the controller watches.
 //
-// +kubebuilder:webhook:path=/validate--v1-configmap,mutating=false,failurePolicy=ignore,sideEffects=None,groups="",resources=configmaps,verbs=create;update,versions=v1,name=vconfigmap-v1.beyla.grafana.com,admissionReviewVersions=v1
-
-// The controller hardens this webhook to failurePolicy=Fail at runtime by
-// patching it (see cmd/webhook_activation.go), so it needs get/patch on the
-// configuration.
-// +kubebuilder:rbac:groups=admissionregistration.k8s.io,resources=validatingwebhookconfigurations,verbs=get;patch
+// To avoid a fresh-install bootstrap deadlock when that namespace is the
+// controller's own (Fail would block the apiserver from publishing
+// kube-root-ca.crt there while this pod — the webhook backend — is still
+// starting), the webhook also carries a CEL matchConditions that excludes the
+// kube-root-ca.crt ConfigMap (added in config/webhook + the Helm chart;
+// requires k8s >= 1.28). On older clusters the Helm chart instead refuses to
+// install unless watchNamespace differs from the controller namespace.
+//
+// +kubebuilder:webhook:path=/validate--v1-configmap,mutating=false,failurePolicy=fail,sideEffects=None,groups="",resources=configmaps,verbs=create;update,versions=v1,name=vconfigmap-v1.beyla.grafana.com,admissionReviewVersions=v1
 
 // ConfigMapValidator rejects CREATE/UPDATE of ConfigMaps carrying the Beyla
 // selector annotation unless the requesting identity is authorized. Without it,

@@ -4,6 +4,18 @@
 {{- $caInject := printf "%s/%s" $namespace (include "k8s-injection-controller.servingCertName" .) -}}
 {{- /* Excluded namespaces = configured list plus the controller's own namespace (deadlock prevention), de-duplicated. */ -}}
 {{- $excluded := concat .Values.webhook.excludedNamespaces (list $namespace) | uniq -}}
+{{- /* Bootstrap-deadlock guard. On k8s < 1.28 the apiserver lacks admission
+       matchConditions, so the ConfigMap validating webhook (failurePolicy: Fail)
+       cannot carve out kube-root-ca.crt. If it is then scoped to the controller's
+       own namespace it would block the kube-controller-manager from publishing
+       kube-root-ca.crt there while this pod is still starting — a fresh-install
+       deadlock. Refuse to install unless watchNamespace is a different namespace.
+       (watchNamespace resolves to the controller namespace when empty.) */ -}}
+{{- if not (semverCompare ">=1.28-0" .Capabilities.KubeVersion.Version) }}
+{{- if eq $watchNamespace $namespace }}
+{{- fail (printf "Kubernetes %s is older than 1.28 and lacks admission matchConditions; with watchNamespace empty or equal to the controller namespace (%s), the ConfigMap validating webhook (failurePolicy: Fail) would deadlock a fresh install. Set watchNamespace to a namespace other than %q, or upgrade to Kubernetes >= 1.28." .Capabilities.KubeVersion.Version $namespace $namespace) }}
+{{- end }}
+{{- end }}
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
@@ -59,15 +71,9 @@ webhooks:
   admissionReviewVersions:
   - v1
   sideEffects: None
-  # SHIPS as Ignore; the controller hardens it to Fail at runtime (see
-  # cmd/webhook_activation.go). Shipping Fail would deadlock a fresh install: the
-  # webhook is scoped to the watched namespace (usually the controller's own), so
-  # Fail would block the apiserver from publishing kube-root-ca.crt there while
-  # the backend (this pod) is still starting — but the pod can't start without
-  # that ConfigMap. Ignore fails open during bootstrap; once the controller is
-  # serving it patches this to Fail (the steady-state security policy). The blast
-  # radius stays bounded by the namespaceSelector below.
-  failurePolicy: Ignore
+  # Scoped to the single watched namespace, which is what makes failurePolicy
+  # Fail safe: a validator outage can only block ConfigMap writes there.
+  failurePolicy: Fail
   clientConfig:
     service:
       name: {{ $webhookService }}
@@ -76,6 +82,11 @@ webhooks:
   namespaceSelector:
     matchLabels:
       kubernetes.io/metadata.name: {{ $watchNamespace }}
+  {{- if semverCompare ">=1.28-0" .Capabilities.KubeVersion.Version }}
+  matchConditions:
+  - name: exclude-kube-root-ca
+    expression: "object.metadata.name != 'kube-root-ca.crt'"
+  {{- end }}
   rules:
   - apiGroups:
     - ""
