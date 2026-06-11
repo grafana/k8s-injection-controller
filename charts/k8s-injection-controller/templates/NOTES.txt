@@ -11,9 +11,21 @@ Check the controller is running:
 
 This chart renders cert-manager Issuer/Certificate resources and relies on
 cert-manager to issue the webhook serving certificate and inject the CA into the
-webhook configurations. cert-manager is a PREREQUISITE — if the install above
-succeeded, its CRDs are present. Make sure its pods are Ready, otherwise the
-webhook Secret will never be created and the controller pod will stay un-ready:
+webhook configurations.
+{{- if .Values.certManager.installHook.enabled }}
+
+A pre-install hook ensured cert-manager is present (install it yourself and set
+certManager.installHook.enabled=false to skip it). The webhook Issuer/Certificate
+are then applied by a POST-INSTALL hook, so the controller pod stays in
+ContainerCreating for a few seconds until the serving-cert Secret is issued.
+NOTE: `--wait` / `--atomic` do not work on the first install in this mode (see
+the chart README). Confirm cert-manager is Ready:
+{{- else }}
+
+cert-manager is a PREREQUISITE and the install hook is disabled. Make sure
+cert-manager is installed and Ready, otherwise the webhook Secret is never
+created and the controller pod stays un-ready:
+{{- end }}
 
   kubectl -n cert-manager rollout status deployment/cert-manager-webhook
 
