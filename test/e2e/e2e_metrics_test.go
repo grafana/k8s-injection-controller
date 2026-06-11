@@ -16,7 +16,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package e2emetrics
+package e2e
 
 import (
 	"bytes"
@@ -67,53 +67,16 @@ const (
 	// while "localhost" may resolve to IPv6 ::1 (nothing listens there) and the
 	// query fails with "connection refused".
 	promBaseURL = "http://127.0.0.1:30090"
+
+	// LGTM's Tempo as seen from the host (kind extraPortMapping). Same 127.0.0.1
+	// rationale as promBaseURL. The suite hits Tempo's trace search API here.
+	tempoBaseURL = "http://127.0.0.1:30320"
 )
 
-var _ = Describe("Metrics pipeline", Ordered, func() {
-	var manifestsDir string
-
-	BeforeAll(func() {
-		manifestsDir = filepath.Join(projectDir, "test", "e2e_metrics", "manifests")
-
-		By("deploying grafana/otel-lgtm")
-		Expect(applyManifestFile(filepath.Join(manifestsDir, "otel-lgtm.yaml"))).To(Succeed())
-
-		By("ensuring the controller namespace exists")
-		// krusty does not reorder (ReorderOptionNone), so the rendered config/test
-		// lists the namespaced RBAC before the Namespace object. Pre-create the
-		// namespace so the subsequent apply never races resource ordering.
-		Expect(ensureNamespace(ctrlNamespace)).To(Succeed())
-
-		By("deploying the controller-manager (config/test overlay, rendered with the kustomize Go API)")
-		// config/test mounts a --config that enables the SDK languages (enabled_sdks).
-		// Without it EnabledSDKs is empty and the injector blanks every language
-		// agent path, so injected pods emit no telemetry.
-		Expect(applyKustomization(filepath.Join(projectDir, "config", "test"))).To(Succeed())
-
-		By("pointing the controller-manager at the locally-built image")
-		// config/manager ships a committed image ref; swap in the image we built
-		// and loaded into kind. This also triggers the rollout waited on below.
-		overrideManagerImage()
-
-		By("waiting for the controller-manager rollout to finish")
-		waitDeploymentReady(ctrlDeployment, ctrlNamespace, 3*time.Minute)
-
-		By("waiting for the webhook to be reachable (CA injected + endpoints ready)")
-		// Beyla's beyla-config ConfigMap is written into ctrlNamespace, where the
-		// controller's ConfigMap validating webhook runs failurePolicy=Fail. The
-		// webhook must be reachable before we apply beyla.yaml, or the apply fails
-		// with "connection refused".
-		waitWebhookReachable()
-
-		By("deploying the demo application")
-		Expect(applyManifestFile(filepath.Join(manifestsDir, "sample-app.yaml"))).To(Succeed())
-
-		By("deploying the real Beyla DaemonSet wired to the controller")
-		Expect(applyManifestFile(filepath.Join(manifestsDir, "beyla.yaml"))).To(Succeed())
-
-		By("deploying the load generator")
-		Expect(applyManifestFile(filepath.Join(manifestsDir, "load-generator.yaml"))).To(Succeed())
-	})
+var _ = Describe("Telemetry pipeline", Ordered, func() {
+	// otel-lgtm (Prometheus + Tempo), the controller, the real Beyla DaemonSet and
+	// the demo app are all deployed once in BeforeSuite (see
+	// e2e_metrics_suite_test.go); these specs run against that shared deployment.
 
 	AfterEach(func() {
 		if !CurrentSpecReport().Failed() {
@@ -127,6 +90,11 @@ var _ = Describe("Metrics pipeline", Ordered, func() {
 
 	SetDefaultEventuallyTimeout(2 * time.Minute)
 	SetDefaultEventuallyPollingInterval(2 * time.Second)
+
+	// ---- Stand up Beyla and instrument the demo app (shared prerequisites) ----
+	// These ordered specs bring the full pipeline up: backend ready, Beyla
+	// publishing its per-node ConfigMap, and the demo app actually instrumented.
+	// The per-signal assertions below (metrics, traces) all depend on this.
 
 	It("brings up otel-lgtm", func() {
 		By("waiting for the LGTM deployment to become ready")
@@ -164,24 +132,51 @@ var _ = Describe("Metrics pipeline", Ordered, func() {
 		waitInstrumentedReadyPod(demoNS, "app="+demoApp)
 	})
 
-	It("exports the demo app's HTTP metrics to LGTM (queryable via PromQL)", func() {
-		By("querying LGTM's Prometheus until the demo app's HTTP server metrics appear")
-		// The Node.js SDK (stable HTTP semconv, OTEL_SEMCONV_STABILITY_OPT_IN=http)
-		// emits http.server.request.duration, which otel-lgtm ingests as
-		// http_server_request_duration_seconds_*. Try a few candidate names so the
-		// assertion does not hinge on otel-lgtm's exact OTLP->Prometheus naming.
-		Eventually(func(g Gomega) {
-			matched, n, err := promHasSeries(promBaseURL,
-				`http_server_request_duration_seconds_count`,
-				`http_server_request_duration_seconds_bucket`,
-				`{__name__=~"http_server_request_duration.*"}`,
-				`{__name__=~"http_server_.*"}`,
-			)
-			g.Expect(err).NotTo(HaveOccurred(), "Prometheus query failed")
-			g.Expect(n).To(BeNumerically(">", 0),
-				"no HTTP server metrics in LGTM yet (last query tried: %s)", matched)
-			_, _ = fmt.Fprintf(GinkgoWriter, "matched %d series with query %q\n", n, matched)
-		}, 5*time.Minute, 10*time.Second).Should(Succeed())
+	// ---- The instrumented app's metrics reach Prometheus ----
+	Context("metrics", func() {
+		It("exports the demo app's HTTP metrics to LGTM (queryable via PromQL)", func() {
+			By("querying LGTM's Prometheus until the demo app's HTTP server metrics appear")
+			// The Node.js SDK (stable HTTP semconv, OTEL_SEMCONV_STABILITY_OPT_IN=http)
+			// emits http.server.request.duration, which otel-lgtm ingests as
+			// http_server_request_duration_seconds_*. Try a few candidate names so the
+			// assertion does not hinge on otel-lgtm's exact OTLP->Prometheus naming.
+			Eventually(func(g Gomega) {
+				matched, n, err := promHasSeries(promBaseURL,
+					`http_server_request_duration_seconds_count`,
+					`http_server_request_duration_seconds_bucket`,
+					`{__name__=~"http_server_request_duration.*"}`,
+					`{__name__=~"http_server_.*"}`,
+				)
+				g.Expect(err).NotTo(HaveOccurred(), "Prometheus query failed")
+				g.Expect(n).To(BeNumerically(">", 0),
+					"no HTTP server metrics in LGTM yet (last query tried: %s)", matched)
+				_, _ = fmt.Fprintf(GinkgoWriter, "matched %d series with query %q\n", n, matched)
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+		})
+	})
+
+	// ---- The instrumented app's traces reach Tempo ----
+	Context("traces", func() {
+		It("exports the demo app's HTTP traces to Tempo (queryable via TraceQL)", func() {
+			By("querying LGTM's Tempo until the demo app's HTTP server spans appear")
+			// The injected SDK exports spans over the same OTLP endpoint as metrics
+			// (see beyla-config: otel_traces_export), so otel-lgtm's Tempo ingests
+			// them. Try a few TraceQL queries so the assertion does not hinge on the
+			// exact resource.service.name the injector stamps: prefer the demo app's
+			// name, then fall back to any HTTP server span.
+			Eventually(func(g Gomega) {
+				matched, n, err := tempoHasTraces(tempoBaseURL,
+					`{ resource.service.name = "`+demoApp+`" }`,
+					`{ resource.service.name =~ "`+demoApp+`.*" }`,
+					`{ span.http.request.method != "" }`,
+					`{ name =~ "GET.*" }`,
+				)
+				g.Expect(err).NotTo(HaveOccurred(), "Tempo query failed")
+				g.Expect(n).To(BeNumerically(">", 0),
+					"no HTTP server traces in Tempo yet (last query tried: %s)", matched)
+				_, _ = fmt.Fprintf(GinkgoWriter, "matched %d traces with query %q\n", n, matched)
+			}, 5*time.Minute, 10*time.Second).Should(Succeed())
+		})
 	})
 })
 
@@ -410,6 +405,47 @@ func promHasSeries(baseURL string, queries ...string) (string, int, error) {
 		}
 		if len(pr.Data.Result) > 0 {
 			return q, len(pr.Data.Result), nil
+		}
+	}
+	return last, 0, nil
+}
+
+// tempoSearchResult is the slice of Tempo's /api/search response the suite
+// asserts on: just the list of matching traces.
+type tempoSearchResult struct {
+	Traces []struct {
+		TraceID string `json:"traceID"`
+	} `json:"traces"`
+}
+
+// tempoHasTraces runs each TraceQL query in order against Tempo's instant search
+// API and returns the first query that yields at least one trace, plus the
+// number of traces it returned. Trying several candidate queries keeps the
+// assertion resilient to the exact resource.service.name the injector stamps.
+func tempoHasTraces(baseURL string, queries ...string) (string, int, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	last := ""
+	for _, q := range queries {
+		last = q
+		u := baseURL + "/api/search?q=" + url.QueryEscape(q) + "&limit=20"
+		resp, err := client.Get(u) //nolint:gosec // test-only request to a local Tempo
+		if err != nil {
+			return q, 0, err
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			return q, 0, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			return q, 0, fmt.Errorf("tempo query %q returned HTTP %d: %s", q, resp.StatusCode, string(body))
+		}
+		var sr tempoSearchResult
+		if err := json.Unmarshal(body, &sr); err != nil {
+			return q, 0, fmt.Errorf("decoding tempo response for %q: %w", q, err)
+		}
+		if len(sr.Traces) > 0 {
+			return q, len(sr.Traces), nil
 		}
 	}
 	return last, 0, nil

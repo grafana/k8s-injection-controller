@@ -90,27 +90,32 @@ Do not move files around. The CLI expects files in specific locations.
 Always use `kubebuilder create api` and `kubebuilder create webhook` to scaffold. Do NOT create files manually.
 
 ### E2E Tests Require an Isolated Kind Cluster
-The e2e tests validate the solution in an isolated environment (similar to GitHub Actions CI). Each suite
-**creates and destroys its own dedicated [Kind](https://kind.sigs.k8s.io/) cluster** (via
+The e2e tests validate the solution in an isolated environment (similar to GitHub Actions CI). The suite
+**creates and destroys a single dedicated [Kind](https://kind.sigs.k8s.io/) cluster** (via
 `sigs.k8s.io/e2e-framework`), so never point them at your “real” dev/prod cluster.
 
-There are two suites under `test/` (both behind the `e2e` build tag):
-- `test/e2e` — exercises the controller + webhooks in isolation; it writes the per-node injection
-  ConfigMap directly (impersonating Beyla's ServiceAccount).
-- `test/e2e_metrics` — the full pipeline: it deploys `grafana/otel-lgtm`, the controller, a **real**
-  `grafana/beyla:main` DaemonSet and a demo app, then asserts the demo app's HTTP metrics reach LGTM
-  (queried with PromQL over a Kind NodePort).
+There is one suite, `test/e2e` (behind the `e2e` build tag), whose specs share that one cluster:
+- **Manager + injection lifecycle** (`e2e_injection_test.go`) — exercises the controller + webhooks in
+  isolation; it writes the per-node injection ConfigMap directly (impersonating Beyla's ServiceAccount).
+- **Telemetry pipeline** (`e2e_metrics_test.go`) — the full pipeline: it deploys `grafana/otel-lgtm`, the
+  controller, a **real** `grafana/beyla:main` DaemonSet and a demo app, then — once the app is instrumented
+  — asserts the demo app's HTTP telemetry reaches LGTM over Kind NodePorts: **metrics** in Prometheus
+  (PromQL, :30090) and **traces** in Tempo (TraceQL search API, :30320).
 
-Run them with `make test-e2e` (runs every suite under `./test/...`) or directly with
-`go test -tags=e2e ./test/...`. Set `KIND_KEEP_CLUSTER=true` to keep the cluster for debugging.
+All shared resources (the controller, webhooks, cert-manager, otel-lgtm, Beyla and the demo app) are
+stood up once in `BeforeSuite` and torn down with the cluster in `AfterSuite`, so the Kind cluster is
+created only once for the whole run.
 
-`test/e2e_metrics` is intentionally self-contained — **no `docker`/`kubectl`/`kustomize`/`make` CLI is
-invoked at runtime**: it builds the manager image with the Docker Go SDK, drives the cluster with the
-`klient` Go client, and renders `config/test` with the kustomize Go API. It only needs a reachable
-Docker daemon plus the `kind` tooling the e2e-framework drives. It runs the controller in
-**`init_container` injection mode** (the suite overrides the rendered SDK config), so it needs no
-`ImageVolume` feature gate and works on any Kind node version. The demo app must still use a **glibc**
-image (`node:20-slim`, not alpine) because injection is `LD_PRELOAD`-based.
+Run it with `make test-e2e` (runs `./test/e2e/...`) or directly with `go test -tags=e2e ./test/e2e/...`.
+Set `KIND_KEEP_CLUSTER=true` to keep the cluster for debugging.
+
+The suite is intentionally self-contained — **no `docker`/`kubectl`/`kustomize`/`make` CLI is invoked at
+runtime**: it builds the manager image with the Docker Go SDK, drives the cluster with the `klient` Go
+client, and renders `config/test` with the kustomize Go API. It only needs a reachable Docker daemon plus
+the `kind` tooling the e2e-framework drives. It runs the controller in **`init_container` injection mode**
+(the suite overrides the rendered SDK config), so it needs no `ImageVolume` feature gate and works on any
+Kind node version. The demo app must still use a **glibc** image (`node:20-slim`, not alpine) because
+injection is `LD_PRELOAD`-based.
 
 ## After Making Changes
 
