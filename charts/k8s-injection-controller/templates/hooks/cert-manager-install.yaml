@@ -1,4 +1,4 @@
-{{- if .Values.certManager.installHook.enabled }}
+{{- if eq (include "k8s-injection-controller.installCertManager" .) "true" }}
 {{- $name := printf "%s-cert-manager-install" (include "k8s-injection-controller.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- /*
   These resources are anchored to the Helm *release* namespace

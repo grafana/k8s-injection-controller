@@ -66,12 +66,17 @@ vet: ## Run go vet against code.
 test: manifests generate vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
-# Runs the e2e suite under test/e2e.
+# Runs the e2e suite under test/e2e once per webhook cert strategy: cert-manager
+# (a cluster with cert-manager) and self-signed (a cluster without it, using the
+# controller's in-process cert rotator). Each run creates and destroys its own
+# Kind cluster, so both the injection and metrics specs are exercised under both
+# strategies.
 # To keep the Kind cluster after the run (e.g. for debugging), set:
 # - KIND_KEEP_CLUSTER=true
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet
-	go test -tags=e2e ./test/e2e/... -v -ginkgo.v -timeout 30m
+	CERT_MODE=cert-manager go test -tags=e2e ./test/e2e/... -v -ginkgo.v -timeout 30m
+	CERT_MODE=self-signed go test -tags=e2e ./test/e2e/... -v -ginkgo.v -timeout 30m
 
 .PHONY: helm-template-check
 helm-template-check: ## Assert the chart renders correctly in cert-manager and self-signed modes.
@@ -82,8 +87,11 @@ helm-template-check: ## Assert the chart renders correctly in cert-manager and s
 	echo "[auto, cert-manager API present] -> cert-manager"; \
 	helm template t $$CHART --api-versions cert-manager.io/v1 | grep -q "kind: Certificate" || { echo "FAIL: expected Certificate"; exit 1; }; \
 	helm template t $$CHART --api-versions cert-manager.io/v1 | grep -q "enable-cert-rotation" && { echo "FAIL: unexpected rotation flag"; exit 1; } || true; \
-	echo "[mode=cert-manager without API] -> fail fast"; \
-	helm template t $$CHART --set webhook.certManager.mode=cert-manager 2>&1 | grep -q "cert-manager.io/v1 API is not present" || { echo "FAIL: expected fail-fast"; exit 1; }; \
+	echo "[mode=cert-manager without API] -> install cert-manager via pre-install hook"; \
+	helm template t $$CHART --set webhook.certManager.mode=cert-manager | grep -q "cert-manager-install" || { echo "FAIL: expected the cert-manager install hook"; exit 1; }; \
+	helm template t $$CHART --set webhook.certManager.mode=cert-manager | grep -q "kind: Certificate" || { echo "FAIL: expected Certificate (post-install hook)"; exit 1; }; \
+	echo "[mode=cert-manager with API] -> use existing cert-manager, no install hook"; \
+	helm template t $$CHART --set webhook.certManager.mode=cert-manager --api-versions cert-manager.io/v1 | grep -q "cert-manager-install" && { echo "FAIL: unexpected install hook when cert-manager present"; exit 1; } || true; \
 	echo "helm-template-check OK"
 
 .PHONY: lint

@@ -33,7 +33,7 @@ metadata:
   namespace: {{ $namespace }}
   labels:
     {{- include "k8s-injection-controller.labels" . | nindent 4 }}
-  {{- if .Values.certManager.installHook.enabled }}
+  {{- if eq (include "k8s-injection-controller.installCertManager" .) "true" }}
   annotations:
     helm.sh/hook: post-install
     helm.sh/hook-weight: "0"
@@ -49,7 +49,7 @@ metadata:
   namespace: {{ $namespace }}
   labels:
     {{- include "k8s-injection-controller.labels" . | nindent 4 }}
-  {{- if .Values.certManager.installHook.enabled }}
+  {{- if eq (include "k8s-injection-controller.installCertManager" .) "true" }}
   annotations:
     helm.sh/hook: post-install
     helm.sh/hook-weight: "5"

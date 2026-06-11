@@ -1,0 +1,32 @@
+# Self-signed counterpart of config/test: the self-signed cert assembly + the
+# same sample SDK config the metrics e2e relies on. Used by the e2e suite when
+# CERT_MODE=self-signed (see test/e2e/e2e_metrics_suite_test.go) so both the
+# injection and metrics specs run against the in-process cert rotator on a
+# cluster without cert-manager.
+#
+# Mirrors config/test exactly except the cert strategy base (../self-signed
+# instead of ../cert-manager) and the rotator flags in the manager args patch.
+
+resources:
+  # self-signed cert strategy (empty serving-cert Secret + rotator RBAC +
+  # rotator flags); namespace + namePrefix come from here.
+  - ../self-signed
+
+# The ConfigMap is regenerated on every build; the suffix hash changes whenever
+# sdk-inject.yaml does, which kustomize threads through into the volume
+# reference, triggering a rollout of the manager pod.
+configMapGenerator:
+  - name: beyla-sdk-config
+    # Namespace the generated ConfigMap explicitly (../self-signed's namespace
+    # transformer is one layer down and doesn't reach overlay-level generators).
+    # Co-namespacing it with the Deployment is also what lets kustomize rewrite
+    # the hashed name into the manager's volume reference.
+    namespace: beyla-k8s-injector
+    files:
+      - sdk-inject.yaml
+
+patches:
+  - path: manager_sdk_config_patch.yaml
+    target:
+      kind: Deployment
+      name: controller-manager
