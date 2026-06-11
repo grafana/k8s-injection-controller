@@ -66,3 +66,30 @@ helm uninstall kic
 
 cert-manager (a shared cluster prerequisite) is left untouched; remove it
 separately if nothing else uses it.
+
+## Local development mode deployment with kind
+
+1. Build the controller image as `beyla-k8s-injector:dev`
+```sh
+IMG=beyla-k8s-injector:dev make docker-build
+```
+2. Create your cluster (if you don't have one with)
+```sh
+kind create cluster
+```
+3. Load the local image into kind
+```sh
+kind load docker-image beyla-k8s-injector:dev
+```
+4. Install the controller through helm
+```sh
+helm install kic ./charts/k8s-injection-controller \
+--set image.repository=beyla-k8s-injector \
+--set image.tag=dev \
+--set image.pullPolicy=IfNotPresent
+```
+
+The command above will auto-detect if you have `cert-manager` running and
+if not it will use self-signed certificate. If you want to test the helm
+install process with `cert-manager` install cert manager before step 4, 
+and wait until it's up and running.
