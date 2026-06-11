@@ -2,11 +2,16 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
-    # Maps otel-lgtm's Prometheus NodePort (30090) to the host so the suite can
-    # query http://127.0.0.1:30090/api/v1/query directly, without a long-lived
-    # `kubectl port-forward`. Keep the nodePort in test/e2e/manifests/
-    # otel-lgtm.yaml and lgtmPromNodePort in the suite in sync with this mapping.
+    # Maps otel-lgtm's NodePorts to the host so the suite can query the backends
+    # directly, without a long-lived `kubectl port-forward`:
+    #   - 30090 -> Prometheus (PromQL: http://127.0.0.1:30090/api/v1/query)
+    #   - 30320 -> Tempo      (search: http://127.0.0.1:30320/api/search)
+    # Keep these nodePorts in sync with test/e2e/manifests/otel-lgtm.yaml and the
+    # promBaseURL/tempoBaseURL constants in the suite.
     extraPortMappings:
       - containerPort: 30090
         hostPort: 30090
+        protocol: TCP
+      - containerPort: 30320
+        hostPort: 30320
         protocol: TCP

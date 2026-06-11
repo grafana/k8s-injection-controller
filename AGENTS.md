@@ -97,9 +97,10 @@ The e2e tests validate the solution in an isolated environment (similar to GitHu
 There is one suite, `test/e2e` (behind the `e2e` build tag), whose specs share that one cluster:
 - **Manager + injection lifecycle** (`e2e_injection_test.go`) — exercises the controller + webhooks in
   isolation; it writes the per-node injection ConfigMap directly (impersonating Beyla's ServiceAccount).
-- **Metrics pipeline** (`e2e_metrics_test.go`) — the full pipeline: it deploys `grafana/otel-lgtm`, the
-  controller, a **real** `grafana/beyla:main` DaemonSet and a demo app, then asserts the demo app's HTTP
-  metrics reach LGTM (queried with PromQL over a Kind NodePort).
+- **Telemetry pipeline** (`e2e_metrics_test.go`) — the full pipeline: it deploys `grafana/otel-lgtm`, the
+  controller, a **real** `grafana/beyla:main` DaemonSet and a demo app, then — once the app is instrumented
+  — asserts the demo app's HTTP telemetry reaches LGTM over Kind NodePorts: **metrics** in Prometheus
+  (PromQL, :30090) and **traces** in Tempo (TraceQL search API, :30320).
 
 All shared resources (the controller, webhooks, cert-manager, otel-lgtm, Beyla and the demo app) are
 stood up once in `BeforeSuite` and torn down with the cluster in `AfterSuite`, so the Kind cluster is
