@@ -291,12 +291,27 @@ func main() {
 	// cluster-wide injection state (beyla_injection_pods).
 	ctrlmetrics.Registry.MustRegister(metrics.NewPodStateCollector(mgr.GetClient(), reg, sdkConfig))
 
+	// When ENABLE_WEBHOOKS=false we never register the webhook handlers, so the
+	// webhook server is never added to the manager and its listener never starts
+	// — webhookServer.StartedChecker() would then never go green. Every gate that
+	// waits on it must be bypassed in that case, or it blocks forever: the
+	// eviction sweep's WebhookReady gate and Service dial below would requeue
+	// indefinitely, and the "webhook" readyz check further down would keep the
+	// pod permanently NotReady.
+	webhooksEnabled := os.Getenv("ENABLE_WEBHOOKS") != "false" // nolint:goconst
+	var webhookReady healthz.Checker
+	var webhookServiceAddr string
+	if webhooksEnabled {
+		webhookReady = webhookServer.StartedChecker()
+		webhookServiceAddr = os.Getenv("WEBHOOK_SERVICE_ADDR")
+	}
+
 	if err := (&controller.ConfigMapReconciler{
 		Client:             mgr.GetClient(),
 		Clientset:          clientset,
 		Registry:           reg,
-		WebhookReady:       webhookServer.StartedChecker(),
-		WebhookServiceAddr: os.Getenv("WEBHOOK_SERVICE_ADDR"),
+		WebhookReady:       webhookReady,
+		WebhookServiceAddr: webhookServiceAddr,
 		DefaultSDKConfig:   sdkConfig,
 		Metrics:            injMetrics,
 	}).SetupWithManager(mgr); err != nil {
@@ -316,9 +331,6 @@ func main() {
 	// v0.24 supports adding runnables after Start — it starts the runnable
 	// immediately rather than rejecting it — so this late registration is safe.
 	setupWebhooks := func() error {
-		if os.Getenv("ENABLE_WEBHOOKS") == "false" { // nolint:goconst
-			return nil
-		}
 		if err := webhookv1.SetupPodWebhookWithManager(mgr, reg, mgr.GetAPIReader(), podMutator, injMetrics); err != nil {
 			return fmt.Errorf("setting up Pod webhook: %w", err)
 		}
@@ -347,7 +359,12 @@ func main() {
 	// process — it panics on a second call — so it is established here.
 	signalCtx := ctrl.SetupSignalHandler()
 
-	if enableCertRotation {
+	if !webhooksEnabled {
+		// Webhooks disabled: skip registration and cert rotation entirely. The
+		// webhook server is never started, which is why the readiness gates above
+		// and the "webhook" readyz check below are also skipped for this mode.
+		setupLog.Info("ENABLE_WEBHOOKS=false: skipping webhook registration, cert rotation and webhook readiness gate")
+	} else if enableCertRotation {
 		// Self-managed cert path (no cert-manager). The rotator generates a
 		// self-signed CA + serving cert, persists it to the pre-created Secret,
 		// writes it to the webhook cert dir, and injects the caBundle into the
@@ -428,10 +445,14 @@ func main() {
 	}
 	// Block readiness until the webhook listener is up. kube-proxy keeps the
 	// pod out of the Service endpoints until /readyz returns 200, so the
-	// apiserver won't get "connection refused" admissions during boot.
-	if err := mgr.AddReadyzCheck("webhook", webhookServer.StartedChecker()); err != nil {
-		setupLog.Error(err, "Failed to set up webhook ready check")
-		os.Exit(1)
+	// apiserver won't get "connection refused" admissions during boot. Skipped
+	// when webhooks are disabled: the server never starts, so this check would
+	// never pass and the pod would never become Ready.
+	if webhooksEnabled {
+		if err := mgr.AddReadyzCheck("webhook", webhookServer.StartedChecker()); err != nil {
+			setupLog.Error(err, "Failed to set up webhook ready check")
+			os.Exit(1)
+		}
 	}
 
 	setupLog.Info("Starting manager")
