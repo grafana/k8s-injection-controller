@@ -1,8 +1,10 @@
 # The injected SDK in the demo app exports OTLP to this instance's collector
-# (ports 4317/4318); the suite then queries the bundled Prometheus (9090) with
-# PromQL to assert the demo app's HTTP metrics arrived. The Service is NodePort
-# so the test process on the host can reach Prometheus via the kind
-# extraPortMapping (30090). No persistent storage — the instance is disposable.
+# (ports 4317/4318); the suite then asserts the demo app's telemetry arrived by
+# querying the bundled backends: Prometheus (9090) with PromQL for metrics, and
+# Tempo (3200) with the search API for traces. The Service is NodePort so the
+# test process on the host can reach both backends via the kind extraPortMappings
+# (30090 -> Prometheus, 30320 -> Tempo). No persistent storage — the instance is
+# disposable.
 ---
 apiVersion: v1
 kind: Namespace
@@ -33,6 +35,7 @@ spec:
             - containerPort: 4317  # OTLP gRPC
             - containerPort: 4318  # OTLP HTTP
             - containerPort: 9090  # Prometheus / Mimir (PromQL queries)
+            - containerPort: 3200  # Tempo (trace search API)
           readinessProbe:
             httpGet:
               path: /-/ready
@@ -61,5 +64,11 @@ spec:
       port: 9090
       targetPort: 9090
       # Must match the extraPortMapping in test/e2e/kind-config.yaml and
-      # lgtmPromNodePort in the suite so the host can query PromQL directly.
+      # promBaseURL in the suite so the host can query PromQL directly.
       nodePort: 30090
+    - name: tempo
+      port: 3200
+      targetPort: 3200
+      # Must match the extraPortMapping in test/e2e/kind-config.yaml and
+      # tempoBaseURL in the suite so the host can query the Tempo search API.
+      nodePort: 30320
