@@ -352,8 +352,8 @@ func main() {
 		// self-signed CA + serving cert, persists it to the pre-created Secret,
 		// writes it to the webhook cert dir, and injects the caBundle into the
 		// webhook configurations. Defer webhook registration until it is ready.
-		if webhookCertSecret == "" || mutatingWebhookName == "" || validatingWebhookName == "" {
-			setupLog.Error(nil, "--enable-cert-rotation requires --webhook-cert-secret, "+
+		if webhookCertSecret == "" || webhookCertPath == "" || mutatingWebhookName == "" || validatingWebhookName == "" {
+			setupLog.Error(nil, "--enable-cert-rotation requires --webhook-cert-secret, --webhook-cert-path, "+
 				"--mutating-webhook-name and --validating-webhook-name")
 			os.Exit(1)
 		}
