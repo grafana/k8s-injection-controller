@@ -1,4 +1,4 @@
-# Default sample config.SDKInject shipped in the artifact built by `make yaml`.
+# Default sample config.SDKInject shipped in the artifact built by `make yaml-cert`.
 # It exists so the controller comes up with a valid, mounted config out of the
 # box. Edit these values (or replace the ConfigMap) to match your cluster.
 #

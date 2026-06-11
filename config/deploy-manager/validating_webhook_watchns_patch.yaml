@@ -10,7 +10,7 @@
 # mounted SDK ConfigMap in "beyla-k8s-injector", deadlocking (re)apply when the
 # webhook backend isn't yet reachable.
 #
-# Applied after ../self-signed (which pulls in config/webhook's patch), so it
+# Applied after ../cert-manager (which pulls in config/webhook's patch), so it
 # overrides the matchLabels value. Keep this in sync with WATCH_NAMESPACE.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration

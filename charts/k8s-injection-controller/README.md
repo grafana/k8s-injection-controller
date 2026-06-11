@@ -15,12 +15,12 @@ or any demo application.
 - Kubernetes **1.31+** (required for `image` injection mode via
   `ImageVolumeSource`; older clusters work with `sdkConfig.injectionMode:
   init_container`).
-- *Optional*: [cert-manager](https://cert-manager.io/) can be and
+- *Optional*: [cert-manager](https://cert-manager.io/) can be optionally
   deployed. The chart creates `Issuer`/`Certificate` resources, so cert-manager's
   CRDs and validating webhook must exist *before* you install this chart.
   cert-manager is intentionally **not** bundled as a subchart: its CRDs and
   webhook cannot be created and consumed within a single `helm install`.
-  If `cert-manager` is not present, self-signed certificate will be used
+  If `cert-manager` is not present, self-signed certificates will be used
   for the webhook, which is automatically created and rotated on every start
   of the controller.
 

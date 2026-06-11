@@ -85,9 +85,11 @@ To install a dev certificate manager:
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
 ```
 
-If you haven't installed `cert-manager`, the injection controller will use self-signed
+If you haven't installed `cert-manager`, the injection controller can use self-signed
 certificates, rotated on each start. For an example deployment in this mode, check out
-the `config/deploy` kustomize configuration.
+the `config/deploy` kustomize configuration. The Helm chart has a feature that auto detects
+an installed `cert-manager`, and automatically chooses to use the `cert-manager` if it's there
+or setup the self-signed certificates.
 
 ## Build
 
