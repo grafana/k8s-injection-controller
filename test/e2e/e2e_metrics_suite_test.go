@@ -199,13 +199,11 @@ var _ = BeforeSuite(func() {
 	By(fmt.Sprintf("deploying the controller-manager (config/%s overlay, rendered with the kustomize Go API)", overlay))
 	// config/test[-selfsigned] mounts a --config that enables the SDK languages
 	// (enabled_sdks). Without it EnabledSDKs is empty and the injector blanks
-	// every language agent path, so injected pods emit no telemetry.
+	// every language agent path, so injected pods emit no telemetry. The manager
+	// container image is rewritten to the locally-built+loaded image during the
+	// render (see forceManagerImage), so the Deployment starts with the right
+	// image — no post-apply override / ErrImagePull window.
 	Expect(applyKustomization(filepath.Join(projectDir, "config", overlay))).To(Succeed())
-
-	By("pointing the controller-manager at the locally-built image")
-	// config/manager ships a committed image ref; swap in the image we built
-	// and loaded into kind. This also triggers the rollout waited on below.
-	overrideManagerImage()
 
 	By("waiting for the controller-manager rollout to finish")
 	waitDeploymentReady(ctrlDeployment, ctrlNamespace, 3*time.Minute)
