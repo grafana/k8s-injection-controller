@@ -73,10 +73,20 @@ test: manifests generate vet setup-envtest ## Run tests.
 # strategies.
 # To keep the Kind cluster after the run (e.g. for debugging), set:
 # - KIND_KEEP_CLUSTER=true
+#
+# The suite runs twice:
+#   1. CERT_MODE=cert-manager — full suite (all 4 test files)
+#   2. CERT_MODE=self-signed  — injection test only (e2e_injection_test.go)
+#
+# Only e2e_injection_test.go is cert-mode-sensitive (it directly asserts on
+# cert-manager provisioning and CA bundle injection). The other three suites
+# test application-level behaviour that is independent of how the webhook's
+# TLS certificate is provisioned, so running them twice would double runtime
+# for no additional coverage.
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet
 	CERT_MODE=cert-manager go test -tags=e2e ./test/e2e/... -v -ginkgo.v -timeout 30m
-	CERT_MODE=self-signed go test -tags=e2e ./test/e2e/... -v -ginkgo.v -timeout 30m
+	CERT_MODE=self-signed go test -tags=e2e ./test/e2e/... -v -ginkgo.v -ginkgo.focus-file="e2e_injection_test.go" -timeout 15m
 
 .PHONY: helm-template-check
 helm-template-check: ## Assert the chart renders correctly in cert-manager and self-signed modes.

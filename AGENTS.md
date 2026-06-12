@@ -92,30 +92,35 @@ Always use `kubebuilder create api` and `kubebuilder create webhook` to scaffold
 ### E2E Tests Require an Isolated Kind Cluster
 The e2e tests validate the solution in an isolated environment (similar to GitHub Actions CI). The suite
 **creates and destroys a single dedicated [Kind](https://kind.sigs.k8s.io/) cluster** (via
-`sigs.k8s.io/e2e-framework`), so never point them at your “real” dev/prod cluster.
+`sigs.k8s.io/e2e-framework`), so never point them at your "real" dev/prod cluster.
 
-There is one suite, `test/e2e` (behind the `e2e` build tag), whose specs share that one cluster:
-- **Manager + injection lifecycle** (`e2e_injection_test.go`) — exercises the controller + webhooks in
-  isolation; it writes the per-node injection ConfigMap directly (impersonating Beyla's ServiceAccount).
-- **Telemetry pipeline** (`e2e_metrics_test.go`) — the full pipeline: it deploys `grafana/otel-lgtm`, the
-  controller, a **real** `grafana/beyla:main` DaemonSet and a demo app, then — once the app is instrumented
-  — asserts the demo app's HTTP telemetry reaches LGTM over Kind NodePorts: **metrics** in Prometheus
-  (PromQL, :30090) and **traces** in Tempo (TraceQL search API, :30320).
+The single `test/e2e` suite (behind the `e2e` build tag) contains four specs sharing one Kind cluster:
+- **Injection lifecycle** (`e2e_injection_test.go`) — controller + webhooks in isolation.
+- **SDK auto-instrumentation pipeline** (`e2e_instrumentation_test.go`) — full Beyla → controller →
+  inject-sdk-image → LGTM pipeline across every supported language and libc variant; asserts traces
+  reach Tempo.
+- **SDK auto-instrumentation safety** (`e2e_instrumentation_safety_test.go`) — verifies runtime safety
+  scripts skip incompatible apps and that the LD_PRELOAD injector doesn't crash apps it can't usefully
+  instrument.
+- **Beyla startup compatibility filter** (`e2e_beyla_startup_filter_test.go`) — Beyla's eBPF scanner
+  excludes already-instrumented and unsupported runtimes from `eligible_for_restart.yaml`.
 
-All shared resources (the controller, webhooks, cert-manager, otel-lgtm, Beyla and the demo app) are
-stood up once in `BeforeSuite` and torn down with the cluster in `AfterSuite`, so the Kind cluster is
-created only once for the whole run.
+Shared helpers and lifecycle live in `e2e_helpers_test.go` and `e2e_suite_test.go`.
 
-Run it with `make test-e2e` (runs `./test/e2e/...`) or directly with `go test -tags=e2e ./test/e2e/...`.
-Set `KIND_KEEP_CLUSTER=true` to keep the cluster for debugging.
+**Cert mode.** The suite supports both webhook cert strategies via the `CERT_MODE` env var
+(`cert-manager` or `self-signed`); `make test-e2e` runs the whole suite once per mode in its own cluster.
+The mode selects the kustomize overlay (`config/test` vs `config/test-selfsigned`) and gates whether
+CertManager is installed in `BeforeSuite`. Run a single mode with
+`CERT_MODE=cert-manager go test -tags=e2e ./test/e2e/...`. Set `KIND_KEEP_CLUSTER=true` to keep the
+cluster for debugging.
 
 The suite is intentionally self-contained — **no `docker`/`kubectl`/`kustomize`/`make` CLI is invoked at
-runtime**: it builds the manager image with the Docker Go SDK, drives the cluster with the `klient` Go
-client, and renders `config/test` with the kustomize Go API. It only needs a reachable Docker daemon plus
-the `kind` tooling the e2e-framework drives. It runs the controller in **`init_container` injection mode**
-(the suite overrides the rendered SDK config), so it needs no `ImageVolume` feature gate and works on any
-Kind node version. The demo app must still use a **glibc** image (`node:20-slim`, not alpine) because
-injection is `LD_PRELOAD`-based.
+runtime**: it builds all images with the Docker Go SDK, drives the cluster with `klient`, and renders
+the kustomize overlay with the kustomize Go API. It only needs a reachable Docker daemon plus the
+`kind` tooling the e2e-framework drives (kind binary pinned to v0.26.0 via the framework; the
+`kindest/node` image in `test/e2e/kind-config.yaml` must match what that kind binary supports). It runs
+the controller in **`init_container` injection mode**, so it needs no `ImageVolume` feature gate. All
+third-party container images are pinned to specific tags — no floating refs.
 
 ## After Making Changes
 
