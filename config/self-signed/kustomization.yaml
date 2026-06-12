@@ -1,0 +1,27 @@
+# Self-signed cert strategy: the agnostic base + the controller's in-process
+# cert rotator. No cert-manager required. This is a standalone assembly (it can
+# be applied directly) and the base that config/deploy layers on.
+#
+# How it works: serving-cert-secret.yaml pre-creates an empty Secret; the rotator
+# (turned on by manager_selfsigned_patch.yaml) generates a self-signed CA + cert,
+# persists it to that Secret, and injects the caBundle into the webhook configs.
+# ../default already mounts that Secret at --webhook-cert-path and the kubelet
+# projects the rotator-written cert onto disk.
+#
+# namespace + namePrefix live HERE (not in ../default) so they apply to both the
+# base resources and the self-signed resources below. The Secret/webhook-config
+# names referenced by the rotator flags + RBAC are spelled out post-prefix in
+# those files (kustomize does not rewrite arg strings or RBAC resourceNames).
+namespace: beyla-k8s-injector
+namePrefix: beyla-k8s-injector-
+
+resources:
+  - ../default
+  - serving-cert-secret.yaml
+  - cert-rotator-rbac.yaml
+
+patches:
+  - path: manager_selfsigned_patch.yaml
+    target:
+      kind: Deployment
+      name: controller-manager

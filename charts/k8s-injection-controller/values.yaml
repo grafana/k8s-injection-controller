@@ -30,15 +30,20 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# -- cert-manager is a prerequisite (the chart renders Issuer/Certificate
-# resources). When `installHook.enabled` is true the chart runs a short-lived
-# `pre-install` hook Pod that executes hooks/install-cert-manager.sh: it checks
+# -- On-the-fly cert-manager installation. The chart installs cert-manager via a
+# short-lived `pre-install` hook Pod (hooks/install-cert-manager.sh: checks
 # whether cert-manager is already present and, if not, installs it via Helm and
-# waits for its webhook to become Ready. The hook Pod uses a temporary
-# ServiceAccount + (Cluster)Role(Binding) that are deleted as soon as the hook
-# succeeds. Disable it if you manage cert-manager out of band.
+# waits for its webhook to become Ready) ONLY when it is actually needed:
+# `webhook.certManager.mode=cert-manager` is forced AND the cert-manager.io/v1
+# API is absent. In `auto` mode a missing cert-manager falls back to self-signed
+# and the hook never runs. Set `installHook.enabled: true` to force the hook on
+# regardless (e.g. to pre-provision cert-manager for other workloads). The hook
+# Pod uses a temporary ServiceAccount + (Cluster)Role(Binding) deleted as soon as
+# it succeeds.
 certManager:
   installHook:
+    # Force the install hook on even when auto-detection would not trigger it.
+    # Leave false to get the automatic behavior described above.
     enabled: false
     # Image carrying both `kubectl` and `helm` (used by the hook Pod).
     # TODO: look for an official image or create our own
@@ -149,6 +154,15 @@ webhook:
     - gke-managed-volumepopulator
     # AKS-managed namespaces.
     - gatekeeper-system
+  # -- How the webhook serving certificate is provisioned:
+  #   auto         - use cert-manager if its API (cert-manager.io/v1) is present
+  #                  on the cluster, otherwise the controller self-signs and
+  #                  rotates its own cert (no cert-manager required).
+  #   cert-manager - always use cert-manager (renders Issuer/Certificate);
+  #                  fails to render if the cert-manager API is absent.
+  #   self-signed  - always self-sign in-controller, ignoring any cert-manager.
+  certManager:
+    mode: auto
 
 # -- Controller Prometheus metrics. Served over plain HTTP and advertised via
 # Pod annotations for annotation-based Prometheus service discovery

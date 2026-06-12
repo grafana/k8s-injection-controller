@@ -111,13 +111,9 @@ var _ = Describe("Pod Webhook", func() {
 				"OTEL_INJECTOR_CONFIG_FILE",
 				"OTEL_EXPORTER_OTLP_ENDPOINT",
 				"OTEL_EXPORTER_OTLP_PROTOCOL",
-				"BEYLA_INJECTOR_SDK_PKG_VERSION",
 			))
 			Expect(envValue(obj.Spec.Containers[0].Env, "OTEL_EXPORTER_OTLP_ENDPOINT")).
 				To(Equal("http://otel-collector:4318"))
-			// PackageVersion is a SHA-224 hex digest of the image reference: 56 chars.
-			Expect(envValue(obj.Spec.Containers[0].Env, "BEYLA_INJECTOR_SDK_PKG_VERSION")).
-				To(HaveLen(56))
 		})
 
 		It("Should mount the volume with the injectors", func() {
@@ -136,9 +132,9 @@ var _ = Describe("Pod Webhook", func() {
 			Expect(mounts[0].ReadOnly).To(BeTrue())
 		})
 
-		It("Should annotate the Pod with the current SDK package version", func() {
+		It("Should annotate the Pod with the configuration hash", func() {
 			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
-			Expect(obj.Annotations).To(HaveKeyWithValue(InjectedAnnotation, defaulter.Mutator.Cfg.PackageVersion()))
+			Expect(obj.Annotations).To(HaveKeyWithValue(InjectedAnnotation, Not(BeEmpty())))
 		})
 
 		It("Should leave pre-existing init containers uninstrumented", func() {
@@ -182,22 +178,12 @@ var _ = Describe("Pod Webhook", func() {
 		It("Should override the mounted image and its derived package version", func() {
 			setRule(nsRule("override"))
 
-			// Capture the package-version the controller default would produce,
-			// then confirm both the volume reference and the env reflect the
-			// per-ConfigMap override instead.
-			defaultPV := defaulter.Mutator.Cfg.PackageVersion()
-
 			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
 
 			Expect(obj.Spec.Volumes).To(HaveLen(1))
 			Expect(obj.Spec.Volumes[0].Image).NotTo(BeNil())
 			Expect(obj.Spec.Volumes[0].Image.Reference).
 				To(Equal("ghcr.io/grafana/beyla/inject-sdk-image:override"))
-
-			gotPV := envValue(obj.Spec.Containers[0].Env, "BEYLA_INJECTOR_SDK_PKG_VERSION")
-			Expect(gotPV).NotTo(BeEmpty())
-			Expect(gotPV).NotTo(Equal(defaultPV),
-				"package-version env should reflect the overridden ImageVersion, not the controller default")
 		})
 	})
 
@@ -238,7 +224,12 @@ var _ = Describe("Pod Webhook", func() {
 	Context("When a pod is already annotated with the current SDK version", func() {
 		It("Should not modify anything", func() {
 			obj.Annotations = map[string]string{
-				InjectedAnnotation: defaulter.Mutator.Cfg.PackageVersion(),
+				InjectedAnnotation: config.PodConfigHash(&defaulter.Mutator.Cfg, &configmap.RuleConfig{
+					Env: []corev1.EnvVar{
+						{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "http://otel-collector:4318"},
+						{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: "http/protobuf"},
+					},
+				}),
 			}
 			before := obj.DeepCopy()
 
@@ -260,9 +251,13 @@ var _ = Describe("Pod Webhook", func() {
 
 			// Re-instrumentation went through: env vars present, volume mounted,
 			// annotation refreshed to the current package version.
-			want := defaulter.Mutator.Cfg.PackageVersion()
+			want := config.PodConfigHash(&defaulter.Mutator.Cfg, &configmap.RuleConfig{
+				Env: []corev1.EnvVar{
+					{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "http://otel-collector:4318"},
+					{Name: "OTEL_EXPORTER_OTLP_PROTOCOL", Value: "http/protobuf"},
+				},
+			})
 			Expect(obj.Annotations).To(HaveKeyWithValue(InjectedAnnotation, want))
-			Expect(envValue(obj.Spec.Containers[0].Env, "BEYLA_INJECTOR_SDK_PKG_VERSION")).To(Equal(want))
 			Expect(obj.Spec.Volumes).To(HaveLen(1))
 		})
 	})
@@ -293,7 +288,7 @@ var _ = Describe("Pod Webhook", func() {
 		It("Should mutate a pod carrying inject=true", func() {
 			obj.Labels = map[string]string{"inject": "true"}
 			Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
-			Expect(obj.Annotations).To(HaveKeyWithValue(InjectedAnnotation, defaulter.Mutator.Cfg.PackageVersion()))
+			Expect(obj.Annotations).To(HaveKeyWithValue(InjectedAnnotation, Not(BeEmpty())))
 			Expect(obj.Spec.Volumes).To(HaveLen(1))
 		})
 	})
@@ -304,44 +299,21 @@ var _ = Describe("IsInstrumented", func() {
 		pod := &corev1.Pod{Spec: corev1.PodSpec{
 			Containers: []corev1.Container{{Name: "app", Image: "nginx"}},
 		}}
-		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeFalse())
+		Expect(IsInstrumented(&pod.ObjectMeta)).To(BeFalse())
 	})
 
 	It("is true when the inject annotation is present, regardless of version", func() {
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{InjectedAnnotation: "any-stale-or-current-digest"},
 		}}
-		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeTrue())
+		Expect(IsInstrumented(&pod.ObjectMeta)).To(BeTrue())
 	})
 
 	It("ignores an empty annotation value", func() {
 		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 			Annotations: map[string]string{InjectedAnnotation: ""},
 		}}
-		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeFalse())
-	})
-
-	It("is true when a container carries the SDK version env var", func() {
-		pod := &corev1.Pod{Spec: corev1.PodSpec{
-			Containers: []corev1.Container{{
-				Name:  "app",
-				Image: "nginx",
-				Env:   []corev1.EnvVar{{Name: envVarSDKVersion, Value: "some-digest"}},
-			}},
-		}}
-		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeTrue())
-	})
-
-	It("is true when only an init container carries the SDK version env var", func() {
-		pod := &corev1.Pod{Spec: corev1.PodSpec{
-			InitContainers: []corev1.Container{{
-				Name:  "init",
-				Image: "busybox",
-				Env:   []corev1.EnvVar{{Name: envVarSDKVersion, Value: "some-digest"}},
-			}},
-			Containers: []corev1.Container{{Name: "app", Image: "nginx"}},
-		}}
-		Expect(IsInstrumented(&pod.Spec, &pod.ObjectMeta)).To(BeTrue())
+		Expect(IsInstrumented(&pod.ObjectMeta)).To(BeFalse())
 	})
 })
 

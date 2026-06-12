@@ -326,13 +326,12 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 			if !matchesAnyTarget(info, nsTargets) {
 				continue
 			}
-			_, cfg, ok := r.Registry.Match(info)
-			if !ok {
+			if match, cfg, ok := r.Registry.Match(info); !ok {
 				// Pod no longer matches any rule. If it is
 				// currently instrumented, restart its workload so the webhook
 				// re-admits it, finds no match, and drops the instrumentation.
 				// An un-instrumented non-matching pod needs no action.
-				if !webhookv1.IsInstrumented(&pod.Spec, &pod.ObjectMeta) {
+				if !webhookv1.IsInstrumented(&pod.ObjectMeta) {
 					continue
 				}
 				logger.Info("pod no longer matches any rule; scheduling rollout to remove instrumentation",
@@ -345,7 +344,10 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 					// webhook would not mutate, so evicting accomplishes nothing.
 					continue
 				}
-				if webhookv1.AlreadyInstrumented(&pod.Spec, &pod.ObjectMeta, effective.PackageVersion()) {
+				if webhookv1.IsInstrumentedWithWantedConfig(
+					&pod.Spec,
+					&pod.ObjectMeta,
+					config.PodConfigHash(&effective, &match.Config)) {
 					continue
 				}
 				if webhookv1.PreloadsSomethingElse(pod) {

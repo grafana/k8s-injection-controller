@@ -221,13 +221,19 @@ var _ = Describe("Manager", Ordered, func() {
 			Eventually(verifyMetricsAvailable, 2*time.Minute).Should(Succeed())
 		})
 
-		It("should provisioned cert-manager", func() {
-			By("validating that cert-manager has the certificate Secret")
-			verifyCertManager := func(g Gomega) {
+		It("provisions a populated webhook serving certificate", func() {
+			// Mode-agnostic: cert-manager issues the serving cert into its Secret,
+			// while the self-signed rotator generates one and writes it into the
+			// pre-created Secret. Either way the Secret must exist and carry a
+			// tls.crt. The Secret name differs per mode (servingCertSecret).
+			By("validating the serving-cert Secret exists and carries a cert")
+			verifyServingCert := func(g Gomega) {
 				var secret corev1.Secret
-				g.Expect(k8sClient.Resources().Get(suiteCtx, "webhook-server-cert", ctrlNamespace, &secret)).To(Succeed())
+				g.Expect(k8sClient.Resources().Get(suiteCtx, servingCertSecret, ctrlNamespace, &secret)).To(Succeed())
+				g.Expect(secret.Data).To(HaveKey("tls.crt"))
+				g.Expect(secret.Data["tls.crt"]).NotTo(BeEmpty())
 			}
-			Eventually(verifyCertManager).Should(Succeed())
+			Eventually(verifyServingCert).Should(Succeed())
 		})
 
 		It("should have CA injection for mutating webhooks", func() {

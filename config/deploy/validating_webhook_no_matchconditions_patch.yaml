@@ -1,0 +1,11 @@
+# This overlay watches a SEPARATE namespace (monitoring) from the controller's
+# own (beyla-k8s-injector). The kube-root-ca.crt self-deadlock can only form when
+# the validating webhook (failurePolicy: Fail) guards the controller's OWN
+# namespace, so it cannot occur here — the controller bootstraps in an unguarded
+# namespace. The CEL matchConditions kube-root-ca exclusion that
+# config/webhook adds (to make the co-located overlays safe) is therefore
+# unnecessary in this overlay, and removing it lets this manifest deploy on
+# Kubernetes < 1.28, where CEL matchConditions are unavailable (the apiserver
+# silently drops them on 1.27 / may reject them below).
+- op: remove
+  path: /webhooks/0/matchConditions

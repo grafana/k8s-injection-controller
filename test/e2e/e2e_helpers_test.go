@@ -86,9 +86,15 @@ func applyKustomization(dir string) error {
 	if err != nil {
 		return fmt.Errorf("rendering kustomize output: %w", err)
 	}
-	// Force init_container mode: the e2e cluster has no ImageVolume feature gate.
+	// Two mutations on the rendered objects pre-create:
+	//   - forceInitContainerMode: the e2e cluster has no ImageVolume feature
+	//     gate, so override the SDK config's injection_mode to init_container.
+	//   - forceManagerImage: point the manager container at the image this
+	//     suite built and loaded into kind, so the first pod has the right
+	//     image (no ErrImagePull, no extra rollout).
 	objs, err := decoder.DecodeAll(suiteCtx, bytes.NewReader(rendered),
-		decoder.MutateOption(forceInitContainerMode))
+		decoder.MutateOption(forceInitContainerMode),
+		decoder.MutateOption(forceManagerImage))
 	if err != nil {
 		return fmt.Errorf("decoding kustomize output: %w", err)
 	}
@@ -239,18 +245,21 @@ func tearDownBeyla() {
 	}, 2*time.Minute, 2*time.Second).Should(Succeed())
 }
 
-// overrideManagerImage swaps the manager container's image to the locally-built
-// one loaded into kind. Triggers the rollout.
-func overrideManagerImage() {
-	var dep appsv1.Deployment
-	Expect(k8sClient.Resources().Get(suiteCtx, ctrlDeployment, ctrlNamespace, &dep)).
-		To(Succeed(), "controller Deployment should exist after applying config/test")
+// forceManagerImage rewrites the manager container's image to the locally-built
+// one loaded into kind. As a decoder MutateFunc this runs while rendering the
+// overlay, so the Deployment is created with the right image up front — no
+// ErrImagePull window against the committed placeholder, no extra rollout.
+func forceManagerImage(obj k8s.Object) error {
+	dep, ok := obj.(*appsv1.Deployment)
+	if !ok || dep.Name != ctrlDeployment {
+		return nil
+	}
 	for i := range dep.Spec.Template.Spec.Containers {
 		if dep.Spec.Template.Spec.Containers[i].Name == "manager" {
 			dep.Spec.Template.Spec.Containers[i].Image = managerImage
 		}
 	}
-	Expect(k8sClient.Resources().Update(suiteCtx, &dep)).To(Succeed(), "failed to override manager image")
+	return nil
 }
 
 // waitDeploymentReady blocks until the named Deployment has fully rolled out (all

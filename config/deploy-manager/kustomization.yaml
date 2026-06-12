@@ -1,17 +1,17 @@
-# Artifact overlay built by `make yaml`: the production deploy (config/default)
-# plus a default, mounted SDK config so the controller starts with a valid
-# config out of the box. Unlike config/test, this overlay does not downgrade
-# metrics security or change ports — it's meant to be a publishable manifest.
-
-# No top-level namespace transformer here: config/default already namespaces its
+# Artifact overlay: same as config/deploy but using the cert-manager cert
+# strategy instead of the in-process self-signed rotator. Produces a publishable
+# manifest (a default mounted SDK config so the controller starts ready) that
+# requires cert-manager (CRDs + webhook) to be installed on the cluster.
+#
+# No top-level namespace transformer here: ../cert-manager already namespaces its
 # own resources to beyla-k8s-injector, and the cross-namespace RBAC in
 # monitoring-rbac.yaml must keep its "monitoring" namespace (a transformer would
 # rewrite it). The generated ConfigMap gets its namespace from the generator
 # below instead.
 resources:
-  # Self-signed cert strategy (no cert-manager prerequisite); namespace +
+  # cert-manager cert strategy (Issuer/Certificate + CA injection); namespace +
   # namePrefix come from here.
-  - ../self-signed
+  - ../cert-manager
   # Grants the controller's ServiceAccount get/list/watch on ConfigMaps in the
   # watched namespace (monitoring), required because WATCH_NAMESPACE differs from
   # the controller's own namespace. See the file header for details.

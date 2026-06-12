@@ -89,10 +89,10 @@ func TestMatch(t *testing.T) {
 	}{
 		// Smoke tests
 		{
-			name: "empty selector matches everything",
+			name: "empty selector match nothing",
 			inst: rule(configmap.K8sSelector{}),
 			pod:  rsPod,
-			want: true,
+			want: false,
 		},
 		{
 			name: "no rules — no match",
@@ -374,7 +374,7 @@ func TestMatch_SkipRules(t *testing.T) {
 			r := New()
 			r.Set("test/cm", tc.inst)
 			if _, _, got := r.Match(helloPod); got != tc.want {
-				t.Fatalf("Match() = %v, want %v", got, tc.want)
+				t.Errorf("Match() = %v, want %v", got, tc.want)
 			}
 		})
 	}

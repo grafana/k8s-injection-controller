@@ -9,25 +9,33 @@ Check the controller is running:
   kubectl -n {{ include "k8s-injection-controller.namespace" . }} rollout status deployment/{{ include "k8s-injection-controller.fullname" . }}
   kubectl -n {{ include "k8s-injection-controller.namespace" . }} logs deployment/{{ include "k8s-injection-controller.fullname" . }} -c manager -f
 
-This chart renders cert-manager Issuer/Certificate resources and relies on
-cert-manager to issue the webhook serving certificate and inject the CA into the
-webhook configurations.
-{{- if .Values.certManager.installHook.enabled }}
+{{- $certMode := include "k8s-injection-controller.certMode" . -}}
+{{- $installCM := eq (include "k8s-injection-controller.installCertManager" .) "true" -}}
+Webhook serving certificate ({{ $certMode }} mode):
+{{- if eq $certMode "self-signed" }}
 
-A pre-install hook ensured cert-manager is present (install it yourself and set
-certManager.installHook.enabled=false to skip it). The webhook Issuer/Certificate
-are then applied by a POST-INSTALL hook, so the controller pod stays in
-ContainerCreating for a few seconds until the serving-cert Secret is issued.
-NOTE: `--wait` / `--atomic` do not work on the first install in this mode (see
-the chart README). Confirm cert-manager is Ready:
-{{- else }}
+The controller self-manages it — it generates and rotates a self-signed CA +
+serving cert in-process and injects the CA into the webhook configurations. No
+cert-manager required.
+{{- else if $installCM }}
 
-cert-manager is a PREREQUISITE and the install hook is disabled. Make sure
-cert-manager is installed and Ready, otherwise the webhook Secret is never
-created and the controller pod stays un-ready:
-{{- end }}
+A pre-install hook installs cert-manager on the fly (it no-ops if cert-manager is
+already present). cert-manager then issues the serving cert and injects the CA;
+the Issuer/Certificate are applied as POST-INSTALL hooks, so the controller pod
+stays in ContainerCreating for a few seconds until the Secret is issued. NOTE:
+`--wait` / `--atomic` do not work on the first install in this mode (see the chart
+README). Confirm cert-manager is Ready:
 
   kubectl -n cert-manager rollout status deployment/cert-manager-webhook
+{{- else }}
+
+cert-manager is a PREREQUISITE: the chart renders Issuer/Certificate and relies on
+cert-manager to issue the serving cert and inject the CA. Make sure cert-manager is
+installed and Ready, otherwise the webhook Secret is never created and the
+controller pod stays un-ready:
+
+  kubectl -n cert-manager rollout status deployment/cert-manager-webhook
+{{- end }}
 
 {{- if not .Values.sdkConfig.enabled }}
 

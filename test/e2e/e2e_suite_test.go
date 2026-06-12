@@ -50,12 +50,30 @@ import (
 // Specs impersonate it to write injection ConfigMaps the way Beyla does.
 const allowedConfigMapWriter = "system:serviceaccount:beyla-k8s-injector:beyla"
 
+// Webhook cert strategies the suite can run under, selected via the CERT_MODE
+// env var. `make test-e2e` invokes the suite once per mode (each in its own
+// Kind cluster) so both injection and instrumentation specs are exercised
+// under both strategies.
 const (
-	managerImage = "beyla-k8s-injector:dev"
-	clusterName  = "k8s-injection-controller-e2e"
+	certModeCertManager = "cert-manager"
+	certModeSelfSigned  = "self-signed"
 )
 
+const managerImage = "beyla-k8s-injector:dev"
+
 var (
+	// certMode is the cert strategy under test (CERT_MODE env, default cert-manager).
+	certMode string
+	// servingCertSecret is the webhook serving-cert Secret name for certMode.
+	// cert-manager issues into `webhook-server-cert`; the self-signed overlay's
+	// namePrefix produces a prefixed name. The cert assertion reads this
+	// variable instead of hard-coding either name.
+	servingCertSecret string
+
+	// clusterName gets a per-mode suffix in BeforeSuite so the two CERT_MODE
+	// runs use distinct clusters.
+	clusterName = "k8s-injection-controller-e2e"
+
 	projectDir   string
 	manifestsDir string
 
@@ -77,6 +95,25 @@ func TestE2E(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	var err error
+
+	// Resolve the cert strategy. `make test-e2e` runs the suite twice
+	// (CERT_MODE=cert-manager, then CERT_MODE=self-signed).
+	certMode = os.Getenv("CERT_MODE")
+	if certMode == "" {
+		certMode = certModeCertManager
+	}
+	switch certMode {
+	case certModeCertManager:
+		servingCertSecret = "webhook-server-cert"
+	case certModeSelfSigned:
+		servingCertSecret = "beyla-k8s-injector-webhook-server-cert"
+	default:
+		Fail(fmt.Sprintf("invalid CERT_MODE %q: must be %q or %q",
+			certMode, certModeCertManager, certModeSelfSigned))
+	}
+	clusterName = clusterName + "-" + certMode
+	_, _ = fmt.Fprintf(GinkgoWriter, "Running e2e suite in %q cert mode (cluster %q)\n", certMode, clusterName)
+
 	projectDir, err = utils.GetProjectDir()
 	Expect(err).NotTo(HaveOccurred(), "Failed to resolve project directory")
 	manifestsDir = filepath.Join(projectDir, "test", "e2e", "manifests")
@@ -119,20 +156,28 @@ var _ = BeforeSuite(func() {
 	beylaClientset, err = kubernetes.NewForConfig(beylaCfg)
 	Expect(err).NotTo(HaveOccurred(), "Failed to build the impersonating clientset")
 
-	By("installing CertManager")
-	Expect(utils.InstallCertManager(suiteCtx, k8sClient.Resources())).
-		To(Succeed(), "Failed to install CertManager")
+	if certMode == certModeCertManager {
+		By("installing CertManager")
+		Expect(utils.InstallCertManager(suiteCtx, k8sClient.Resources())).
+			To(Succeed(), "Failed to install CertManager")
+	} else {
+		By("skipping CertManager (self-signed mode runs without it)")
+	}
 
 	By("ensuring the controller namespace exists")
-	// krusty doesn't reorder, so the rendered config/test lists RBAC before the
+	// krusty doesn't reorder, so the rendered overlay lists RBAC before the
 	// Namespace. Pre-create to avoid the race.
 	Expect(ensureNamespace(ctrlNamespace)).To(Succeed())
 
-	By("deploying the controller-manager (config/test overlay, rendered with the kustomize Go API)")
-	Expect(applyKustomization(filepath.Join(projectDir, "config", "test"))).To(Succeed())
-
-	By("pointing the controller-manager at the locally-built image")
-	overrideManagerImage()
+	overlay := "test"
+	if certMode == certModeSelfSigned {
+		overlay = "test-selfsigned"
+	}
+	By(fmt.Sprintf("deploying the controller-manager (config/%s overlay, rendered with the kustomize Go API)", overlay))
+	// forceManagerImage rewrites the manager image in the rendered Deployment
+	// before create, so the first pod starts with the locally-built+loaded
+	// image — no ErrImagePull window, no post-apply rollout.
+	Expect(applyKustomization(filepath.Join(projectDir, "config", overlay))).To(Succeed())
 
 	By("waiting for the controller-manager rollout to finish")
 	waitDeploymentReady(ctrlDeployment, ctrlNamespace, 3*time.Minute)
