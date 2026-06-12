@@ -1,0 +1,39 @@
+# Mounts the generated beyla-sdk-config ConfigMap into the manager pod and adds
+# the --config flag. Strategic merge patch: the args list is replaced wholesale,
+# so EVERY flag must be repeated here — including config/default's metrics flag
+# AND config/self-signed's cert-rotation flags (which it appends via a JSON-6902
+# patch that this wholesale replacement would otherwise drop). volumes /
+# volumeMounts merge by name, so the webhook-certs Secret mount from
+# config/default's webhook patch is preserved and we only add sdk-config.
+#
+# --metrics-secure=false serves the injection metrics over plain HTTP so the
+# demo's scraper can reach :8443 without certs or a bearer token.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          args:
+            - --metrics-bind-address=:8443
+            - --metrics-secure=false
+            - --leader-elect
+            - --health-probe-bind-address=:8081
+            - --config=/etc/beyla-injector/sdk-inject.yaml
+            # Self-signed cert rotator flags (final namePrefix-applied names).
+            - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
+            - --enable-cert-rotation
+            - --webhook-cert-secret=beyla-k8s-injector-webhook-server-cert
+            - --mutating-webhook-name=beyla-k8s-injector-mutating-webhook-configuration
+            - --validating-webhook-name=beyla-k8s-injector-validating-webhook-configuration
+          volumeMounts:
+            - name: sdk-config
+              mountPath: /etc/beyla-injector
+              readOnly: true
+      volumes:
+        - name: sdk-config
+          configMap:
+            name: beyla-sdk-config

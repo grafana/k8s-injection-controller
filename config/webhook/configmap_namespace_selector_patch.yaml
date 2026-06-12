@@ -20,3 +20,14 @@ webhooks:
     namespaceSelector:
       matchLabels:
         kubernetes.io/metadata.name: beyla-k8s-injector
+    # Exclude the cluster-managed kube-root-ca.crt ConfigMap so failurePolicy:
+    # Fail never blocks the kube-controller-manager from publishing it into the
+    # watched namespace — which would deadlock a fresh install when that
+    # namespace is also the controller's own (the pod can't start without
+    # kube-root-ca.crt). CEL matchConditions are GA in k8s 1.30 (beta, on by
+    # default, in 1.28/1.29). On clusters < 1.28 use the Helm chart (which
+    # enforces a separate watchNamespace) or ensure watchNamespace differs from
+    # the controller namespace.
+    matchConditions:
+      - name: exclude-kube-root-ca
+        expression: "object.metadata.name != 'kube-root-ca.crt'"

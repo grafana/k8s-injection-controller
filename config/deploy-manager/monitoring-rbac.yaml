@@ -1,0 +1,49 @@
+# Cross-namespace ConfigMap RBAC for the split deployment: the controller runs
+# in beyla-k8s-injector but its ConfigMap informer is scoped to the namespace
+# Beyla writes its state ConfigMaps to (WATCH_NAMESPACE=monitoring, set in
+# manager_sdk_config_patch.yaml). The namespaced manager-role/RoleBinding that
+# config/rbac emits only covers the controller's own namespace, so without this
+# the informer's initial LIST in "monitoring" is forbidden and the manager dies
+# with "failed to wait for configmap-selector caches to sync".
+#
+# These two objects intentionally live in "monitoring". config/deploy therefore
+# does NOT apply a namespace transformer (config/default already namespaces its
+# own resources); if you relocate the watch namespace, update WATCH_NAMESPACE,
+# the webhook namespaceSelectors and the namespace below together.
+#
+# Subjects reference the fully-rendered ServiceAccount name (config/default's
+# namePrefix is not in scope here), so they are spelled out explicitly.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  labels:
+    app.kubernetes.io/name: k8s-injection-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: beyla-k8s-injector-configmap-reader
+  namespace: monitoring
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  verbs:
+  - get
+  - list
+  - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  labels:
+    app.kubernetes.io/name: k8s-injection-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: beyla-k8s-injector-configmap-reader
+  namespace: monitoring
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: beyla-k8s-injector-configmap-reader
+subjects:
+- kind: ServiceAccount
+  name: beyla-k8s-injector-controller-manager
+  namespace: beyla-k8s-injector

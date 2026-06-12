@@ -1,0 +1,28 @@
+# Sample config.SDKInject loaded by `make deploy-test`.
+# Signal exporters, propagators, sampler, debug, and static resource attributes
+# are now owned by Beyla and written to the ConfigMap as env vars.
+
+# OCI image carrying the SDK auto-instrumentation payload.
+image_volume_root: ghcr.io/grafana/beyla/inject-sdk-image
+image_version: 0.0.13
+
+# How the SDK payload is delivered into instrumented pods:
+#   image          - mount the image directly via ImageVolumeSource (k8s 1.31+)
+#   init_container - provisions a 250Mi ephemeral volume and adds an init
+#                    container that copies the payload into it (k8s < 1.31)
+#   auto           - picks "image" on k8s 1.31+, "init_container" otherwise,
+#                    checked once against the cluster's server version at boot
+# Defaults to "auto" when unset.
+injection_mode: auto
+
+# Languages whose auto-instrumentation should run.
+enabled_sdks:
+  - nodejs
+  - python
+  - java
+  - dotnet
+
+resources:
+  add_k8s_uid_attributes: true
+  add_k8s_ip_attribute: false
+  use_k8s_labels_for_resource_attributes: false

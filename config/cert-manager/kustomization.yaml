@@ -1,0 +1,117 @@
+# cert-manager cert strategy: the agnostic base + a cert-manager Issuer +
+# serving/metrics Certificates, with the CA bundle injected into the webhook
+# configurations. This is the standalone production assembly that `make deploy`,
+# `make build-installer` and `make undeploy` build, and the base config/test
+# layers on. cert-manager (CRDs + webhook) must already be installed.
+#
+# namespace + namePrefix live HERE (not in ../default) so they apply uniformly
+# to the base resources AND the cert-manager resources pulled in below. The
+# replacements run after those transformers (same kustomization), so they read
+# the already-prefixed Certificate name/namespace and write the correct
+# cert-manager.io/inject-ca-from value onto the webhook configurations.
+namespace: beyla-k8s-injector
+namePrefix: beyla-k8s-injector-
+
+resources:
+  - ../default
+  - ../certmanager
+
+replacements:
+ - source: # Webhook serving cert dnsNames <- webhook Service name
+     kind: Service
+     version: v1
+     name: webhook-service
+     fieldPath: .metadata.name
+   targets:
+     - select:
+         kind: Certificate
+         group: cert-manager.io
+         version: v1
+         name: serving-cert
+       fieldPaths:
+         - .spec.dnsNames.0
+         - .spec.dnsNames.1
+       options:
+         delimiter: '.'
+         index: 0
+         create: true
+ - source:
+     kind: Service
+     version: v1
+     name: webhook-service
+     fieldPath: .metadata.namespace
+   targets:
+     - select:
+         kind: Certificate
+         group: cert-manager.io
+         version: v1
+         name: serving-cert
+       fieldPaths:
+         - .spec.dnsNames.0
+         - .spec.dnsNames.1
+       options:
+         delimiter: '.'
+         index: 1
+         create: true
+
+ - source: # CA injection for the ConfigMap ValidatingWebhookConfiguration
+     kind: Certificate
+     group: cert-manager.io
+     version: v1
+     name: serving-cert # This name should match the one in certificate.yaml
+     fieldPath: .metadata.namespace # Namespace of the certificate CR
+   targets:
+     - select:
+         kind: ValidatingWebhookConfiguration
+       fieldPaths:
+         - .metadata.annotations.[cert-manager.io/inject-ca-from]
+       options:
+         delimiter: '/'
+         index: 0
+         create: true
+ - source:
+     kind: Certificate
+     group: cert-manager.io
+     version: v1
+     name: serving-cert
+     fieldPath: .metadata.name
+   targets:
+     - select:
+         kind: ValidatingWebhookConfiguration
+       fieldPaths:
+         - .metadata.annotations.[cert-manager.io/inject-ca-from]
+       options:
+         delimiter: '/'
+         index: 1
+         create: true
+
+ - source: # CA injection for the Pod MutatingWebhookConfiguration
+     kind: Certificate
+     group: cert-manager.io
+     version: v1
+     name: serving-cert
+     fieldPath: .metadata.namespace # Namespace of the certificate CR
+   targets:
+     - select:
+         kind: MutatingWebhookConfiguration
+       fieldPaths:
+         - .metadata.annotations.[cert-manager.io/inject-ca-from]
+       options:
+         delimiter: '/'
+         index: 0
+         create: true
+ - source:
+     kind: Certificate
+     group: cert-manager.io
+     version: v1
+     name: serving-cert
+     fieldPath: .metadata.name
+   targets:
+     - select:
+         kind: MutatingWebhookConfiguration
+       fieldPaths:
+         - .metadata.annotations.[cert-manager.io/inject-ca-from]
+       options:
+         delimiter: '/'
+         index: 1
+         create: true

@@ -66,12 +66,33 @@ vet: ## Run go vet against code.
 test: manifests generate vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
-# Runs the e2e suite under test/e2e.
+# Runs the e2e suite under test/e2e once per webhook cert strategy: cert-manager
+# (a cluster with cert-manager) and self-signed (a cluster without it, using the
+# controller's in-process cert rotator). Each run creates and destroys its own
+# Kind cluster, so both the injection and metrics specs are exercised under both
+# strategies.
 # To keep the Kind cluster after the run (e.g. for debugging), set:
 # - KIND_KEEP_CLUSTER=true
 .PHONY: test-e2e
 test-e2e: manifests generate fmt vet
-	go test -tags=e2e ./test/e2e/... -v -ginkgo.v -timeout 30m
+	CERT_MODE=cert-manager go test -tags=e2e ./test/e2e/... -v -ginkgo.v -timeout 30m
+	CERT_MODE=self-signed go test -tags=e2e ./test/e2e/... -v -ginkgo.v -timeout 30m
+
+.PHONY: helm-template-check
+helm-template-check: ## Assert the chart renders correctly in cert-manager and self-signed modes.
+	@set -e; set +o pipefail; CHART=charts/k8s-injection-controller; \
+	echo "[auto, no cert-manager API] -> self-signed"; \
+	helm template t $$CHART | grep -q "enable-cert-rotation" || { echo "FAIL: expected self-signed rotation"; exit 1; }; \
+	helm template t $$CHART | grep -q "kind: Certificate" && { echo "FAIL: unexpected Certificate"; exit 1; } || true; \
+	echo "[auto, cert-manager API present] -> cert-manager"; \
+	helm template t $$CHART --api-versions cert-manager.io/v1 | grep -q "kind: Certificate" || { echo "FAIL: expected Certificate"; exit 1; }; \
+	helm template t $$CHART --api-versions cert-manager.io/v1 | grep -q "enable-cert-rotation" && { echo "FAIL: unexpected rotation flag"; exit 1; } || true; \
+	echo "[mode=cert-manager without API] -> install cert-manager via pre-install hook"; \
+	helm template t $$CHART --set webhook.certManager.mode=cert-manager | grep -q "cert-manager-install" || { echo "FAIL: expected the cert-manager install hook"; exit 1; }; \
+	helm template t $$CHART --set webhook.certManager.mode=cert-manager | grep -q "kind: Certificate" || { echo "FAIL: expected Certificate (post-install hook)"; exit 1; }; \
+	echo "[mode=cert-manager with API] -> use existing cert-manager, no install hook"; \
+	helm template t $$CHART --set webhook.certManager.mode=cert-manager --api-versions cert-manager.io/v1 | grep -q "cert-manager-install" && { echo "FAIL: unexpected install hook when cert-manager present"; exit 1; } || true; \
+	echo "helm-template-check OK"
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -89,11 +110,11 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+	go build -o bin/manager ./cmd
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+	go run ./cmd
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
@@ -127,7 +148,7 @@ docker-buildx: ## Build and push docker image for the manager for cross-platform
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
 	mkdir -p dist
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default > dist/install.yaml
+	"$(KUSTOMIZE)" build config/cert-manager > dist/install.yaml
 
 ##@ Deployment
 
@@ -145,10 +166,15 @@ uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified 
 	@out="$$( "$(KUSTOMIZE)" build config/crd 2>/dev/null || true )"; \
 	if [ -n "$$out" ]; then echo "$$out" | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -; else echo "No CRDs to delete; skipping."; fi
 
+# Cert strategy used by `make deploy`/`make undeploy`. Override to deploy the
+# self-signed assembly, e.g. `make deploy DEPLOY_CONFIG=config/self-signed`
+# (the e2e suite does this to exercise both cert modes).
+DEPLOY_CONFIG ?= config/cert-manager
+
 .PHONY: deploy
-deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
+deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config. Override the cert strategy with DEPLOY_CONFIG=config/self-signed.
 	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" apply -f -
+	"$(KUSTOMIZE)" build $(DEPLOY_CONFIG) | "$(KUBECTL)" apply -f -
 
 .PHONY: yaml
 yaml: manifests kustomize ## Render the deployable controller manifest (with a default mounted SDK config) to yaml/controller.yaml.
@@ -157,9 +183,16 @@ yaml: manifests kustomize ## Render the deployable controller manifest (with a d
 	"$(KUSTOMIZE)" build config/deploy > yaml/controller.yaml
 	@echo "The controller yaml has been written to yaml/controller.yaml"
 
+.PHONY: yaml-cert
+yaml-cert: manifests kustomize ## Render the deployable controller manifest (with a default mounted SDK config) to yaml/controller.yaml.
+	cd config/manager && "$(KUSTOMIZE)" edit set image controller=${IMG}
+	mkdir -p yaml
+	"$(KUSTOMIZE)" build config/deploy-manager > yaml/controller.yaml
+	@echo "The controller yaml with cert-manager has been written to yaml/controller.yaml"
+
 .PHONY: undeploy
-undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	"$(KUSTOMIZE)" build config/default | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
+undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion. Honors DEPLOY_CONFIG.
+	"$(KUSTOMIZE)" build $(DEPLOY_CONFIG) | "$(KUBECTL)" delete --ignore-not-found=$(ignore-not-found) -f -
 
 .PHONY: demo-deploy
 demo-deploy: manifests kustomize ## Demo: deploy controller (via deploy-test) plus a Beyla DaemonSet wired to it and a sample workload.

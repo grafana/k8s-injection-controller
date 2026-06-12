@@ -53,6 +53,12 @@ spec:
             - --leader-elect
             {{- end }}
             - --webhook-cert-path=/tmp/k8s-webhook-server/serving-certs
+            {{- if eq (include "k8s-injection-controller.certMode" .) "self-signed" }}
+            - --enable-cert-rotation
+            - --webhook-cert-secret={{ include "k8s-injection-controller.servingCertName" . }}
+            - --mutating-webhook-name={{ include "k8s-injection-controller.fullname" . }}-mutating-webhook
+            - --validating-webhook-name={{ include "k8s-injection-controller.fullname" . }}-validating-webhook
+            {{- end }}
             {{- if .Values.metrics.enabled }}
             - --metrics-bind-address=:{{ .Values.metrics.port }}
             - --metrics-secure=false
@@ -106,6 +112,9 @@ spec:
           volumeMounts:
             - name: webhook-certs
               mountPath: /tmp/k8s-webhook-server/serving-certs
+              # Read-only in both modes. In self-signed mode the cert rotator
+              # writes the Secret via the API (not this dir); the kubelet projects
+              # it here. cert-controller never writes the cert dir itself.
               readOnly: true
             {{- if .Values.sdkConfig.enabled }}
             - name: sdk-config
@@ -114,6 +123,12 @@ spec:
             {{- end }}
       volumes:
         - name: webhook-certs
+          # Mount the serving-cert Secret in both modes. cert-manager populates
+          # it in cert-manager mode; the in-process cert rotator populates it in
+          # self-signed mode. cert-controller writes only the Secret (via the
+          # API) and waits for the kubelet to project it onto disk here — it does
+          # NOT write the cert dir, so a writable emptyDir would never get a cert
+          # and the rotator's readiness gate would never fire.
           secret:
             secretName: {{ include "k8s-injection-controller.servingCertName" . }}
         {{- if .Values.sdkConfig.enabled }}

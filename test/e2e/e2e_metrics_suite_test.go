@@ -59,12 +59,30 @@ import (
 // webhook.
 const allowedConfigMapWriter = "system:serviceaccount:beyla-k8s-injector:beyla"
 
+// Webhook cert strategies the suite can run under, selected via the CERT_MODE
+// env var. `make test-e2e` runs the whole suite once per mode (each in its own
+// cluster) so both the injection and metrics specs are exercised under both
+// strategies.
+const (
+	certModeCertManager = "cert-manager"
+	certModeSelfSigned  = "self-signed"
+)
+
 var (
+	// certMode is the cert strategy under test (CERT_MODE env, default cert-manager).
+	certMode string
+	// servingCertSecret is the webhook serving-cert Secret name for certMode. It
+	// differs between modes (cert-manager's unprefixed `webhook-server-cert` vs
+	// the self-signed overlay's namePrefix-applied name), so the cert assertion
+	// in the injection specs reads it instead of hard-coding a name.
+	servingCertSecret string
+
 	// managerImage is the manager image built and loaded into the Kind cluster.
 	managerImage = "beyla-k8s-injector:dev-metrics"
 
-	// clusterName is the Kind cluster this suite creates and destroys. It is
-	// distinct from the test/e2e cluster so both suites can run independently.
+	// clusterName is the Kind cluster this suite creates and destroys. A
+	// per-mode suffix is appended in BeforeSuite so the two CERT_MODE runs use
+	// distinct clusters.
 	clusterName = "k8s-injection-controller-e2e"
 
 	// projectDir is the module root, resolved once in BeforeSuite.
@@ -103,6 +121,25 @@ func TestE2EMetrics(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	var err error
+
+	// Resolve the cert strategy under test. `make test-e2e` invokes the suite
+	// twice (CERT_MODE=cert-manager, then CERT_MODE=self-signed).
+	certMode = os.Getenv("CERT_MODE")
+	if certMode == "" {
+		certMode = certModeCertManager
+	}
+	switch certMode {
+	case certModeCertManager:
+		servingCertSecret = "webhook-server-cert"
+	case certModeSelfSigned:
+		servingCertSecret = "beyla-k8s-injector-webhook-server-cert"
+	default:
+		Fail(fmt.Sprintf("invalid CERT_MODE %q: must be %q or %q",
+			certMode, certModeCertManager, certModeSelfSigned))
+	}
+	clusterName = clusterName + "-" + certMode
+	_, _ = fmt.Fprintf(GinkgoWriter, "Running e2e suite in %q cert mode (cluster %q)\n", certMode, clusterName)
+
 	projectDir, err = utils.GetProjectDir()
 	Expect(err).NotTo(HaveOccurred(), "Failed to resolve project directory")
 	kindConfig := filepath.Join(projectDir, "test", "e2e", "kind-config.yaml")
@@ -132,9 +169,13 @@ var _ = BeforeSuite(func() {
 	beylaClientset, err = kubernetes.NewForConfig(beylaCfg)
 	Expect(err).NotTo(HaveOccurred(), "Failed to build the impersonating clientset")
 
-	By("installing CertManager")
-	Expect(utils.InstallCertManager(suiteCtx, k8sClient.Resources())).
-		To(Succeed(), "Failed to install CertManager")
+	if certMode == certModeCertManager {
+		By("installing CertManager")
+		Expect(utils.InstallCertManager(suiteCtx, k8sClient.Resources())).
+			To(Succeed(), "Failed to install CertManager")
+	} else {
+		By("skipping CertManager (self-signed mode runs on a cluster without it)")
+	}
 
 	// The controller, webhook, telemetry backend, real Beyla and demo app are all
 	// stood up here, once, so both the controller/webhook specs (Manager,
@@ -151,16 +192,18 @@ var _ = BeforeSuite(func() {
 	// namespace so the subsequent apply never races resource ordering.
 	Expect(ensureNamespace(ctrlNamespace)).To(Succeed())
 
-	By("deploying the controller-manager (config/test overlay, rendered with the kustomize Go API)")
-	// config/test mounts a --config that enables the SDK languages (enabled_sdks).
-	// Without it EnabledSDKs is empty and the injector blanks every language
-	// agent path, so injected pods emit no telemetry.
-	Expect(applyKustomization(filepath.Join(projectDir, "config", "test"))).To(Succeed())
-
-	By("pointing the controller-manager at the locally-built image")
-	// config/manager ships a committed image ref; swap in the image we built
-	// and loaded into kind. This also triggers the rollout waited on below.
-	overrideManagerImage()
+	overlay := "test"
+	if certMode == certModeSelfSigned {
+		overlay = "test-selfsigned"
+	}
+	By(fmt.Sprintf("deploying the controller-manager (config/%s overlay, rendered with the kustomize Go API)", overlay))
+	// config/test[-selfsigned] mounts a --config that enables the SDK languages
+	// (enabled_sdks). Without it EnabledSDKs is empty and the injector blanks
+	// every language agent path, so injected pods emit no telemetry. The manager
+	// container image is rewritten to the locally-built+loaded image during the
+	// render (see forceManagerImage), so the Deployment starts with the right
+	// image — no post-apply override / ErrImagePull window.
+	Expect(applyKustomization(filepath.Join(projectDir, "config", overlay))).To(Succeed())
 
 	By("waiting for the controller-manager rollout to finish")
 	waitDeploymentReady(ctrlDeployment, ctrlNamespace, 3*time.Minute)

@@ -40,10 +40,18 @@ const breakGlassGroup = "system:masters"
 var cmlog = logf.Log.WithName("configmap-webhook")
 
 // failurePolicy=fail is deliberate: this is a security control, so an outage of
-// the validator must not silently re-open the injection-steering hole. The
-// blast radius is bounded by the ValidatingWebhookConfiguration's
-// namespaceSelector (see config/webhook/configmap_namespace_selector_patch.yaml),
-// which scopes the webhook to the single namespace the controller watches.
+// the validator must not silently re-open the injection-steering hole. The blast
+// radius is bounded by the ValidatingWebhookConfiguration's namespaceSelector
+// (see config/webhook/configmap_namespace_selector_patch.yaml), which scopes the
+// webhook to the single namespace the controller watches.
+//
+// To avoid a fresh-install bootstrap deadlock when that namespace is the
+// controller's own (Fail would block the apiserver from publishing
+// kube-root-ca.crt there while this pod — the webhook backend — is still
+// starting), the webhook also carries a CEL matchConditions that excludes the
+// kube-root-ca.crt ConfigMap (added in config/webhook + the Helm chart;
+// requires k8s >= 1.28). On older clusters the Helm chart instead refuses to
+// install unless watchNamespace differs from the controller namespace.
 //
 // +kubebuilder:webhook:path=/validate--v1-configmap,mutating=false,failurePolicy=fail,sideEffects=None,groups="",resources=configmaps,verbs=create;update,versions=v1,name=vconfigmap-v1.beyla.grafana.com,admissionReviewVersions=v1
 
