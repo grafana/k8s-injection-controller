@@ -30,6 +30,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -40,6 +41,11 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	"go.opentelemetry.io/obi/pkg/appolly/services"
+
+	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
+
+	"github.com/grafana/beyla-k8s-injector/internal/config"
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 	// +kubebuilder:scaffold:imports
 )
@@ -53,6 +59,19 @@ var (
 	k8sClient client.Client
 	cfg       *rest.Config
 	testEnv   *envtest.Environment
+
+	// webhookRegistry backs the API-server-registered mutating webhook. Specs
+	// mutate it (via Set) to simulate Beyla's ConfigMap changing under a running
+	// workload. webhookSDKConfig is the controller-wide injection config the
+	// registered PodMutator applies; specs reuse it to recompute the expected
+	// PodConfigHash. init_container mode is used so the mutated pod spec is valid
+	// on any envtest apiserver (no ImageVolume feature gate needed).
+	webhookRegistry  *registry.Registry
+	webhookSDKConfig = config.SDKInject{
+		ImageVolumeRoot: "ghcr.io/grafana/beyla/inject-sdk-image",
+		ImageVersion:    "0.0.13",
+		InjectionMode:   config.InjectionModeInitContainer,
+	}
 )
 
 func TestAPIs(t *testing.T) {
@@ -114,7 +133,8 @@ var _ = BeforeSuite(func() {
 	})
 	Expect(err).NotTo(HaveOccurred())
 
-	err = SetupPodWebhookWithManager(mgr, registry.New(), mgr.GetAPIReader(), nil, nil)
+	webhookRegistry = registry.New()
+	err = SetupPodWebhookWithManager(mgr, webhookRegistry, mgr.GetAPIReader(), &PodMutator{Cfg: webhookSDKConfig}, nil)
 	Expect(err).NotTo(HaveOccurred())
 
 	// +kubebuilder:scaffold:webhook
@@ -144,6 +164,84 @@ var _ = AfterSuite(func() {
 	Eventually(func() error {
 		return testEnv.Stop()
 	}, time.Minute, time.Second).Should(Succeed())
+})
+
+// nsInstrumentation builds a registry.Instrumentation whose single rule matches
+// every pod in namespace ns and carries env as the per-rule SDK config — the
+// shape Beyla writes into its ConfigMaps. Changing env changes the rule's hash,
+// and therefore the PodConfigHash the webhook stamps.
+func nsInstrumentation(ns string, env ...corev1.EnvVar) registry.Instrumentation {
+	return registry.Instrumentation{InjectConfig: configmap.InjectConfig{
+		Rules: []configmap.Rule{{
+			Selector: configmap.K8sSelector{
+				Namespaces: []services.GlobAttr{services.NewGlob(ns)},
+			},
+			Config: configmap.RuleConfig{Env: env},
+		}},
+	}}
+}
+
+var _ = Describe("Pod webhook config-change restart detection", func() {
+	// Drives the real admission webhook through the envtest API server (unlike
+	// the unit specs, which call PodCustomDefaulter.Default directly): create a
+	// pod, change the ConfigMap, and assert the previously stamped annotation no
+	// longer matches the current config hash — the signal the controller uses to
+	// roll the workload.
+
+	mkPod := func(ns, name string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "app", Image: "nginx"}},
+			},
+		}
+	}
+
+	It("re-stamps the inject hash so a stale pod is detected for restart when the ConfigMap changes", func() {
+		const (
+			ns    = "webhook-config-change"
+			cmKey = "config-change-cm"
+		)
+		Expect(k8sClient.Create(ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: ns},
+		})).To(Succeed())
+
+		// Step 1: the ConfigMap selects this namespace with config A. A created
+		// pod is admitted, instrumented, and annotated with the hash of the SDK
+		// config combined with rule config A.
+		configA := []corev1.EnvVar{{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "http://collector-a:4318"}}
+		webhookRegistry.Set(cmKey, nsInstrumentation(ns, configA...))
+
+		p1 := mkPod(ns, "demo")
+		Expect(k8sClient.Create(ctx, p1)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(p1), p1)).To(Succeed())
+
+		hashA := p1.Annotations[InjectedAnnotation]
+		Expect(hashA).NotTo(BeEmpty())
+		Expect(hashA).To(Equal(config.PodConfigHash(&webhookSDKConfig, &configmap.RuleConfig{Env: configA})))
+		// Under config A the pod is current: no restart needed.
+		Expect(IsInstrumentedWithWantedConfig(&p1.Spec, &p1.ObjectMeta, hashA)).To(BeTrue())
+
+		// Step 2: the ConfigMap changes — config B points at a different OTLP
+		// endpoint, so the rule (and thus the wanted hash) changes.
+		configB := []corev1.EnvVar{{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "http://collector-b:4318"}}
+		webhookRegistry.Set(cmKey, nsInstrumentation(ns, configB...))
+		wantB := config.PodConfigHash(&webhookSDKConfig, &configmap.RuleConfig{Env: configB})
+
+		// Step 3: the already-running pod's annotation no longer matches the
+		// current config hash. IsInstrumentedWithWantedConfig now returns false,
+		// which is exactly the signal the controller uses to roll the workload so
+		// the pod is re-admitted under the new config.
+		Expect(wantB).NotTo(Equal(hashA))
+		Expect(IsInstrumentedWithWantedConfig(&p1.Spec, &p1.ObjectMeta, wantB)).To(BeFalse())
+
+		// The re-admission that the restart triggers stamps the new hash: a pod
+		// freshly created under config B carries wantB.
+		p2 := mkPod(ns, "demo-restarted")
+		Expect(k8sClient.Create(ctx, p2)).To(Succeed())
+		Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(p2), p2)).To(Succeed())
+		Expect(p2.Annotations).To(HaveKeyWithValue(InjectedAnnotation, wantB))
+	})
 })
 
 // getFirstFoundEnvTestBinaryDir locates the first binary in the specified path.

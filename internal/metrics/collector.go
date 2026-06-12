@@ -166,14 +166,14 @@ func (c *PodStateCollector) classify(ctx context.Context, pod *corev1.Pod) class
 	info := podinfo.Resolve(ctx, c.reader, pod)
 	kind, name := podinfo.Workload(info)
 
-	_, cfg, ok := c.reg.Match(info)
+	match, cfg, ok := c.reg.Match(info)
 	if !ok {
 		return classification{status: StatusUnmatched, kind: kind, name: name}
 	}
 
 	effective := c.cfg.WithConfigMapOverrides(cfg)
-	want := effective.PackageVersion()
-	if webhookv1.AlreadyInstrumented(&pod.Spec, &pod.ObjectMeta, want) {
+	want := config.PodConfigHash(&effective, &match.Config)
+	if webhookv1.IsInstrumentedWithWantedConfig(&pod.Spec, &pod.ObjectMeta, want) {
 		return classification{status: StatusInstrumented, kind: kind, name: name}
 	}
 	if webhookv1.PreloadsSomethingElse(pod) {

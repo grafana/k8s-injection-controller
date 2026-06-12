@@ -1,8 +1,10 @@
 package config
 
 import (
-	"crypto/sha256"
+	"encoding"
+	"encoding/binary"
 	"fmt"
+	"hash/fnv"
 	"regexp"
 	"strconv"
 	"strings"
@@ -124,14 +126,6 @@ func SupportsImageVolume(major, minor int) bool {
 	return major > 1 || (major == 1 && minor >= 31)
 }
 
-// PackageVersion returns a stable, label-safe identifier derived from the
-// configured image reference. SHA-224 keeps it within the 63-char k8s label
-// limit so callers can stamp it onto pods without truncation.
-func (s *SDKInject) PackageVersion() string {
-	h := sha256.Sum224([]byte(s.ImageVolumePath()))
-	return fmt.Sprintf("%x", h)
-}
-
 // WithConfigMapOverrides returns a copy of s with any per-ConfigMap overrides
 // from cfg applied on top. The merged Beyla webhook config (#2819) carries only
 // the image version at the InjectConfig level; all per-rule instrumentation
@@ -144,4 +138,33 @@ func (s SDKInject) WithConfigMapOverrides(cfg configmap.InjectConfig) SDKInject 
 		out.ImageVersion = cfg.ImageVersion
 	}
 	return out
+}
+
+// PodConfigHash uses FNV to hash the configuration that is going to be applied to a given Pod.
+// Returns a base32 string that is used to detect configuration changes and decide whether a Pod needs to
+// be restarted.
+func PodConfigHash(cfg *SDKInject, match *configmap.RuleConfig) string {
+
+	// we pretend to "concat" the hashing of both RuleConfig and SDKInject
+	// however there is no direct way like
+	//
+	// hash := match.Hash()
+	// hash.Write(cfg.ImageVolumePath)
+	//
+	// So we take some intermediate steps to keep a strong hashing
+
+	ruleConfigHash := match.Hash()
+
+	accum := fnv.New64a()
+	// Seed the FNV-1a accumulator with the per-rule config hash. fnv documents
+	// that its hashes implement encoding.BinaryUnmarshaler; the wire format for a
+	// 64-bit FNV-1a state is the magic prefix "fnv\x04" followed by the 8-byte
+	// big-endian state, so unmarshalling that sets the internal state to rcHash.
+	seed := binary.BigEndian.AppendUint64([]byte("fnv\x04"), ruleConfigHash)
+	if err := accum.(encoding.BinaryUnmarshaler).UnmarshalBinary(seed); err != nil {
+		panic(err)
+	}
+	accum.Write([]byte(cfg.ImageVolumePath()))
+
+	return strconv.FormatUint(accum.Sum64(), 32)
 }

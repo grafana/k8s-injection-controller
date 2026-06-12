@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestWithConfigMapOverrides(t *testing.T) {
@@ -47,5 +48,38 @@ func TestWithConfigMapOverrides(t *testing.T) {
 		if !reflect.DeepEqual(base, snapshot) {
 			t.Fatalf("base was mutated by WithConfigMapOverrides")
 		}
+	})
+}
+
+func TestPodConfigHash(t *testing.T) {
+	t.Run("idempotency", func(t *testing.T) {
+		assert.Equal(t,
+			PodConfigHash(
+				&SDKInject{ImageVolumeRoot: "foo/sdks", ImageVersion: "3.12"},
+				&configmap.RuleConfig{Mode: configmap.ModeSkip}),
+			PodConfigHash(
+				&SDKInject{ImageVolumeRoot: "foo/sdks", ImageVersion: "3.12"},
+				&configmap.RuleConfig{Mode: configmap.ModeSkip}))
+	})
+	t.Run("no collisions", func(t *testing.T) {
+		history := map[string]struct{}{
+			PodConfigHash(
+				&SDKInject{ImageVolumeRoot: "foo/sdks", ImageVersion: "3.12"},
+				&configmap.RuleConfig{Mode: configmap.ModeSkip}): {},
+		}
+		v := PodConfigHash(
+			&SDKInject{ImageVolumeRoot: "bar/sdks", ImageVersion: "3.12"},
+			&configmap.RuleConfig{Mode: configmap.ModeSkip})
+		assert.NotContains(t, history, v)
+		history[v] = struct{}{}
+		v = PodConfigHash(
+			&SDKInject{ImageVolumeRoot: "bar/sdks", ImageVersion: "3.11"},
+			&configmap.RuleConfig{Mode: configmap.ModeSkip})
+		assert.NotContains(t, history, v)
+		history[v] = struct{}{}
+		v = PodConfigHash(
+			&SDKInject{ImageVolumeRoot: "bar/sdks", ImageVersion: "3.11"},
+			&configmap.RuleConfig{Mode: configmap.ModeInstall})
+		assert.NotContains(t, history, v)
 	})
 }
