@@ -23,6 +23,7 @@ import (
 
 	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 
+	"github.com/grafana/beyla-k8s-injector/internal/config"
 	webhookv1 "github.com/grafana/beyla-k8s-injector/internal/webhook/v1"
 )
 
@@ -273,7 +274,7 @@ var _ = Describe("ConfigMap controller eviction skip cases", func() {
 		rs := mkRS(ns, "worker-4")
 		mkPod(ns, "worker-4-001", rs, func(p *corev1.Pod) {
 			p.Annotations = map[string]string{
-				webhookv1.InjectedAnnotation: testSDKConfig.PackageVersion(),
+				webhookv1.InjectedAnnotation: config.PodConfigHash(&testSDKConfig, &configmap.RuleConfig{}),
 			}
 		})
 
@@ -450,7 +451,7 @@ var _ = Describe("ConfigMap controller rollout sweep", func() {
 		// The pod carries our inject annotation, marking it as instrumented.
 		mkPod(uns, upod, rs, func(p *corev1.Pod) {
 			p.Annotations = map[string]string{
-				webhookv1.InjectedAnnotation: testSDKConfig.PackageVersion(),
+				webhookv1.InjectedAnnotation: config.PodConfigHash(&testSDKConfig, &configmap.RuleConfig{}),
 			}
 		})
 

@@ -13,6 +13,7 @@ package v1
 import (
 	"context"
 
+	"github.com/grafana/beyla-k8s-injector/internal/config"
 	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -40,12 +41,12 @@ const (
 	OutcomeLDPreloadConflict   = "ld_preload_conflict"
 )
 
-// InjectedAnnotation marks every pod we mutate. Its value is the SHA-224
-// digest returned by SDKInject.PackageVersion(), so a later admission can
-// tell whether the pod is already instrumented with the current SDK image
-// (skip) or with an older one (re-instrument). Both the webhook and the
-// controller use the annotation's presence to decide whether to evict a
-// pre-existing pod for re-interception.
+// InjectedAnnotation marks every pod we mutate. Its value is the FNV
+// digest of the matching configmap.RuleConfig and the resolved SDKInject
+// (see config.PodConfigHash), so a later admission can tell whether the pod is
+// already instrumented with the current config (skip) or with a stale one
+// (re-instrument). Both the webhook and the controller use the annotation's
+// presence to decide whether to evict a pre-existing pod for re-interception.
 const (
 	InjectedAnnotation = "beyla.grafana.com/inject"
 )
@@ -103,9 +104,9 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	// Per-request mutator with the ConfigMap's image-version override (if any)
 	// layered on top of the controller-wide SDK defaults. Mutator methods are
 	// pm.Cfg-driven, so a shallow copy is enough to scope the override. Compute
-	// the resolved package version up front: it depends on the (possibly
-	// overridden) ImageVersion, and both the version-skew check and the
-	// annotation we stamp need it.
+	// the resolved config hash up front: it depends on both the (possibly
+	// overridden) SDK config and the matched rule, and both the config-skew check
+	// and the annotation we stamp need it.
 	mutator := *d.Mutator
 	mutator.Cfg = mutator.Cfg.WithConfigMapOverrides(cmCfg)
 
@@ -116,11 +117,11 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 		return nil
 	}
 
-	wantVersion := mutator.Cfg.PackageVersion()
+	wantHash := config.PodConfigHash(&mutator.Cfg, &rule.Config)
 
-	if AlreadyInstrumented(&obj.Spec, &obj.ObjectMeta, wantVersion) {
-		podlog.Info("already instrumented at current SDK version; skipping",
-			"namespace", obj.Namespace, "name", obj.Name, "version", wantVersion)
+	if IsInstrumentedWithWantedConfig(&obj.Spec, &obj.ObjectMeta, wantHash) {
+		podlog.Info("already instrumented at current SDK config; skipping",
+			"namespace", obj.Namespace, "name", obj.Name, "configHash", wantHash)
 		d.recordOutcome(info, OutcomeAlreadyInstrumented)
 		return nil
 	}
@@ -151,7 +152,7 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	if obj.Annotations == nil {
 		obj.Annotations = map[string]string{}
 	}
-	obj.Annotations[InjectedAnnotation] = wantVersion
+	obj.Annotations[InjectedAnnotation] = wantHash
 
 	podlog.Info("instrumented pod", "namespace", obj.Namespace, "name", obj.Name)
 	d.recordOutcome(info, OutcomeSuccess)

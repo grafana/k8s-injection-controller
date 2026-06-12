@@ -14,6 +14,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -67,7 +68,10 @@ func matchAll() *registry.Registry {
 // a metric series — this guards against that.
 func TestDefaultRecordsOutcome(t *testing.T) {
 	cfg := config.SDKInject{ImageVolumeRoot: "ghcr.io/grafana/beyla/inject-sdk-image", ImageVersion: "0.0.13"}
-	wantVersion := cfg.PackageVersion()
+
+	matchAllRule, _, ok := matchAll().Match(registry.PodInfo{Namespace: "outcome-test", Name: "test-cm"})
+	require.True(t, ok)
+	wantVersion := config.PodConfigHash(&cfg, &matchAllRule.Config)
 
 	tests := []struct {
 		name        string
