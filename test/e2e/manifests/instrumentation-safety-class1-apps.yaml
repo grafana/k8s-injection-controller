@@ -1,7 +1,6 @@
-# Sample apps for the SDK auto-instrumentation safety e2e tests. Each app
-# triggers a specific safety check in the injected SDK runtime scripts
-# (sitecustomize.py for Python, register.js for Node.js), proving the safety
-# mechanism skips instrumentation without crashing the app.
+# Class-1 safety apps: each triggers a specific check in the injected SDK
+# runtime scripts (sitecustomize.py for Python, register.js for Node.js) that
+# detects an incompatible app and skips initialisation without crashing it.
 #
 # All images are built locally and loaded into Kind (imagePullPolicy: Never).
 ---

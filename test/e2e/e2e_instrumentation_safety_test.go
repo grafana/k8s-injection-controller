@@ -19,7 +19,6 @@ limitations under the License.
 package e2e
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -44,26 +43,16 @@ const (
 	safetyDotnetAOTApp          = "safety-dotnet-aot"
 	safetyNodejsESMApp          = "safety-nodejs-esm"
 
-	// Expected substrings in pod logs confirming which safety gate fired. These
-	// are external contracts emitted by the inject-sdk-image runtime scripts
-	// shipped with Beyla; if upstream rewords any of them, these tests will
-	// fail and the strings here need updating. Source locations in
-	// grafana/beyla:
-	//   pkg/webhook/image/python/sitecustomize.py
-	//     - check_python_version → "Python version 3.9 or higher required"
-	//     - verify_and_load      → "Not importing OpenTelemetry Python auto-instrumentation"
-	//   pkg/webhook/image/node.js/register.js
-	//     - version range check      → "does not support Node.js version"
-	//     - isOtelSdkInstalled       → "already instrumented with OpenTelemetry"
-	//     - isOtelSdkRequiredViaArgs → "already using OpenTelemetry auto-instrumentation"
+	// Substrings emitted by the inject-sdk-image runtime scripts in
+	// grafana/beyla. If upstream rewords any, update here.
+	//   pkg/webhook/image/python/sitecustomize.py: check_python_version, verify_and_load
+	//   pkg/webhook/image/node.js/register.js:     version range, isOtelSdkInstalled, isOtelSdkRequiredViaArgs
 	logPythonVersionCheck = "Python version 3.9 or higher required"
 	logPythonConflict     = "Not importing OpenTelemetry Python auto-instrumentation"
 	logNodejsVersionCheck = "does not support Node.js version"
 	logNodejsSdkInstalled = "already instrumented with OpenTelemetry"
 	logNodejsSdkRequired  = "already using OpenTelemetry auto-instrumentation"
-)
 
-var (
 	safetyPythonOldImage          = "safety-python-old-app:dev"
 	safetyPythonConflictImage     = "safety-python-conflict-app:dev"
 	safetyNodejsOldImage          = "safety-nodejs-old-app:dev"
@@ -75,7 +64,6 @@ var (
 )
 
 // safetyAppDirs returns each safety test app's source directory and image tag.
-// Called from BeforeSuite to build and load all images.
 func safetyAppDirs(projectDir string) []struct{ dir, tag string } {
 	base := filepath.Join(projectDir, "test", "e2e", "apps")
 	return []struct{ dir, tag string }{
@@ -90,61 +78,30 @@ func safetyAppDirs(projectDir string) []struct{ dir, tag string } {
 	}
 }
 
-// buildSafetyAppImages builds all safety test app Docker images.
-func buildSafetyAppImages(ctx context.Context, projectDir string) error {
-	for _, app := range safetyAppDirs(projectDir) {
-		if err := buildImage(ctx, app.dir, app.tag); err != nil {
-			return fmt.Errorf("building %s: %w", app.tag, err)
-		}
-	}
-	return nil
-}
-
 var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
-	// This suite verifies two classes of safety behaviour:
+	// Two classes of safety behaviour:
+	//   Class 1 — SDK skip: sitecustomize.py / register.js detect incompatible
+	//     apps and skip initialisation without crashing.
+	//   Class 2 — Injection resilience: libotelinject.so (LD_PRELOAD) doesn't
+	//     crash native runtimes (GraalVM, .NET AOT) or ESM Node.js that can't
+	//     usefully load the SDK.
 	//
-	// Class 1 — SDK skip: the runtime safety scripts (sitecustomize.py for
-	// Python, register.js for Node.js) skip initialisation for incompatible
-	// apps without crashing. Beyla adds these workloads to eligible_for_restart
-	// (it scans and instruments them), but the SDK's own checks refuse to load.
+	// Three acts: (1) Class-1 apps running, Beyla absent → Tempo empty;
+	// (2) Beyla deploys, Class-1 apps deploy and are instrumented at admission,
+	// Class-2 apps follow; (3) per-app assertions on the specific safety gate.
 	//
-	// Class 2 — Injection resilience: the injector (libotelinject.so via
-	// LD_PRELOAD) does not crash native runtimes that cannot load the SDK. For
-	// GraalVM native image and .NET Native AOT there is no JVM/CLR to process
-	// JAVA_TOOL_OPTIONS or DOTNET_STARTUP_HOOKS, so those env vars are silently
-	// ignored; for ESM Node.js, --require register.js loads in CJS context
-	// before the ESM module system initialises.
-	//
-	// Both classes follow the same three-act skeleton:
-	//
-	//   1. Class-1 apps running, Beyla absent: Tempo is empty.
-	//   2. Beyla deploys and writes its per-node injection ConfigMap. Act 2
-	//      gates on Beyla listing every Class-1 app in eligible_for_restart,
-	//      then deploys Class-2 apps (admitted immediately by the active webhook).
-	//   3. Each app: pod is injected (annotation + Running); Class-1 apps have
-	//      no spans and their logs show the specific skip message; Class-2 apps
-	//      have no spans and the pod is still Running.
-	//
-	// Note: check_otlp_proto (sitecustomize.py gate 2) is omitted because Beyla
-	// always writes OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf into the rule env,
-	// so that gate cannot be reached via the normal injection pipeline.
+	// check_otlp_proto is omitted: Beyla always writes
+	// OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf, so that gate is unreachable
+	// via the normal pipeline.
 
 	BeforeAll(func() {
-		manifestsDir := filepath.Join(projectDir, "test", "e2e", "manifests")
-
-		// Within this binary, Ginkgo runs Describes in file load order
-		// (alphabetical): e2e_beyla_startup_filter_test.go,
-		// e2e_injection_test.go, this file, then e2e_instrumentation_test.go.
-		// The startup-filter and injection suites both leave the cluster in a
-		// clean state (no lgtm, no Beyla, no safety-test namespace), so on a
-		// fresh run these wait-for-deletion calls return immediately. They are
-		// load-bearing only on KIND_KEEP_CLUSTER=true re-runs, where this
-		// suite's own AfterAll may still be tearing those namespaces down.
+		// The wait-for-deletion calls are load-bearing only on
+		// KIND_KEEP_CLUSTER=true re-runs.
 		By("waiting for previous lgtm namespace to finish terminating")
-		waitNamespaceDeleted(lgtmNS, 2*time.Minute)
+		waitNamespaceDeleted(lgtmNS)
 
 		By("waiting for previous safety-test namespace to finish terminating")
-		waitNamespaceDeleted(safetyTestNS, 2*time.Minute)
+		waitNamespaceDeleted(safetyTestNS)
 
 		By("deploying grafana/otel-lgtm")
 		Expect(applyManifestFile(filepath.Join(manifestsDir, "instrumentation-lgtm.yaml"))).To(Succeed())
@@ -153,9 +110,6 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 		waitDeploymentReady("lgtm", lgtmNS, 5*time.Minute)
 
 		By("ensuring the safety-test namespace exists for canary pods in act 2")
-		// Class-1 apps are deployed in act 2, after the webhook is confirmed
-		// active, so they are instrumented at admission rather than via
-		// eligible_for_restart. The namespace must pre-exist for the canary pod.
 		Expect(ensureNamespace(safetyTestNS)).To(Succeed())
 	})
 
@@ -196,8 +150,6 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 
 	It("Tempo is empty before any safety apps are deployed", func() {
 		By("asserting Tempo has no spans for any safety app service name")
-		// No apps are running yet — this confirms the telemetry backend is
-		// reachable and clean before the injection pipeline is exercised.
 		for _, svcName := range []string{
 			safetyPythonOldApp,
 			safetyPythonConflictApp,
@@ -208,7 +160,7 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 			safetyDotnetAOTApp,
 			safetyNodejsESMApp,
 		} {
-			_, n, err := tempoHasTraces(tempoBaseURL,
+			_, n, err := tempoHasTraces(
 				fmt.Sprintf(`{ resource.service.name = "%s" }`, svcName),
 			)
 			Expect(err).NotTo(HaveOccurred(), "Tempo query failed for %s", svcName)
@@ -219,8 +171,6 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 	// ---- Act 2: Beyla deploys, Class-1 injection triggered, Class-2 apps deploy ----
 
 	It("Beyla deploys, writes an injection ConfigMap, and Class-1 apps are instrumented at admission", func() {
-		manifestsDir := filepath.Join(projectDir, "test", "e2e", "manifests")
-
 		By("deploying the real Beyla DaemonSet wired to the controller")
 		Expect(deployBeyla(safetyTestNS)).To(Succeed())
 
@@ -236,16 +186,8 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 		}, 5*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("confirming the injection registry is active for safety-test via canary pods")
-		// The controller loads Beyla's ConfigMap into its registry asynchronously.
-		// We poll by creating successive pause pods until one is annotated by the
-		// webhook, confirming the namespace rule is live. Class-1 apps deployed
-		// immediately after are then instrumented at admission — no dependency on
-		// eligible_for_restart, which Beyla may not write for all runtimes (e.g.
-		// Python 3.8 is intentionally excluded by Beyla's startup compatibility
-		// filter; the webhook still instruments such pods when admitted directly).
-		// Each failed Eventually iteration creates a new pod (canary-N) since the
-		// admission verdict is fixed at create time — we can't re-check an existing
-		// pod. DeferCleanup sweeps any orphans at the end of the spec.
+		// Admission verdict is fixed at create time, so each iteration creates
+		// a fresh canary-N pod until one is annotated. DeferCleanup sweeps them.
 		var canaryAttempt int
 		DeferCleanup(func() {
 			var pods corev1.PodList
@@ -281,7 +223,7 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 		}, 2*time.Minute, 5*time.Second).Should(Succeed())
 
 		By("deploying Class-1 safety apps — their pods are instrumented at webhook admission")
-		Expect(applyManifestFile(filepath.Join(manifestsDir, "instrumentation-safety-apps.yaml"))).To(Succeed())
+		Expect(applyManifestFile(filepath.Join(manifestsDir, "instrumentation-safety-class1-apps.yaml"))).To(Succeed())
 
 		By("waiting for Class-1 app Deployments to roll out")
 		for _, app := range []string{
@@ -296,15 +238,10 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 	})
 
 	It("deploys Class-2 resilience apps after the injection ConfigMap is active", func() {
-		manifestsDir := filepath.Join(projectDir, "test", "e2e", "manifests")
-
 		By("deploying GraalVM native image, .NET Native AOT, and ESM Node.js apps")
-		// Class-2 apps are deployed here — after the controller's registry is
-		// populated — so that the webhook instruments their pods on admission.
-		// Beyla's eBPF scanner may not recognise native binaries as Java or .NET
-		// processes and therefore may not add them to eligible_for_restart; the
-		// webhook-driven path works regardless.
-		Expect(applyManifestFile(filepath.Join(manifestsDir, "instrumentation-safety-native-apps.yaml"))).To(Succeed())
+		// Beyla's eBPF scanner may not recognise native binaries, so these
+		// rely on the webhook-driven path rather than eligible_for_restart.
+		Expect(applyManifestFile(filepath.Join(manifestsDir, "instrumentation-safety-class2-apps.yaml"))).To(Succeed())
 
 		By("waiting for Class-2 app Deployments to roll out")
 		for _, app := range []string{safetyJavaGraalvmApp, safetyDotnetAOTApp, safetyNodejsESMApp} {
@@ -359,11 +296,8 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 
 		Context("ES module app (type: module)", func() {
 			It("pod stays Running when register.js is loaded into an ESM app", func() {
-				// register.js is loaded via --require in CJS context before the ESM
-				// module system initialises. Whether OTel successfully instruments the
-				// ESM app depends on Node.js internals; the test only asserts the app
-				// does not crash (no CrashLoopBackOff). Tempo is not checked because
-				// spans may legitimately appear if instrumentation succeeds.
+				// register.js loads via --require in CJS context before the ESM
+				// loader runs. The test only asserts the app doesn't crash.
 				By("waiting for an instrumented, ready ESM Node.js pod")
 				waitInstrumentedReadyPod(safetyTestNS, "app="+safetyNodejsESMApp)
 				assertSafetyResilience(safetyNodejsESMApp)
@@ -373,49 +307,34 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 
 	Context("Java GraalVM native image", func() {
 		It("pod stays Running after injection into a native binary", func() {
-			// libotelinject.so is preloaded into the native binary via LD_PRELOAD and
-			// sets JAVA_TOOL_OPTIONS=-javaagent:... A GraalVM native image has no JVM,
-			// so the env var is ignored and no Java agent runs. The test verifies the
-			// binary starts and stays Running — i.e. LD_PRELOAD of libotelinject.so
-			// does not crash a native process. This is injection resilience: the
-			// agent never loads, not because a script skipped it but because there
-			// is no runtime to interpret the hook.
+			// No JVM to process JAVA_TOOL_OPTIONS, so LD_PRELOAD of
+			// libotelinject.so is a no-op — just verify it doesn't crash.
 			By("waiting for an instrumented, ready GraalVM native pod")
 			waitInstrumentedReadyPod(safetyTestNS, "app="+safetyJavaGraalvmApp)
-			assertSafetyResilience(safetyJavaGraalvmApp)
+			assertSafetySkip(safetyJavaGraalvmApp, "")
 		})
 	})
 
 	Context(".NET Native AOT", func() {
 		It("pod stays Running after injection into a native AOT binary", func() {
-			// libotelinject.so sets DOTNET_STARTUP_HOOKS pointing to the OTel .NET
-			// hook DLL. A Native AOT binary has no CLR to process startup hooks, so
-			// the env var is ignored and no .NET SDK is loaded. The test verifies
-			// the binary starts and stays Running — same resilience class as GraalVM.
+			// No CLR to process DOTNET_STARTUP_HOOKS — same resilience class
+			// as GraalVM.
 			By("waiting for an instrumented, ready .NET Native AOT pod")
 			waitInstrumentedReadyPod(safetyTestNS, "app="+safetyDotnetAOTApp)
-			assertSafetyResilience(safetyDotnetAOTApp)
+			assertSafetySkip(safetyDotnetAOTApp, "")
 		})
 	})
 })
 
-// assertSafetySkip verifies Class-1 safety: the inject-sdk-image runtime script
-// (sitecustomize.py / register.js) detected an incompatible app and skipped SDK
-// initialisation while leaving the app running. It asserts both signals: no
-// spans reach Tempo, and the expected skip message appears in the pod logs.
-//
-// The 30-second sleep absorbs the worst-case time between pod Ready and the
-// first failed export attempt: register.js / sitecustomize.py run before the
-// app's main entrypoint, so any span would be produced within seconds of Ready;
-// 30s leaves comfortable headroom for OTLP retry/backoff before we assert
-// absence. Tempo's search API is "instant" (no ingest delay matters for
-// "zero traces"), so the sleep does not need to cover ingest.
+// assertSafetySkip verifies Class-1: no spans reach Tempo and the expected
+// skip message appears in pod logs. The 30s sleep gives OTLP retry/backoff
+// headroom before we assert absence.
 func assertSafetySkip(appName, expectedLogMessage string) {
 	By(fmt.Sprintf("waiting 30s before asserting no spans for service %q", appName))
 	time.Sleep(30 * time.Second)
 
 	By(fmt.Sprintf("asserting Tempo has no spans for service %q", appName))
-	_, n, err := tempoHasTraces(tempoBaseURL,
+	_, n, err := tempoHasTraces(
 		fmt.Sprintf(`{ resource.service.name = "%s" }`, appName),
 	)
 	Expect(err).NotTo(HaveOccurred(), "Tempo query failed for %s", appName)
@@ -426,14 +345,8 @@ func assertSafetySkip(appName, expectedLogMessage string) {
 	assertPodLogsContain(safetyTestNS, "app="+appName, expectedLogMessage)
 }
 
-// assertSafetyResilience verifies Class-2 safety: the injector (libotelinject.so
-// via LD_PRELOAD) and the language runtime tolerated the injection attempt
-// without crashing the application, even though the SDK cannot meaningfully
-// run (native binaries with no JVM/CLR; ESM apps where register.js loads in
-// CJS context). Whether spans appear depends on runtime internals and is not
-// part of the safety contract here — only that the pod stays Running. The
-// 30-second sleep matches assertSafetySkip's rationale: long enough that an
-// induced crash would have surfaced before we check.
+// assertSafetyResilience verifies Class-2: the pod stays Running and Ready
+// despite the injection. Spans may or may not appear; not part of the contract.
 func assertSafetyResilience(appName string) {
 	By(fmt.Sprintf("waiting 30s before asserting pod %q is still Running", appName))
 	time.Sleep(30 * time.Second)
@@ -442,8 +355,7 @@ func assertSafetyResilience(appName string) {
 	assertPodRunning(safetyTestNS, "app="+appName)
 }
 
-// assertPodLogsContain asserts that the first pod matching selector in ns has
-// logs containing the expected substring.
+// assertPodLogsContain asserts the first matching pod's logs contain expected.
 func assertPodLogsContain(ns, selector, expected string) {
 	var pods corev1.PodList
 	Expect(k8sClient.Resources(ns).List(suiteCtx, &pods,
@@ -455,8 +367,7 @@ func assertPodLogsContain(ns, selector, expected string) {
 		"pod logs do not contain expected skip message")
 }
 
-// assertPodRunning asserts that the first pod matching selector in ns is in the
-// Running phase and its Ready condition is True.
+// assertPodRunning asserts the first matching pod is Running and Ready.
 func assertPodRunning(ns, selector string) {
 	var pods corev1.PodList
 	Expect(k8sClient.Resources(ns).List(suiteCtx, &pods,

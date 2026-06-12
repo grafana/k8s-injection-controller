@@ -1,9 +1,9 @@
-# Resilience test apps deployed AFTER Beyla's per-node injection ConfigMap is
-# active. Because Beyla's eBPF scanner may not recognise native binaries
-# (GraalVM, .NET AOT) or ESM Node.js apps as instrumentable processes, they
-# may never appear in eligible_for_restart. Deploying them here — after the
-# controller's registry is populated — ensures new pods are instrumented
-# directly by the webhook on admission without relying on a controller rollout.
+# Class-2 safety apps: injection resilience. LD_PRELOAD of libotelinject.so
+# is a no-op for these runtimes (no JVM in GraalVM native, no CLR in .NET
+# AOT, ESM loads after --require), and the test asserts the app stays
+# Running anyway. Beyla's eBPF scanner may not recognise them as
+# instrumentable, so they rely on webhook admission rather than
+# eligible_for_restart.
 #
 # All images are built locally and loaded into Kind (imagePullPolicy: Never).
 ---

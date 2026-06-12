@@ -2,7 +2,7 @@
   "name": "safety-nodejs-sdk-installed",
   "version": "1.0.0",
   "dependencies": {
-    "express": "^4.18.0",
-    "@opentelemetry/sdk-node": "*"
+    "express": "4.22.2",
+    "@opentelemetry/sdk-node": "0.219.0"
   }
 }

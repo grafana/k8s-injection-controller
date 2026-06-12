@@ -3,9 +3,9 @@
 # via the beyla-config ConfigMap built in Go (deployBeyla in e2e_helpers_test.go),
 # so this file carries only resources that are identical across suites.
 #
-#   - It always pulls grafana/beyla:main (the latest dev image): imagePullPolicy
-#     Always.
-#     TODO: build local Beyla if we end up placing this code within the same repository
+# Beyla image is pinned to the most recent stable upstream release (v3.22.2).
+# Bump intentionally when validating against a newer release.
+# TODO: build local Beyla if this code moves into the Beyla repo.
 #
 # Beyla runs in the beyla-k8s-injector namespace (created by the controller's
 # config/test deploy): co-located with the controller (its watched namespace)
@@ -94,8 +94,9 @@ spec:
       hostPID: true
       containers:
         - name: beyla
-          image: grafana/beyla:main
-          imagePullPolicy: Always
+          # Most recent stable upstream release; bump when validating a new one.
+          image: grafana/beyla:3.22.2
+          imagePullPolicy: IfNotPresent
           args: ["--config=/etc/beyla/beyla-config.yaml"]
           env:
             - name: NODE_NAME

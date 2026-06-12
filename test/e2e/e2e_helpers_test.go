@@ -55,21 +55,14 @@ const (
 	webhookService = "beyla-k8s-injector-webhook-service"
 	mutatingWHName = "beyla-k8s-injector-mutating-webhook-configuration"
 
-	// Telemetry backend.
-	lgtmNS = "e2e-lgtm"
-
-	// The webhook stamps this annotation on instrumented pods.
+	lgtmNS     = "e2e-lgtm"
 	injectAnno = "beyla.grafana.com/inject"
 
-	// sdkImageVersion is the inject-sdk-image version the controller injects
-	// (config/test/sdk-inject.yaml). Used when crafting manual injection
-	// ConfigMaps in the injection lifecycle and safety tests.
+	// sdkImageVersion must match config/test/sdk-inject.yaml. Used when
+	// crafting manual injection ConfigMaps in the lifecycle and safety tests.
 	sdkImageVersion = "0.0.13"
 
-	// LGTM's Tempo as seen from the host (kind extraPortMapping). Use
-	// 127.0.0.1, not "localhost": kind/Docker binds the host port on IPv4 only,
-	// while "localhost" may resolve to IPv6 ::1 (nothing listens there) and the
-	// query fails with "connection refused".
+	// Use 127.0.0.1, not localhost: kind binds the host port on IPv4 only.
 	tempoBaseURL = "http://127.0.0.1:30320"
 )
 
@@ -80,16 +73,10 @@ func applyManifestFile(path string) error {
 		decoder.CreateIgnoreAlreadyExists(k8sClient.Resources()))
 }
 
-// applyKustomization renders a kustomization directory with the kustomize Go API
-// (no `kustomize`/`kubectl` binary) and creates the resulting objects.
-//
-// Admission webhook configurations are created last, mirroring kubectl's apply
-// ordering: otherwise the ValidatingWebhookConfiguration can be registered before
-// the beyla-sdk-config ConfigMap (same namespace) is created, and that ConfigMap
-// write is then rejected (failurePolicy=Fail) because the webhook server is not
-// up yet ("connection refused"). Nothing else writes ConfigMaps in that
-// namespace until the manager is confirmed ready, so deferring the webhook
-// configs is safe.
+// applyKustomization renders dir with the kustomize Go API and creates the
+// objects. Admission webhook configurations are created last so the validating
+// webhook isn't registered while the beyla-sdk-config ConfigMap is still being
+// applied (failurePolicy=Fail would reject the ConfigMap before the server is up).
 func applyKustomization(dir string) error {
 	resMap, err := krusty.MakeKustomizer(krusty.MakeDefaultOptions()).Run(filesys.MakeFsOnDisk(), dir)
 	if err != nil {
@@ -99,10 +86,7 @@ func applyKustomization(dir string) error {
 	if err != nil {
 		return fmt.Errorf("rendering kustomize output: %w", err)
 	}
-	// Force init_container injection mode (rather than the ImageVolumeSource the
-	// config/test overlay would pick via "auto"): the e2e cluster has no
-	// ImageVolume feature gate, and init_container works on any node. This is
-	// scoped to the suite — config/test (used by `make demo-deploy`) is untouched.
+	// Force init_container mode: the e2e cluster has no ImageVolume feature gate.
 	objs, err := decoder.DecodeAll(suiteCtx, bytes.NewReader(rendered),
 		decoder.MutateOption(forceInitContainerMode))
 	if err != nil {
@@ -128,15 +112,13 @@ func applyKustomization(dir string) error {
 	return nil
 }
 
-// injectionModeLine matches the top-level `injection_mode:` key in the SDK
-// config YAML (anchored at column 0, so commented mentions are ignored).
+// injectionModeLine matches the top-level `injection_mode:` key (column 0,
+// so commented mentions are ignored).
 var injectionModeLine = regexp.MustCompile(`(?m)^injection_mode:.*$`)
 
-// forceInitContainerMode rewrites the controller's SDK config ConfigMap so the
-// injector uses init_container mode instead of the ImageVolumeSource. It is a
-// decoder MutateFunc applied while rendering config/test; the ConfigMap name
-// keeps kustomize's content hash (we only change the data), so the manager
-// Deployment still mounts it.
+// forceInitContainerMode rewrites the SDK config ConfigMap's injection_mode to
+// init_container. We change only the data so kustomize's content hash on the
+// ConfigMap name still matches the manager Deployment's mount.
 func forceInitContainerMode(obj k8s.Object) error {
 	cm, ok := obj.(*corev1.ConfigMap)
 	if !ok || !strings.Contains(cm.Name, "beyla-sdk-config") {
@@ -156,7 +138,7 @@ func forceInitContainerMode(obj k8s.Object) error {
 }
 
 // isAdmissionWebhookConfig reports whether obj is a (Validating|Mutating)
-// WebhookConfiguration — the admission registrations that activate the webhook.
+// WebhookConfiguration.
 func isAdmissionWebhookConfig(obj k8s.Object) bool {
 	switch obj.(type) {
 	case *admissionregistrationv1.ValidatingWebhookConfiguration,
@@ -166,17 +148,15 @@ func isAdmissionWebhookConfig(obj k8s.Object) bool {
 	return false
 }
 
-// waitNamespaceDeleted blocks until the named namespace no longer exists (HTTP
-// 404) or the timeout fires. It specifically requires a not-found response so
-// transient errors such as connection refused do not prematurely unblock callers
-// and mask cluster instability.
-func waitNamespaceDeleted(name string, timeout time.Duration) {
+// waitNamespaceDeleted blocks until the namespace returns 404. Other errors
+// (e.g. connection refused) do not unblock the wait.
+func waitNamespaceDeleted(name string) {
 	Eventually(func(g Gomega) {
 		var ns corev1.Namespace
 		err := k8sClient.Resources().Get(suiteCtx, name, "", &ns)
 		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
 			"namespace %s still exists or unreachable: %v", name, err)
-	}, timeout, 5*time.Second).Should(Succeed())
+	}, 2*time.Minute, 2*time.Second).Should(Succeed())
 }
 
 // ensureNamespace creates the namespace if it does not already exist.
@@ -186,7 +166,7 @@ func ensureNamespace(name string) error {
 }
 
 // waitBeylaReady blocks until the beyla DaemonSet is scheduled and all pods
-// are Ready. grafana/beyla:main uses imagePullPolicy: Always, so allow time.
+// Ready. First-run pull of grafana/beyla can take time.
 func waitBeylaReady() {
 	Eventually(func(g Gomega) {
 		var ds appsv1.DaemonSet
@@ -196,13 +176,10 @@ func waitBeylaReady() {
 	}, 5*time.Minute, 5*time.Second).Should(Succeed())
 }
 
-// deployBeyla applies the shared Beyla manifest (SA, RBAC, DaemonSet) and
-// creates the per-suite beyla-config ConfigMap targeting the given namespace.
-// The DaemonSet picks up whatever beyla-config exists at pod start, so callers
-// must invoke this once per suite (after a tearDownBeyla) rather than mutating
-// the ConfigMap of a running DaemonSet.
+// deployBeyla applies the shared Beyla manifest and creates the per-suite
+// beyla-config ConfigMap targeting the given namespace. Beyla pods read the
+// ConfigMap only at start, so callers must tearDownBeyla first.
 func deployBeyla(targetNamespace string) error {
-	manifestsDir := filepath.Join(projectDir, "test", "e2e", "manifests")
 	if err := applyManifestFile(filepath.Join(manifestsDir, "beyla.yaml")); err != nil {
 		return fmt.Errorf("apply beyla.yaml: %w", err)
 	}
@@ -213,18 +190,13 @@ func deployBeyla(targetNamespace string) error {
 	return decoder.CreateIgnoreAlreadyExists(k8sClient.Resources())(suiteCtx, cm)
 }
 
-// beylaConfigYAML renders Beyla's config with the target instrumentation
-// namespace and the controller's SDK image version. image_version must match
-// the controller's own SDKInject config (config/test/sdk-inject.yaml).
+// beylaConfigYAML renders Beyla's config targeting the given namespace.
+// image_version must match config/test/sdk-inject.yaml.
 func beylaConfigYAML(targetNamespace string) string {
 	return fmt.Sprintf(`log_level: debug
 attributes:
   kubernetes:
     enable: true
-# OTLP export destinations. The injected SDK's OTLP endpoint is taken from
-# the traces export (one endpoint carries both signals into the per-node
-# ConfigMap that the controller reads). otel_metrics_export is set to the
-# same otel-lgtm address to match the e2e's metrics intent.
 otel_traces_export:
   endpoint: http://lgtm.e2e-lgtm.svc.cluster.local:4318
   protocol: http/protobuf
@@ -232,25 +204,18 @@ otel_metrics_export:
   endpoint: http://lgtm.e2e-lgtm.svc.cluster.local:4318
   protocol: http/protobuf
 injector:
-  # Workloads in these namespaces are recorded in the per-node ConfigMap as
-  # eligible_for_restart and sent to the external controller.
   instrument:
     - k8s_namespace: %s
-  # Delegate mutation to the external controller-manager Deployment. When
-  # set, Beyla skips its own TLS webhook server and only publishes the
-  # per-node ConfigMap.
   webhook:
     external_deployment_name: beyla-k8s-injector/beyla-k8s-injector-controller-manager
   image_version: %s
 `, targetNamespace, sdkImageVersion)
 }
 
-// tearDownBeyla removes the per-suite Beyla state so a subsequent suite starts
-// from a clean slate: the DaemonSet (so the next deployBeyla picks up a fresh
-// ConfigMap), the beyla-config ConfigMap itself, and all per-node injection
-// ConfigMaps Beyla published (which the controller has already drained from its
-// in-memory registry via the delete event — see configmap_controller.go).
-// Errors are intentionally ignored: AfterAll best-effort.
+// tearDownBeyla removes the per-suite Beyla state and waits for the DaemonSet
+// and its pods to be fully gone. Without the wait, the next deployBeyla can
+// silently no-op (CreateIgnoreAlreadyExists) while the previous DaemonSet is
+// still tombstoning, leaving stale pods running with the old beyla-config.
 func tearDownBeyla() {
 	_ = k8sClient.Resources().Delete(suiteCtx,
 		&appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "beyla", Namespace: ctrlNamespace}})
@@ -263,11 +228,19 @@ func tearDownBeyla() {
 			_ = k8sClient.Resources().Delete(suiteCtx, &cms.Items[i])
 		}
 	}
+	Eventually(func(g Gomega) {
+		var ds appsv1.DaemonSet
+		err := k8sClient.Resources().Get(suiteCtx, "beyla", ctrlNamespace, &ds)
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(), "Beyla DaemonSet still exists")
+		var pods corev1.PodList
+		g.Expect(k8sClient.Resources(ctrlNamespace).List(suiteCtx, &pods,
+			resources.WithLabelSelector("app.kubernetes.io/name=beyla"))).To(Succeed())
+		g.Expect(pods.Items).To(BeEmpty(), "Beyla pods still terminating")
+	}, 2*time.Minute, 2*time.Second).Should(Succeed())
 }
 
-// overrideManagerImage rewrites the manager container's image on the deployed
-// controller to the locally-built image loaded into kind, and waits for the Get
-// to succeed (the Deployment exists right after applyKustomization).
+// overrideManagerImage swaps the manager container's image to the locally-built
+// one loaded into kind. Triggers the rollout.
 func overrideManagerImage() {
 	var dep appsv1.Deployment
 	Expect(k8sClient.Resources().Get(suiteCtx, ctrlDeployment, ctrlNamespace, &dep)).
@@ -290,11 +263,14 @@ func waitDeploymentReady(name, ns string, timeout time.Duration) {
 		g.Expect(dep.Status.ObservedGeneration).To(BeNumerically(">=", dep.Generation), "rollout not observed yet")
 		g.Expect(dep.Status.UpdatedReplicas).To(Equal(*dep.Spec.Replicas), "rollout in progress")
 		g.Expect(dep.Status.ReadyReplicas).To(Equal(*dep.Spec.Replicas), "not all replicas ready")
-	}, timeout, 5*time.Second).Should(Succeed())
+	}, timeout, 2*time.Second).Should(Succeed())
 }
 
-// waitWebhookReachable blocks until the controller's mutating webhook has its CA
-// bundle injected by cert-manager and its serving endpoints are programmed.
+// waitWebhookReachable blocks until the validating ConfigMap webhook is
+// actually serving. It waits for CA injection and endpoint programming, then
+// dry-run creates an annotated ConfigMap: either an allow or a webhook-side
+// deny means the server responded. Only a network/handshake error
+// ("failed calling webhook") keeps the probe retrying.
 func waitWebhookReachable() {
 	Eventually(func(g Gomega) {
 		var mwc admissionregistrationv1.MutatingWebhookConfiguration
@@ -316,31 +292,43 @@ func waitWebhookReachable() {
 		g.Expect(addrs).To(BeNumerically(">", 0), "webhook endpoints not yet ready")
 	}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
-	// Give the webhook server a moment to start serving after the endpoint is
-	// programmed, so the first ConfigMap apply doesn't race it.
-	time.Sleep(5 * time.Second)
+	Eventually(func(g Gomega) {
+		probe := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:        "webhook-readiness-probe",
+				Namespace:   ctrlNamespace,
+				Annotations: map[string]string{"beyla.grafana.com/node": ""},
+			},
+		}
+		_, err := clientset.CoreV1().ConfigMaps(ctrlNamespace).Create(suiteCtx, probe, metav1.CreateOptions{
+			DryRun: []string{metav1.DryRunAll},
+		})
+		if err == nil {
+			return
+		}
+		g.Expect(err.Error()).NotTo(ContainSubstring("failed calling webhook"),
+			"webhook server not yet reachable: %v", err)
+	}, 1*time.Minute, 2*time.Second).Should(Succeed())
 }
 
 // waitInstrumentedReadyPod blocks until a pod matching selector in ns is both
-// instrumented (carries injectAnno) and Ready, and returns it.
-func waitInstrumentedReadyPod(ns, selector string) corev1.Pod {
-	var found corev1.Pod
+// instrumented (carries injectAnno) and Ready.
+func waitInstrumentedReadyPod(ns, selector string) {
 	Eventually(func(g Gomega) {
 		var pods corev1.PodList
 		g.Expect(k8sClient.Resources(ns).List(suiteCtx, &pods,
 			resources.WithLabelSelector(selector))).To(Succeed())
-		found = corev1.Pod{}
+		ready := false
 		for i := range pods.Items {
-			p := pods.Items[i]
-			if p.Annotations[injectAnno] != "" && podReady(&p) {
-				found = p
+			p := &pods.Items[i]
+			if p.Annotations[injectAnno] != "" && podReady(p) {
+				ready = true
 				break
 			}
 		}
-		g.Expect(found.Name).NotTo(BeEmpty(),
+		g.Expect(ready).To(BeTrue(),
 			"no instrumented, ready pod for selector %q in %s yet", selector, ns)
-	}, 5*time.Minute, 5*time.Second).Should(Succeed())
-	return found
+	}, 5*time.Minute, 2*time.Second).Should(Succeed())
 }
 
 // podReady reports whether the pod's Ready condition is True.
@@ -353,24 +341,22 @@ func podReady(p *corev1.Pod) bool {
 	return false
 }
 
-// tempoSearchResult is the slice of Tempo's /api/search response the suite
-// asserts on: just the list of matching traces.
+// tempoSearchResult is the slice of Tempo's /api/search response we read.
 type tempoSearchResult struct {
 	Traces []struct {
 		TraceID string `json:"traceID"`
 	} `json:"traces"`
 }
 
-// tempoHasTraces runs each TraceQL query in order against Tempo's instant search
-// API and returns the first query that yields at least one trace, plus the
-// number of traces it returned. Trying several candidate queries keeps the
-// assertion resilient to the exact resource.service.name the injector stamps.
-func tempoHasTraces(baseURL string, queries ...string) (string, int, error) {
+// tempoHasTraces tries each TraceQL query in order and returns the first to
+// match plus its trace count. Multiple queries keep the assertion resilient
+// to the exact resource.service.name the injector stamps.
+func tempoHasTraces(queries ...string) (string, int, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	last := ""
 	for _, q := range queries {
 		last = q
-		u := baseURL + "/api/search?q=" + url.QueryEscape(q) + "&limit=20"
+		u := tempoBaseURL + "/api/search?q=" + url.QueryEscape(q) + "&limit=20"
 		resp, err := client.Get(u) //nolint:gosec // test-only request to a local Tempo
 		if err != nil {
 			return q, 0, err
@@ -394,8 +380,7 @@ func tempoHasTraces(baseURL string, queries ...string) (string, int, error) {
 	return last, 0, nil
 }
 
-// dumpPodLogs writes the tail of logs for a labeled workload to the Ginkgo
-// writer, for failure diagnostics.
+// dumpPodLogs writes the tail of logs for matching pods to the Ginkgo writer.
 func dumpPodLogs(what, ns, selector string) {
 	By(fmt.Sprintf("dumping %s diagnostics", what))
 	var pods corev1.PodList
@@ -418,8 +403,8 @@ func dumpPodLogs(what, ns, selector string) {
 	}
 }
 
-// dumpInjectionConfigMaps writes the per-node injection ConfigMaps Beyla
-// published, for failure diagnostics.
+// dumpInjectionConfigMaps writes each per-node injection ConfigMap to the
+// Ginkgo writer.
 func dumpInjectionConfigMaps() {
 	By("dumping per-node injection ConfigMaps")
 	var cms corev1.ConfigMapList

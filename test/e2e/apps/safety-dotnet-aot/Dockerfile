@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:9.0.315 AS build
 # clang is the platform linker required by Native AOT on Linux.
 RUN apt-get update && apt-get install -y --no-install-recommends clang zlib1g-dev && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
@@ -13,7 +13,7 @@ RUN ARCH=$(uname -m) && \
     esac && \
     dotnet publish -c Release -r "$RID" -o /out
 
-FROM mcr.microsoft.com/dotnet/runtime-deps:9.0
+FROM mcr.microsoft.com/dotnet/runtime-deps:9.0.17
 WORKDIR /app
 COPY --from=build /out .
 ENTRYPOINT ["./App"]

@@ -2,6 +2,11 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
   - role: control-plane
+    # Node image must match the kind binary version e2e-framework pins
+    # (v0.26.0 → v1.32.0). Bumping this requires bumping sigs.k8s.io/e2e-framework
+    # in go.mod first; otherwise "kind load docker-image" fails with
+    # "failed to detect containerd snapshotter".
+    image: kindest/node:v1.32.0
     # Maps otel-lgtm's NodePorts to the host so the suite can query the backends
     # directly, without a long-lived `kubectl port-forward`:
     #   - 30090 -> Prometheus (PromQL: http://127.0.0.1:30090/api/v1/query)

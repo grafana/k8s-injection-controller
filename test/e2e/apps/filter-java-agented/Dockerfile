@@ -1,4 +1,4 @@
-FROM eclipse-temurin:21 AS build
+FROM eclipse-temurin:21.0.11_10-jdk AS build
 WORKDIR /app
 
 # Compile the HTTP server app
@@ -13,7 +13,7 @@ RUN mkdir nop && \
     printf 'Premain-Class: NopAgent\n' > nop/MANIFEST.MF && \
     jar cfm nop-agent.jar nop/MANIFEST.MF -C nop NopAgent.class
 
-FROM eclipse-temurin:21-jre
+FROM eclipse-temurin:21.0.11_10-jre
 WORKDIR /app
 COPY --from=build /app/*.class .
 COPY --from=build /app/nop-agent.jar /opt/nop-agent.jar

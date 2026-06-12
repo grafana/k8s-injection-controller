@@ -19,18 +19,12 @@ limitations under the License.
 package e2e
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-
-	"github.com/docker/docker/api/types/build"
-	dockerclient "github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/jsonmessage"
-	"github.com/moby/go-archive"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,9 +39,7 @@ const (
 	sdkJavaApp       = "sdk-java"
 	sdkDotnetApp     = "sdk-dotnet"
 	sdkDotnetMuslApp = "sdk-dotnet-musl"
-)
 
-var (
 	sdkNodejsImage     = "sdk-nodejs-app:dev"
 	sdkPythonImage     = "sdk-python-app:dev"
 	sdkPythonMuslImage = "sdk-python-musl-app:dev"
@@ -56,8 +48,7 @@ var (
 	sdkDotnetMuslImage = "sdk-dotnet-musl-app:dev"
 )
 
-// sdkAppDirs returns, in build order, each SDK test app's source directory and
-// the image tag to assign it. Used by BeforeSuite to build and load all images.
+// sdkAppDirs returns each SDK test app's source directory and image tag.
 func sdkAppDirs(projectDir string) []struct{ dir, tag string } {
 	base := filepath.Join(projectDir, "test", "e2e", "apps")
 	return []struct{ dir, tag string }{
@@ -70,26 +61,22 @@ func sdkAppDirs(projectDir string) []struct{ dir, tag string } {
 	}
 }
 
+var sdkApps = []string{
+	sdkNodejsApp, sdkPythonApp, sdkPythonMuslApp,
+	sdkJavaApp, sdkDotnetApp, sdkDotnetMuslApp,
+}
+
 var _ = Describe("SDK auto-instrumentation pipeline", Ordered, func() {
-	// This suite exercises the full Beyla -> k8s-injection-controller ->
-	// inject-sdk-image -> LGTM pipeline in three acts:
-	//
-	//   1. Apps running, Beyla absent: Tempo is empty for all SDK app services.
+	// Three acts under Ginkgo's Ordered container:
+	//   1. Apps running, Beyla absent: Tempo is empty.
 	//   2. Beyla deploys and writes its per-node injection ConfigMap.
 	//   3. Each language SDK is installed and spans flow to Tempo.
-	//
-	// The ordering is enforced by Ginkgo's Ordered container: each spec sees
-	// the state left by the previous one, so the "no spans" assertion in act 1
-	// genuinely precedes Beyla deployment in act 2.
 
 	BeforeAll(func() {
-		manifestsDir := filepath.Join(projectDir, "test", "e2e", "manifests")
-
-		// The safety suite (e2e_instrumentation_safety_test.go) sorts before
-		// this file and deletes e2e-lgtm in its AfterAll. Wait for it to be
-		// fully gone before trying to recreate it.
+		// The safety suite sorts before this one and deletes e2e-lgtm in its
+		// AfterAll. Wait for it to be fully gone before recreating it.
 		By("waiting for previous lgtm namespace to finish terminating")
-		waitNamespaceDeleted(lgtmNS, 2*time.Minute)
+		waitNamespaceDeleted(lgtmNS)
 
 		By("deploying grafana/otel-lgtm")
 		Expect(applyManifestFile(filepath.Join(manifestsDir, "instrumentation-lgtm.yaml"))).To(Succeed())
@@ -101,7 +88,7 @@ var _ = Describe("SDK auto-instrumentation pipeline", Ordered, func() {
 		waitDeploymentReady("lgtm", lgtmNS, 5*time.Minute)
 
 		By("waiting for SDK app Deployments to roll out")
-		for _, app := range []string{sdkNodejsApp, sdkPythonApp, sdkPythonMuslApp, sdkJavaApp, sdkDotnetApp, sdkDotnetMuslApp} {
+		for _, app := range sdkApps {
 			waitDeploymentReady(app, sdkTestNS, 5*time.Minute)
 		}
 	})
@@ -135,20 +122,19 @@ var _ = Describe("SDK auto-instrumentation pipeline", Ordered, func() {
 	})
 
 	SetDefaultEventuallyTimeout(5 * time.Minute)
-	SetDefaultEventuallyPollingInterval(10 * time.Second)
+	SetDefaultEventuallyPollingInterval(2 * time.Second)
 
 	// ---- Act 1: apps are running and receiving traffic, but uninstrumented ----
 
 	It("apps produce no telemetry before Beyla instruments them", func() {
 		By("letting load generators drive traffic to the uninstrumented apps")
-		// Apps are Ready (BeforeAll waited for rollouts) and load generators are
-		// already curling them. Wait long enough for any hypothetical spans to
-		// have been exported before asserting the absence.
-		time.Sleep(15 * time.Second)
+		// Small buffer in case anything is in flight; apps have no SDK so 0
+		// spans is the steady state.
+		time.Sleep(5 * time.Second)
 
 		By("asserting Tempo has no spans for any SDK app service")
-		for _, svcName := range []string{sdkNodejsApp, sdkPythonApp, sdkPythonMuslApp, sdkJavaApp, sdkDotnetApp, sdkDotnetMuslApp} {
-			_, n, err := tempoHasTraces(tempoBaseURL,
+		for _, svcName := range sdkApps {
+			_, n, err := tempoHasTraces(
 				fmt.Sprintf(`{ resource.service.name = "%s" }`, svcName),
 			)
 			Expect(err).NotTo(HaveOccurred(), "Tempo query failed for %s", svcName)
@@ -166,8 +152,6 @@ var _ = Describe("SDK auto-instrumentation pipeline", Ordered, func() {
 		waitBeylaReady()
 
 		By("waiting until Beyla writes a per-node injection ConfigMap")
-		// Beyla stamps the ConfigMap with the beyla.grafana.com/node annotation
-		// (the same key it uses as the selector annotation on the ConfigMap itself).
 		Eventually(func(g Gomega) {
 			var cms corev1.ConfigMapList
 			g.Expect(k8sClient.Resources(ctrlNamespace).List(suiteCtx, &cms,
@@ -237,11 +221,11 @@ var _ = Describe("SDK auto-instrumentation pipeline", Ordered, func() {
 	})
 })
 
-// assertTempoHasSpansForService queries Tempo until at least one trace exists
-// for the given service name, or the Eventually timeout fires.
+// assertTempoHasSpansForService polls Tempo until at least one trace exists
+// for the given service name.
 func assertTempoHasSpansForService(serviceName string) {
 	Eventually(func(g Gomega) {
-		matched, n, err := tempoHasTraces(tempoBaseURL,
+		matched, n, err := tempoHasTraces(
 			fmt.Sprintf(`{ resource.service.name = "%s" }`, serviceName),
 			fmt.Sprintf(`{ resource.service.name =~ "%s.*" }`, serviceName),
 		)
@@ -249,48 +233,4 @@ func assertTempoHasSpansForService(serviceName string) {
 		g.Expect(n).To(BeNumerically(">", 0),
 			"no HTTP server spans in Tempo for service %q yet (last query: %s)", serviceName, matched)
 	}).Should(Succeed())
-}
-
-// buildSDKAppImages builds all SDK test app Docker images. Each app lives in
-// its own subdirectory under test/e2e/apps/ with its own Dockerfile. The images
-// are loaded into Kind by BeforeSuite immediately after this returns.
-func buildSDKAppImages(ctx context.Context, projectDir string) error {
-	for _, app := range sdkAppDirs(projectDir) {
-		if err := buildImage(ctx, app.dir, app.tag); err != nil {
-			return fmt.Errorf("building %s: %w", app.tag, err)
-		}
-	}
-	return nil
-}
-
-// buildImage builds a Docker image from dir, tagging it as tag. It uses the
-// Docker Engine Go SDK so no `docker` CLI is required. The entire dir is used
-// as the build context (app directories are small; no exclusions needed).
-func buildImage(ctx context.Context, dir, tag string) error {
-	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
-	if err != nil {
-		return fmt.Errorf("creating docker client: %w", err)
-	}
-	defer func() { _ = cli.Close() }()
-
-	buildContext, err := archive.TarWithOptions(dir, &archive.TarOptions{})
-	if err != nil {
-		return fmt.Errorf("creating build context: %w", err)
-	}
-	defer func() { _ = buildContext.Close() }()
-
-	resp, err := cli.ImageBuild(ctx, buildContext, build.ImageBuildOptions{
-		Tags:       []string{tag},
-		Dockerfile: "Dockerfile",
-		Remove:     true,
-	})
-	if err != nil {
-		return fmt.Errorf("starting image build: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if err := jsonmessage.DisplayJSONMessagesStream(resp.Body, GinkgoWriter, 0, false, nil); err != nil {
-		return fmt.Errorf("image build failed: %w", err)
-	}
-	return nil
 }

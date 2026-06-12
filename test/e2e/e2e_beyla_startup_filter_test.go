@@ -36,16 +36,14 @@ const (
 	filterDotnetHookedApp = "filter-dotnet-hooked"
 	filterPythonOldApp    = "filter-python-old"
 	filterNodejsApp       = "filter-nodejs"
-)
 
-var (
 	filterJavaAgentedImage  = "filter-java-agented-app:dev"
 	filterDotnetHookedImage = "filter-dotnet-hooked-app:dev"
 )
 
-// filterAppDirs returns the app directories that need images built for this suite.
-// filter-python-old reuses safety-python-old-app:dev; filter-nodejs reuses
-// sdk-nodejs-app:dev. Only the two new images need separate builds.
+// filterAppDirs returns only the two new images this suite needs;
+// filter-python-old reuses safety-python-old-app:dev and filter-nodejs reuses
+// sdk-nodejs-app:dev.
 func filterAppDirs(projectDir string) []struct{ dir, tag string } {
 	base := filepath.Join(projectDir, "test", "e2e", "apps")
 	return []struct{ dir, tag string }{
@@ -55,26 +53,14 @@ func filterAppDirs(projectDir string) []struct{ dir, tag string } {
 }
 
 var _ = Describe("Beyla startup compatibility filter", Ordered, func() {
-	// Beyla's initial process scan marks processes incompatible when they already
-	// carry instrumentation (Java -javaagent, .NET DOTNET_STARTUP_HOOKS) or use
-	// an unsupported runtime (Python < 3.9). Incompatible workloads are omitted
-	// from eligible_for_restart.yaml so the controller never restarts them.
-	//
-	// This suite deploys incompatible workloads BEFORE Beyla starts so the
-	// initial scan sees them, then asserts they are absent from
-	// eligible_for_restart while a compatible workload (Node.js) is present.
-	// The Node.js presence confirms Beyla scanned the namespace, making the
-	// absences meaningful rather than vacuously true.
-	//
-	// This is intentional Beyla behavior, not a gap. The corresponding test for
-	// what happens to new pods that bypass this filter (admitted directly by the
-	// webhook after Beyla has started) is in e2e_instrumentation_safety_test.go.
+	// Beyla's initial process scan omits already-instrumented or unsupported
+	// processes from eligible_for_restart. We deploy such workloads BEFORE
+	// Beyla starts and assert they're absent (while a compatible Node.js
+	// workload is present, proving the scan ran).
 
 	BeforeAll(func() {
-		manifestsDir := filepath.Join(projectDir, "test", "e2e", "manifests")
-
 		By("waiting for previous filter-test namespace to finish terminating")
-		waitNamespaceDeleted(filterTestNS, 2*time.Minute)
+		waitNamespaceDeleted(filterTestNS)
 
 		By("deploying incompatible and compatible workloads before Beyla starts")
 		Expect(applyManifestFile(filepath.Join(manifestsDir, "beyla-startup-filter-apps.yaml"))).To(Succeed())
@@ -100,12 +86,11 @@ var _ = Describe("Beyla startup compatibility filter", Ordered, func() {
 	})
 
 	SetDefaultEventuallyTimeout(5 * time.Minute)
-	SetDefaultEventuallyPollingInterval(10 * time.Second)
+	SetDefaultEventuallyPollingInterval(2 * time.Second)
 
 	It("Beyla excludes incompatible existing workloads from eligible_for_restart", func() {
 		By("waiting for Beyla to scan the namespace and add the compatible workload")
-		// The compatible Node.js workload appearing in eligible_for_restart confirms
-		// Beyla has finished its initial scan. Only then are the absences meaningful.
+		// Node.js appearing first confirms the scan ran, making the absences meaningful.
 		Eventually(func(g Gomega) {
 			g.Expect(fetchEligibleForRestart(g)).To(ContainSubstring(filterNodejsApp),
 				"compatible workload not yet in eligible_for_restart; Beyla may not have finished scanning")

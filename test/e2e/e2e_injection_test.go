@@ -38,29 +38,20 @@ import (
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 )
 
-// These names track the kustomize namePrefix (config/default/kustomization.yaml)
-// and namespace (config/default/kustomization.yaml). If you change either,
-// update these to match.
-const namespace = "beyla-k8s-injector"
-const serviceAccountName = "beyla-k8s-injector-controller-manager"
-const metricsServiceName = "beyla-k8s-injector-controller-manager-metrics-service"
-const webhookServiceName = "beyla-k8s-injector-webhook-service"
-const mutatingWebhookConfigName = "beyla-k8s-injector-mutating-webhook-configuration"
+const (
+	serviceAccountName = "beyla-k8s-injector-controller-manager"
+	metricsServiceName = "beyla-k8s-injector-controller-manager-metrics-service"
+)
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
 
-	// The controller, webhook and cert-manager are stood up once for the whole
-	// suite (see BeforeSuite); these specs run against that shared deployment.
-
-	// After each test, check for failures and collect logs, events,
-	// and pod descriptions for debugging.
 	AfterEach(func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
 			if controllerPodName != "" {
 				By("Fetching controller manager pod logs")
-				if controllerLogs, err := podLogs(namespace, controllerPodName); err == nil {
+				if controllerLogs, err := podLogs(ctrlNamespace, controllerPodName); err == nil {
 					_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
 				} else {
 					_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Controller logs: %s", err)
@@ -68,14 +59,14 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 
 			By("Fetching Kubernetes events")
-			if eventsOutput, err := events(namespace); err == nil {
+			if eventsOutput, err := events(ctrlNamespace); err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Kubernetes events:\n%s", eventsOutput)
 			} else {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get Kubernetes events: %s", err)
 			}
 
 			By("Fetching curl-metrics logs")
-			if metricsOutput, err := podLogs(namespace, "curl-metrics"); err == nil {
+			if metricsOutput, err := podLogs(ctrlNamespace, "curl-metrics"); err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Metrics logs:\n %s", metricsOutput)
 			} else {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Failed to get curl-metrics logs: %s", err)
@@ -84,7 +75,7 @@ var _ = Describe("Manager", Ordered, func() {
 			if controllerPodName != "" {
 				By("Fetching controller manager pod status")
 				var pod corev1.Pod
-				if err := k8sClient.Resources().Get(suiteCtx, controllerPodName, namespace, &pod); err == nil {
+				if err := k8sClient.Resources().Get(suiteCtx, controllerPodName, ctrlNamespace, &pod); err == nil {
 					fmt.Printf("Pod status:\n phase=%s\n conditions=%+v\n containerStatuses=%+v\n",
 						pod.Status.Phase, pod.Status.Conditions, pod.Status.ContainerStatuses)
 				} else {
@@ -103,7 +94,7 @@ var _ = Describe("Manager", Ordered, func() {
 			verifyControllerUp := func(g Gomega) {
 				By("getting the name of the controller-manager pod")
 				var pods corev1.PodList
-				g.Expect(k8sClient.Resources(namespace).List(suiteCtx, &pods,
+				g.Expect(k8sClient.Resources(ctrlNamespace).List(suiteCtx, &pods,
 					resources.WithLabelSelector("control-plane=controller-manager"))).
 					To(Succeed(), "Failed to retrieve controller-manager pod information")
 
@@ -119,7 +110,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 				By("validating the pod's status")
 				var pod corev1.Pod
-				g.Expect(k8sClient.Resources().Get(suiteCtx, controllerPodName, namespace, &pod)).To(Succeed())
+				g.Expect(k8sClient.Resources().Get(suiteCtx, controllerPodName, ctrlNamespace, &pod)).To(Succeed())
 				g.Expect(pod.Status.Phase).To(Equal(corev1.PodRunning), "Incorrect controller-manager pod status")
 			}
 			Eventually(verifyControllerUp).Should(Succeed())
@@ -127,26 +118,23 @@ var _ = Describe("Manager", Ordered, func() {
 
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("validating that the metrics service is available")
-			// config/test runs the manager with --metrics-secure=false, so the
-			// metrics endpoint is plain HTTP on :8443 with no authn/authz filter
-			// (this is how the controller's metrics are scraped in production too,
-			// see the Helm chart). The curl below therefore uses HTTP and needs no
-			// bearer token / metrics-reader RBAC.
+			// config/test runs --metrics-secure=false, so the endpoint is plain HTTP
+			// on :8443 with no authn/authz filter — no bearer token needed.
 			var metricsSvc corev1.Service
-			Expect(k8sClient.Resources().Get(suiteCtx, metricsServiceName, namespace, &metricsSvc)).
+			Expect(k8sClient.Resources().Get(suiteCtx, metricsServiceName, ctrlNamespace, &metricsSvc)).
 				To(Succeed(), "Metrics service should exist")
 
 			By("ensuring the controller pod is ready")
 			verifyControllerPodReady := func(g Gomega) {
 				var pod corev1.Pod
-				g.Expect(k8sClient.Resources().Get(suiteCtx, controllerPodName, namespace, &pod)).To(Succeed())
+				g.Expect(k8sClient.Resources().Get(suiteCtx, controllerPodName, ctrlNamespace, &pod)).To(Succeed())
 				g.Expect(podReady(&pod)).To(BeTrue(), "Controller pod not ready")
 			}
 			Eventually(verifyControllerPodReady, 3*time.Minute, time.Second).Should(Succeed())
 
 			By("verifying that the controller manager is serving the metrics server")
 			verifyMetricsServerStarted := func(g Gomega) {
-				output, err := podLogs(namespace, controllerPodName)
+				output, err := podLogs(ctrlNamespace, controllerPodName)
 				g.Expect(err).NotTo(HaveOccurred())
 				g.Expect(output).To(ContainSubstring("Serving metrics server"),
 					"Metrics server not yet started")
@@ -156,8 +144,8 @@ var _ = Describe("Manager", Ordered, func() {
 			By("waiting for the webhook service endpoints to be ready")
 			verifyWebhookEndpointsReady := func(g Gomega) {
 				var slices discoveryv1.EndpointSliceList
-				g.Expect(k8sClient.Resources(namespace).List(suiteCtx, &slices,
-					resources.WithLabelSelector("kubernetes.io/service-name="+webhookServiceName))).
+				g.Expect(k8sClient.Resources(ctrlNamespace).List(suiteCtx, &slices,
+					resources.WithLabelSelector("kubernetes.io/service-name="+webhookService))).
 					To(Succeed(), "Webhook endpoints should exist")
 				var addresses []string
 				for _, slice := range slices.Items {
@@ -177,26 +165,25 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 			Eventually(verifyMutatingWebhookReady, 3*time.Minute, time.Second).Should(Succeed())
 
-			By("waiting additional time for webhook server to stabilize")
-			time.Sleep(5 * time.Second)
+			// BeforeSuite already ran waitWebhookReachable with a real probe,
+			// so no extra stabilize sleep is needed here.
 
 			// +kubebuilder:scaffold:e2e-webhooks-readiness
 
 			By("creating the curl-metrics pod to access the metrics endpoint")
-			// The assertions are spec-level; the pod retries the in-cluster HTTP
-			// request a few times to ride out the metrics server warming up.
+			// Pod retries to ride out the metrics server warming up.
 			curlScript := fmt.Sprintf(
 				"for i in $(seq 1 30); do curl -v "+
 					"http://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1",
-				metricsServiceName, namespace)
+				metricsServiceName, ctrlNamespace)
 			curlPod := &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{Name: "curl-metrics", Namespace: namespace},
+				ObjectMeta: metav1.ObjectMeta{Name: "curl-metrics", Namespace: ctrlNamespace},
 				Spec: corev1.PodSpec{
 					RestartPolicy:      corev1.RestartPolicyNever,
 					ServiceAccountName: serviceAccountName,
 					Containers: []corev1.Container{{
 						Name:    "curl",
-						Image:   "curlimages/curl:latest",
+						Image:   "curlimages/curl:8.11.0",
 						Command: []string{"/bin/sh", "-c"},
 						Args:    []string{curlScript},
 						SecurityContext: &corev1.SecurityContext{
@@ -213,13 +200,13 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(k8sClient.Resources().Create(suiteCtx, curlPod)).To(Succeed(), "Failed to create curl-metrics pod")
 			DeferCleanup(func() {
 				_ = k8sClient.Resources().Delete(suiteCtx,
-					&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "curl-metrics", Namespace: namespace}})
+					&corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "curl-metrics", Namespace: ctrlNamespace}})
 			})
 
 			By("waiting for the curl-metrics pod to complete.")
 			verifyCurlUp := func(g Gomega) {
 				var pod corev1.Pod
-				g.Expect(k8sClient.Resources().Get(suiteCtx, "curl-metrics", namespace, &pod)).To(Succeed())
+				g.Expect(k8sClient.Resources().Get(suiteCtx, "curl-metrics", ctrlNamespace, &pod)).To(Succeed())
 				g.Expect(pod.Status.Phase).To(Equal(corev1.PodSucceeded), "curl pod in wrong status")
 			}
 			Eventually(verifyCurlUp, 5*time.Minute).Should(Succeed())
@@ -238,7 +225,7 @@ var _ = Describe("Manager", Ordered, func() {
 			By("validating that cert-manager has the certificate Secret")
 			verifyCertManager := func(g Gomega) {
 				var secret corev1.Secret
-				g.Expect(k8sClient.Resources().Get(suiteCtx, "webhook-server-cert", namespace, &secret)).To(Succeed())
+				g.Expect(k8sClient.Resources().Get(suiteCtx, "webhook-server-cert", ctrlNamespace, &secret)).To(Succeed())
 			}
 			Eventually(verifyCertManager).Should(Succeed())
 		})
@@ -256,10 +243,8 @@ var _ = Describe("Manager", Ordered, func() {
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 	})
 
-	// Exercises the full instrument → re-configure → uninstrument lifecycle
-	// against the deployed controller + webhook, the way Beyla drives it via the
-	// per-node ConfigMap. Runs after the readiness checks above so the webhook is
-	// known to be serving.
+	// Exercises the full instrument → re-configure → uninstrument lifecycle the
+	// way Beyla drives it via the per-node ConfigMap.
 	Context("Injection lifecycle", func() {
 		const (
 			workloadNS = "beyla-inject-e2e"
@@ -281,50 +266,41 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(k8sClient.Resources().Create(suiteCtx, sampleDeployment(workloadNS, workload))).To(Succeed())
 
 			By("granting Beyla's ServiceAccount RBAC to write injection ConfigMaps")
-			Expect(k8sClient.Resources().Create(suiteCtx, beylaWriterRole(namespace))).To(Succeed())
-			DeferCleanup(func() { _ = k8sClient.Resources().Delete(suiteCtx, beylaWriterRole(namespace)) })
-			Expect(k8sClient.Resources().Create(suiteCtx, beylaWriterRoleBinding(namespace, allowedConfigMapWriter))).
+			Expect(k8sClient.Resources().Create(suiteCtx, beylaWriterRole(ctrlNamespace))).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Resources().Delete(suiteCtx, beylaWriterRole(ctrlNamespace)) })
+			Expect(k8sClient.Resources().Create(suiteCtx, beylaWriterRoleBinding(ctrlNamespace, allowedConfigMapWriter))).
 				To(Succeed())
 			DeferCleanup(func() {
-				_ = k8sClient.Resources().Delete(suiteCtx, beylaWriterRoleBinding(namespace, allowedConfigMapWriter))
+				_ = k8sClient.Resources().Delete(suiteCtx, beylaWriterRoleBinding(ctrlNamespace, allowedConfigMapWriter))
 			})
 
 			// ---- Step 1: Beyla sends a ConfigMap that instruments the workload ----
 			By("asserting an unauthorized identity cannot write an injection ConfigMap")
-			// The kind-admin is neither on ALLOWED_CONFIGMAP_WRITERS nor in
-			// system:masters, so the validating webhook must reject it. This is
-			// the security control that stops an unprivileged principal from
-			// steering instrumentation by planting an annotated ConfigMap.
-			// Retry through the cert-manager CA-injection window: until the
-			// apiserver can reach the webhook (failurePolicy=Fail), the error is
-			// "webhook unreachable" rather than the actual "not authorized".
+			// kind-admin is neither on ALLOWED_CONFIGMAP_WRITERS nor in system:masters
+			// here, so the validating webhook rejects it. Retry through the
+			// CA-injection window — until the apiserver can reach the webhook, the
+			// error is "webhook unreachable" rather than "not authorized".
 			Eventually(func(g Gomega) {
 				err := k8sClient.Resources().Create(suiteCtx,
-					selectorConfigMap(cmName, namespace, workloadNS, workload, workloadNS, sdkImageVersion))
+					selectorConfigMap(cmName, ctrlNamespace, workloadNS, workload, workloadNS, sdkImageVersion))
 				g.Expect(err).To(HaveOccurred(), "expected the validating webhook to deny the unauthorized write")
 				g.Expect(err.Error()).To(ContainSubstring("not authorized"))
 			}, time.Minute, 5*time.Second).Should(Succeed())
 
 			By("applying the Beyla ConfigMap whose criteria select the workload namespace")
-			// The ConfigMap lives in the controller's own namespace (the single
-			// watched namespace), mirroring how Beyla writes it into its own
-			// namespace; its criteria/eligible entries target workloadNS. The
-			// ConfigMap validating webhook runs failurePolicy=Fail in this
-			// namespace, so retry to wait out the brief cert-manager
-			// CA-injection window before the apiserver can reach the webhook.
-			// The suite's kind-admin identity passes the webhook via the
-			// system:masters break-glass path.
+			// The ConfigMap lives in the controller's own namespace; criteria
+			// target workloadNS. applyConfigMap uses Beyla's impersonated SA so
+			// the validating webhook approves via the allowlist.
 			Eventually(func(g Gomega) {
 				g.Expect(applyConfigMap(
-					selectorConfigMap(cmName, namespace, workloadNS, workload, workloadNS, sdkImageVersion))).
+					selectorConfigMap(cmName, ctrlNamespace, workloadNS, workload, workloadNS, sdkImageVersion))).
 					To(Succeed())
 			}, time.Minute, 5*time.Second).Should(Succeed())
 
 			By("waiting until the workload pod is instrumented by the webhook")
-			// The controller loads the ConfigMap into its in-memory registry
-			// asynchronously, so a pod admitted before that comes up clean. Deleting
-			// such a pod lets the ReplicaSet recreate it; the loop converges once the
-			// registry is populated (or the controller's own rollout sweep fires).
+			// Controller loads the ConfigMap asynchronously, so an early-admitted
+			// pod comes up clean. Deleting it lets the ReplicaSet recreate it
+			// once the registry is populated.
 			Eventually(func(g Gomega) {
 				pods := podsWithLabel(g, workloadNS, "app="+workload)
 				g.Expect(pods).NotTo(BeEmpty(), "no workload pods yet")
@@ -336,18 +312,18 @@ var _ = Describe("Manager", Ordered, func() {
 					"workload pod was not instrumented")
 			}, 3*time.Minute, 5*time.Second).Should(Succeed())
 
-			// The controller may instrument pre-existing pods by rolling the
-			// Deployment, so capture the current rollout marker to tell that roll
-			// apart from the uninstrument roll triggered in step 3.
+			// Capture the current rollout marker so the uninstrument roll in
+			// step 3 is distinguishable from any roll the controller did to
+			// instrument pre-existing pods.
 			revBefore, _ := restartedAt(workloadNS, workload)
 
 			// ---- Step 2: Beyla updates the config to exclude the workload ----
 			By("updating the ConfigMap so the criteria no longer match the workload")
-			// The workload stays listed in eligible_for_restart so the controller
-			// re-evaluates it and notices it is instrumented-but-unmatched.
+			// Workload stays in eligible_for_restart so the controller re-evaluates
+			// it and sees instrumented-but-unmatched.
 			Eventually(func(g Gomega) {
 				g.Expect(applyConfigMap(
-					selectorConfigMap(cmName, namespace, workloadNS, workload, "somewhere-else", sdkImageVersion))).
+					selectorConfigMap(cmName, ctrlNamespace, workloadNS, workload, "somewhere-else", sdkImageVersion))).
 					To(Succeed())
 			}, time.Minute, 5*time.Second).Should(Succeed())
 
@@ -375,7 +351,7 @@ var _ = Describe("Manager", Ordered, func() {
 
 // getMetricsOutput returns the logs from the curl pod used to access the metrics endpoint.
 func getMetricsOutput() (string, error) {
-	return podLogs(namespace, "curl-metrics")
+	return podLogs(ctrlNamespace, "curl-metrics")
 }
 
 // podLogs streams the logs of a pod's first container.
@@ -408,7 +384,7 @@ func events(ns string) (string, error) {
 // MutatingWebhookConfiguration (empty until cert-manager's ca-injector fills it).
 func mutatingWebhookCABundle() ([]byte, error) {
 	var mwc admissionregistrationv1.MutatingWebhookConfiguration
-	if err := k8sClient.Resources().Get(suiteCtx, mutatingWebhookConfigName, "", &mwc); err != nil {
+	if err := k8sClient.Resources().Get(suiteCtx, mutatingWHName, "", &mwc); err != nil {
 		return nil, err
 	}
 	var bundle []byte
@@ -436,11 +412,9 @@ func restartedAt(ns, deployment string) (string, error) {
 	return d.Spec.Template.Annotations["beyla.grafana.com/restartedAt"], nil
 }
 
-// applyConfigMap creates the ConfigMap, or updates it in place if it already
-// exists, giving the apply-like semantics the lifecycle test relies on.
-// applyConfigMap upserts the ConfigMap as Beyla's ServiceAccount (via the
-// impersonating client), so the write is admitted by the validating webhook
-// the same way it would be in production.
+// applyConfigMap upserts cm as Beyla's impersonated ServiceAccount, so the
+// write is admitted by the validating webhook the same way it would be in
+// production.
 func applyConfigMap(cm *corev1.ConfigMap) error {
 	cms := beylaClientset.CoreV1().ConfigMaps(cm.Namespace)
 	existing, err := cms.Get(suiteCtx, cm.Name, metav1.GetOptions{})
@@ -457,9 +431,8 @@ func applyConfigMap(cm *corev1.ConfigMap) error {
 	return err
 }
 
-// sampleDeployment renders a minimal workload. The pause image runs without a
-// shell and ignores the env/volume the webhook injects, so the pod reaches
-// Ready and rolling updates complete regardless of injection state.
+// sampleDeployment renders a minimal pause-image workload that reaches Ready
+// regardless of injection state.
 func sampleDeployment(ns, name string) *appsv1.Deployment {
 	return &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
@@ -480,9 +453,8 @@ func sampleDeployment(ns, name string) *appsv1.Deployment {
 }
 
 // beylaWriterRole grants the verbs Beyla needs to upsert its per-node state
-// ConfigMaps. In production this RBAC ships with Beyla's own deployment (this
-// controller repo only grants itself read access); the e2e recreates it so the
-// impersonated writes are authorized by RBAC as well as by the webhook.
+// ConfigMaps. Production ships this RBAC with Beyla; the e2e recreates it so
+// the impersonated writes are authorized.
 func beylaWriterRole(ns string) *rbacv1.Role {
 	return &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{Name: "beyla-configmap-writer", Namespace: ns},
@@ -504,12 +476,11 @@ func beylaWriterRoleBinding(ns, user string) *rbacv1.RoleBinding {
 	}
 }
 
-// selectorConfigMap renders the per-node ConfigMap Beyla writes: the image
-// version + an ordered list of rules under instrumentation.yaml, and the
-// workload under eligible_for_restart.yaml. discoveryNS is the namespace the
-// rule's k8s_selector matches (set it to the workload namespace to instrument,
-// elsewhere to exclude); the eligible_for_restart entry always names the
-// Deployment so the controller re-evaluates it after the rule stops matching.
+// selectorConfigMap renders the per-node ConfigMap Beyla writes. discoveryNS
+// is what the rule's k8s_selector matches (use the workload namespace to
+// instrument, anything else to exclude); the eligible_for_restart entry
+// always names the Deployment so the controller re-evaluates after a rule
+// stops matching.
 func selectorConfigMap(cmName, cmNamespace, targetNS, deployment, discoveryNS, imageVersion string) *corev1.ConfigMap {
 	instrumentation := fmt.Sprintf(`image_version: %s
 rules:

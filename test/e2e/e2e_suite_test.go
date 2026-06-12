@@ -17,12 +17,10 @@ limitations under the License.
 */
 
 // Package e2e is the end-to-end test suite for the k8s-injection-controller.
-// It covers the controller/webhook in isolation (e2e_injection_test.go) and the
-// full Beyla -> controller -> inject-sdk-image -> LGTM pipeline
-// (e2e_instrumentation_test.go). The suite has no binary prerequisites beyond a
-// reachable Docker daemon: it builds all images with the Docker Go SDK, drives
-// Kubernetes through the e2e-framework Go clients (kind + klient), and renders
-// the controller overlay with the kustomize Go API.
+// See the per-suite files for what each covers. The suite needs only a
+// reachable Docker daemon: it builds images with the Docker Go SDK, drives the
+// cluster through e2e-framework Go clients, and renders the controller overlay
+// with the kustomize Go API.
 package e2e
 
 import (
@@ -48,49 +46,30 @@ import (
 	"github.com/grafana/beyla-k8s-injector/test/utils"
 )
 
-// allowedConfigMapWriter is the identity on the controller's
-// ALLOWED_CONFIGMAP_WRITERS list (Beyla's ServiceAccount, see
-// config/manager/manager.yaml). The injection-lifecycle specs impersonate it to
-// write injection ConfigMaps, exactly as Beyla does in production; the
-// kind-admin identity is intentionally rejected by the ConfigMap validating
-// webhook.
+// allowedConfigMapWriter is on the controller's ALLOWED_CONFIGMAP_WRITERS list.
+// Specs impersonate it to write injection ConfigMaps the way Beyla does.
 const allowedConfigMapWriter = "system:serviceaccount:beyla-k8s-injector:beyla"
 
-var (
-	// managerImage is the manager image built and loaded into the Kind cluster.
-	managerImage = "beyla-k8s-injector:dev-metrics"
-
-	// clusterName is the Kind cluster this suite creates and destroys. It is
-	// distinct from the test/e2e cluster so both suites can run independently.
-	clusterName = "k8s-injection-controller-e2e"
-
-	// projectDir is the module root, resolved once in BeforeSuite.
-	projectDir string
-
-	// testCluster owns the Kind cluster lifecycle for the whole suite.
-	testCluster *kind.Cluster
-	// k8sClient is the typed client the specs use to drive Kubernetes.
-	k8sClient klient.Client
-	// clientset backs the subresource calls klient does not expose directly
-	// (ServiceAccount token requests and pod log streaming for diagnostics).
-	clientset *kubernetes.Clientset
-	// beylaClientset impersonates allowedConfigMapWriter so the injection-lifecycle
-	// specs can write the annotated injection ConfigMaps past the validating
-	// webhook, the way Beyla's ServiceAccount does in production.
-	beylaClientset *kubernetes.Clientset
-	// suiteCtx scopes the cluster/client operations to the suite run.
-	suiteCtx = context.Background()
+const (
+	managerImage = "beyla-k8s-injector:dev"
+	clusterName  = "k8s-injection-controller-e2e"
 )
 
-// TestE2E is the e2e suite entry point. The suite owns its Kind cluster: it
-// builds and loads the manager and app images, creates the cluster, installs
-// CertManager, and tears the cluster down afterwards. The controller is driven
-// in init_container injection mode, so no ImageVolume feature gate or specific
-// node version is required. A Docker daemon and the `kind` tooling the
-// e2e-framework drives must be available.
-//
-// To keep the Kind cluster after the run (e.g. for debugging), set:
-// KIND_KEEP_CLUSTER=true
+var (
+	projectDir   string
+	manifestsDir string
+
+	testCluster    *kind.Cluster
+	k8sClient      klient.Client
+	clientset      *kubernetes.Clientset
+	beylaClientset *kubernetes.Clientset
+	suiteCtx       = context.Background()
+)
+
+// TestE2E owns the Kind cluster lifecycle: build/load images, create the
+// cluster, install CertManager, run specs, destroy the cluster (unless
+// KIND_KEEP_CLUSTER=true). The controller runs in init_container injection
+// mode, so no ImageVolume feature gate is required.
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "e2e suite")
@@ -100,22 +79,15 @@ var _ = BeforeSuite(func() {
 	var err error
 	projectDir, err = utils.GetProjectDir()
 	Expect(err).NotTo(HaveOccurred(), "Failed to resolve project directory")
+	manifestsDir = filepath.Join(projectDir, "test", "e2e", "manifests")
 	kindConfig := filepath.Join(projectDir, "test", "e2e", "kind-config.yaml")
 
 	By("building the manager image with the Docker Go SDK")
-	Expect(buildManagerImage(suiteCtx, projectDir, managerImage)).
+	Expect(buildImage(suiteCtx, projectDir, managerImage, ".git", "bin", "dist")).
 		To(Succeed(), "Failed to build the manager image")
 
-	By("building the SDK language test app images")
-	Expect(buildSDKAppImages(suiteCtx, projectDir)).
-		To(Succeed(), "Failed to build SDK app images")
-
-	By("building the safety test app images")
-	Expect(buildSafetyAppImages(suiteCtx, projectDir)).
-		To(Succeed(), "Failed to build safety app images")
-
-	By("building the Beyla startup filter test app images")
-	for _, app := range filterAppDirs(projectDir) {
+	By("building the SDK, safety, and filter test app images")
+	for _, app := range allAppDirs(projectDir) {
 		Expect(buildImage(suiteCtx, app.dir, app.tag)).
 			To(Succeed(), "Failed to build %s", app.tag)
 	}
@@ -129,20 +101,8 @@ var _ = BeforeSuite(func() {
 	Expect(testCluster.LoadImage(suiteCtx, managerImage)).
 		To(Succeed(), "Failed to load the manager image into Kind")
 
-	By("loading the SDK app images into the Kind cluster")
-	for _, app := range sdkAppDirs(projectDir) {
-		Expect(testCluster.LoadImage(suiteCtx, app.tag)).
-			To(Succeed(), "Failed to load %s into Kind", app.tag)
-	}
-
-	By("loading the safety app images into the Kind cluster")
-	for _, app := range safetyAppDirs(projectDir) {
-		Expect(testCluster.LoadImage(suiteCtx, app.tag)).
-			To(Succeed(), "Failed to load %s into Kind", app.tag)
-	}
-
-	By("loading the Beyla startup filter test app images into the Kind cluster")
-	for _, app := range filterAppDirs(projectDir) {
+	By("loading the test app images into the Kind cluster")
+	for _, app := range allAppDirs(projectDir) {
 		Expect(testCluster.LoadImage(suiteCtx, app.tag)).
 			To(Succeed(), "Failed to load %s into Kind", app.tag)
 	}
@@ -164,30 +124,20 @@ var _ = BeforeSuite(func() {
 		To(Succeed(), "Failed to install CertManager")
 
 	By("ensuring the controller namespace exists")
-	// krusty does not reorder (ReorderOptionNone), so the rendered config/test
-	// lists the namespaced RBAC before the Namespace object. Pre-create the
-	// namespace so the subsequent apply never races resource ordering.
+	// krusty doesn't reorder, so the rendered config/test lists RBAC before the
+	// Namespace. Pre-create to avoid the race.
 	Expect(ensureNamespace(ctrlNamespace)).To(Succeed())
 
 	By("deploying the controller-manager (config/test overlay, rendered with the kustomize Go API)")
-	// config/test mounts a --config that enables the SDK languages (enabled_sdks).
-	// Without it EnabledSDKs is empty and the injector blanks every language
-	// agent path, so injected pods emit no telemetry.
 	Expect(applyKustomization(filepath.Join(projectDir, "config", "test"))).To(Succeed())
 
 	By("pointing the controller-manager at the locally-built image")
-	// config/manager ships a committed image ref; swap in the image we built
-	// and loaded into kind. This also triggers the rollout waited on below.
 	overrideManagerImage()
 
 	By("waiting for the controller-manager rollout to finish")
 	waitDeploymentReady(ctrlDeployment, ctrlNamespace, 3*time.Minute)
 
-	By("waiting for the webhook to be reachable (CA injected + endpoints ready)")
-	// The ConfigMap validating webhook runs failurePolicy=Fail in ctrlNamespace.
-	// It must be reachable before the instrumentation test deploys instrumentation-beyla.yaml,
-	// otherwise Beyla's first ConfigMap write arrives with "connection refused"
-	// and is dropped permanently (no retry on Beyla's side).
+	By("waiting for the webhook to be reachable")
 	waitWebhookReachable()
 })
 
@@ -205,26 +155,19 @@ var _ = AfterSuite(func() {
 	Expect(testCluster.Destroy(context.Background())).To(Succeed(), "Failed to destroy the Kind cluster")
 })
 
-// buildManagerImage builds the manager image from the project's Dockerfile.
-//
-// It deliberately does NOT reuse the project's .dockerignore: that file relies on
-// `**` blanket-ignore + `!` re-include semantics that only BuildKit honors. The
-// SDK's ImageBuild uses the legacy builder, whose context tar prunes any
-// directory not named by a literal exclusion pattern (so `!**/*.go` would drop
-// cmd/, internal/, ... and the build would fail to find the sources). Instead we
-// exclude only the large, build-irrelevant directories and ship the rest; the
-// Dockerfile's `COPY . .` + `go build` simply ignores the extra files (e.g.
-// _test.go) and the final distroless stage copies only the compiled binary.
-func buildManagerImage(ctx context.Context, dir, tag string) error {
+// buildImage builds a Docker image from dir using the Docker Engine Go SDK
+// (no `docker` CLI). excludes is an optional list of directories to omit from
+// the build context — used for the manager build to skip large, irrelevant
+// dirs (.git, bin, dist). The legacy builder doesn't honor BuildKit-style
+// .dockerignore re-includes, so we exclude rather than allowlist.
+func buildImage(ctx context.Context, dir, tag string, excludes ...string) error {
 	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
 		return fmt.Errorf("creating docker client: %w", err)
 	}
 	defer func() { _ = cli.Close() }()
 
-	buildContext, err := archive.TarWithOptions(dir, &archive.TarOptions{
-		ExcludePatterns: []string{".git", "bin", "dist"},
-	})
+	buildContext, err := archive.TarWithOptions(dir, &archive.TarOptions{ExcludePatterns: excludes})
 	if err != nil {
 		return fmt.Errorf("creating build context: %w", err)
 	}
@@ -240,10 +183,14 @@ func buildManagerImage(ctx context.Context, dir, tag string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	// DisplayJSONMessagesStream drains the streamed build output (required for
-	// the build to run to completion) and returns an error if the build failed.
 	if err := jsonmessage.DisplayJSONMessagesStream(resp.Body, GinkgoWriter, 0, false, nil); err != nil {
 		return fmt.Errorf("image build failed: %w", err)
 	}
 	return nil
+}
+
+// allAppDirs returns every test app's source directory and image tag across
+// all per-suite app sets, in build order.
+func allAppDirs(projectDir string) []struct{ dir, tag string } {
+	return append(append(sdkAppDirs(projectDir), safetyAppDirs(projectDir)...), filterAppDirs(projectDir)...)
 }
