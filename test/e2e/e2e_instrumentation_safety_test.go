@@ -63,6 +63,21 @@ const (
 	safetyNodejsESMImage          = "safety-nodejs-esm-app:dev"
 )
 
+var (
+	safetyClass1Apps = []string{
+		safetyPythonOldApp,
+		safetyPythonConflictApp,
+		safetyNodejsOldApp,
+		safetyNodejsSdkInstalledApp,
+		safetyNodejsSdkRequiredApp,
+	}
+	safetyClass2Apps = []string{
+		safetyJavaGraalvmApp,
+		safetyDotnetAOTApp,
+		safetyNodejsESMApp,
+	}
+)
+
 // safetyAppDirs returns each safety test app's source directory and image tag.
 func safetyAppDirs(projectDir string) []struct{ dir, tag string } {
 	base := filepath.Join(projectDir, "test", "e2e", "apps")
@@ -226,14 +241,13 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 		Expect(applyManifestFile(filepath.Join(manifestsDir, "instrumentation-safety-class1-apps.yaml"))).To(Succeed())
 
 		By("waiting for Class-1 app Deployments to roll out")
-		for _, app := range []string{
-			safetyPythonOldApp,
-			safetyPythonConflictApp,
-			safetyNodejsOldApp,
-			safetyNodejsSdkInstalledApp,
-			safetyNodejsSdkRequiredApp,
-		} {
+		for _, app := range safetyClass1Apps {
 			waitDeploymentReady(app, safetyTestNS, 5*time.Minute)
+		}
+
+		By("verifying every Class-1 pod is instrumented and Ready")
+		for _, app := range safetyClass1Apps {
+			waitInstrumentedReadyPod(safetyTestNS, "app="+app)
 		}
 	})
 
@@ -244,9 +258,21 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 		Expect(applyManifestFile(filepath.Join(manifestsDir, "instrumentation-safety-class2-apps.yaml"))).To(Succeed())
 
 		By("waiting for Class-2 app Deployments to roll out")
-		for _, app := range []string{safetyJavaGraalvmApp, safetyDotnetAOTApp, safetyNodejsESMApp} {
+		for _, app := range safetyClass2Apps {
 			waitDeploymentReady(app, safetyTestNS, 5*time.Minute)
 		}
+
+		By("verifying every Class-2 pod is instrumented and Ready")
+		for _, app := range safetyClass2Apps {
+			waitInstrumentedReadyPod(safetyTestNS, "app="+app)
+		}
+
+		By("waiting 30s for all safety apps to settle before Act 3 assertions")
+		// Single settle wait shared across every Act-3 spec: gives OTLP retry
+		// backoff headroom (no spans) and a window for any post-startup crash
+		// to surface (resilience). Apps were deployed as groups, so paying
+		// this wait once is enough — the per-assert helpers can run immediately.
+		time.Sleep(30 * time.Second)
 	})
 
 	// ---- Act 3: safety gates fire (Class-1) and resilience holds (Class-2) ----
@@ -254,16 +280,12 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 	Context("Python", func() {
 		Context("Python < 3.9", func() {
 			It("pod stays Running and check_python_version skips instrumentation", func() {
-				By("waiting for an instrumented, ready Python 3.8 pod")
-				waitInstrumentedReadyPod(safetyTestNS, "app="+safetyPythonOldApp)
 				assertSafetySkip(safetyPythonOldApp, logPythonVersionCheck)
 			})
 		})
 
 		Context("conflicting opentelemetry-api version", func() {
 			It("pod stays Running and verify_and_load skips instrumentation", func() {
-				By("waiting for an instrumented, ready Python conflict pod")
-				waitInstrumentedReadyPod(safetyTestNS, "app="+safetyPythonConflictApp)
 				assertSafetySkip(safetyPythonConflictApp, logPythonConflict)
 			})
 		})
@@ -272,24 +294,18 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 	Context("Node.js", func() {
 		Context("unsupported runtime version (Node.js 16)", func() {
 			It("pod stays Running and version check skips instrumentation", func() {
-				By("waiting for an instrumented, ready Node.js 16 pod")
-				waitInstrumentedReadyPod(safetyTestNS, "app="+safetyNodejsOldApp)
 				assertSafetySkip(safetyNodejsOldApp, logNodejsVersionCheck)
 			})
 		})
 
 		Context("@opentelemetry/sdk-node present in node_modules", func() {
 			It("pod stays Running and isOtelSdkInstalled skips instrumentation", func() {
-				By("waiting for an instrumented, ready pod with pre-installed OTel SDK")
-				waitInstrumentedReadyPod(safetyTestNS, "app="+safetyNodejsSdkInstalledApp)
 				assertSafetySkip(safetyNodejsSdkInstalledApp, logNodejsSdkInstalled)
 			})
 		})
 
 		Context("OTel SDK required via CMD --require", func() {
 			It("pod stays Running and isOtelSdkRequiredViaArgs skips instrumentation", func() {
-				By("waiting for an instrumented, ready pod with OTel required via args")
-				waitInstrumentedReadyPod(safetyTestNS, "app="+safetyNodejsSdkRequiredApp)
 				assertSafetySkip(safetyNodejsSdkRequiredApp, logNodejsSdkRequired)
 			})
 		})
@@ -298,8 +314,6 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 			It("pod stays Running when register.js is loaded into an ESM app", func() {
 				// register.js loads via --require in CJS context before the ESM
 				// loader runs. The test only asserts the app doesn't crash.
-				By("waiting for an instrumented, ready ESM Node.js pod")
-				waitInstrumentedReadyPod(safetyTestNS, "app="+safetyNodejsESMApp)
 				assertSafetyResilience(safetyNodejsESMApp)
 			})
 		})
@@ -309,8 +323,6 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 		It("pod stays Running after injection into a native binary", func() {
 			// No JVM to process JAVA_TOOL_OPTIONS, so LD_PRELOAD of
 			// libotelinject.so is a no-op — just verify it doesn't crash.
-			By("waiting for an instrumented, ready GraalVM native pod")
-			waitInstrumentedReadyPod(safetyTestNS, "app="+safetyJavaGraalvmApp)
 			assertSafetySkip(safetyJavaGraalvmApp, "")
 		})
 	})
@@ -319,20 +331,15 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 		It("pod stays Running after injection into a native AOT binary", func() {
 			// No CLR to process DOTNET_STARTUP_HOOKS — same resilience class
 			// as GraalVM.
-			By("waiting for an instrumented, ready .NET Native AOT pod")
-			waitInstrumentedReadyPod(safetyTestNS, "app="+safetyDotnetAOTApp)
 			assertSafetySkip(safetyDotnetAOTApp, "")
 		})
 	})
 })
 
 // assertSafetySkip verifies Class-1: no spans reach Tempo and the expected
-// skip message appears in pod logs. The 30s sleep gives OTLP retry/backoff
-// headroom before we assert absence.
+// skip message appears in pod logs. The Act-2 deploy It pays a single settle
+// wait, so this helper asserts immediately.
 func assertSafetySkip(appName, expectedLogMessage string) {
-	By(fmt.Sprintf("waiting 30s before asserting no spans for service %q", appName))
-	time.Sleep(30 * time.Second)
-
 	By(fmt.Sprintf("asserting Tempo has no spans for service %q", appName))
 	_, n, err := tempoHasTraces(
 		fmt.Sprintf(`{ resource.service.name = "%s" }`, appName),
@@ -346,11 +353,10 @@ func assertSafetySkip(appName, expectedLogMessage string) {
 }
 
 // assertSafetyResilience verifies Class-2: the pod stays Running and Ready
-// despite the injection. Spans may or may not appear; not part of the contract.
+// despite the injection. Spans may or may not appear; not part of the
+// contract. The Act-2 deploy It pays a single settle wait, so this helper
+// asserts immediately.
 func assertSafetyResilience(appName string) {
-	By(fmt.Sprintf("waiting 30s before asserting pod %q is still Running", appName))
-	time.Sleep(30 * time.Second)
-
 	By("asserting the pod is still Running and Ready (injection did not crash the app)")
 	assertPodRunning(safetyTestNS, "app="+appName)
 }

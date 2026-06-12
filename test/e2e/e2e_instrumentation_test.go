@@ -158,15 +158,20 @@ var _ = Describe("SDK auto-instrumentation pipeline", Ordered, func() {
 				resources.WithLabelSelector("beyla.grafana.com/node"))).To(Succeed())
 			g.Expect(cms.Items).NotTo(BeEmpty(), "Beyla has not published a per-node injection ConfigMap yet")
 		}, 5*time.Minute, 5*time.Second).Should(Succeed())
+
+		By("verifying every SDK app pod is instrumented and Ready")
+		// The controller rolls every matching Deployment once it processes
+		// Beyla's ConfigMap, so all apps in sdkTestNS become instrumented as a
+		// group — Act-3 specs can skip the per-app readiness check.
+		for _, app := range sdkApps {
+			waitInstrumentedReadyPod(sdkTestNS, "app="+app)
+		}
 	})
 
 	// ---- Act 3: each language SDK is installed and spans reach Tempo ----
 
 	Context("Node.js", func() {
 		It("instruments an Express app and emits HTTP server spans", func() {
-			By("waiting for an instrumented, ready Node.js pod")
-			waitInstrumentedReadyPod(sdkTestNS, "app="+sdkNodejsApp)
-			By("asserting HTTP server spans arrive in Tempo for service " + sdkNodejsApp)
 			assertTempoHasSpansForService(sdkNodejsApp)
 		})
 	})
@@ -174,18 +179,12 @@ var _ = Describe("SDK auto-instrumentation pipeline", Ordered, func() {
 	Context("Python", func() {
 		Context("glibc (python:3.11-slim)", func() {
 			It("instruments a Flask app and emits HTTP server spans", func() {
-				By("waiting for an instrumented, ready Python pod")
-				waitInstrumentedReadyPod(sdkTestNS, "app="+sdkPythonApp)
-				By("asserting HTTP server spans arrive in Tempo for service " + sdkPythonApp)
 				assertTempoHasSpansForService(sdkPythonApp)
 			})
 		})
 
 		Context("musl (python:3.11-alpine)", func() {
 			It("instruments a Flask app and emits HTTP server spans", func() {
-				By("waiting for an instrumented, ready Python musl pod")
-				waitInstrumentedReadyPod(sdkTestNS, "app="+sdkPythonMuslApp)
-				By("asserting HTTP server spans arrive in Tempo for service " + sdkPythonMuslApp)
 				assertTempoHasSpansForService(sdkPythonMuslApp)
 			})
 		})
@@ -193,9 +192,6 @@ var _ = Describe("SDK auto-instrumentation pipeline", Ordered, func() {
 
 	Context("Java", func() {
 		It("instruments a JDK HTTP server app and emits HTTP server spans", func() {
-			By("waiting for an instrumented, ready Java pod")
-			waitInstrumentedReadyPod(sdkTestNS, "app="+sdkJavaApp)
-			By("asserting HTTP server spans arrive in Tempo for service " + sdkJavaApp)
 			assertTempoHasSpansForService(sdkJavaApp)
 		})
 	})
@@ -203,18 +199,12 @@ var _ = Describe("SDK auto-instrumentation pipeline", Ordered, func() {
 	Context(".NET", func() {
 		Context("glibc (mcr.microsoft.com/dotnet/aspnet:9.0)", func() {
 			It("instruments an ASP.NET Core app and emits HTTP server spans", func() {
-				By("waiting for an instrumented, ready .NET pod")
-				waitInstrumentedReadyPod(sdkTestNS, "app="+sdkDotnetApp)
-				By("asserting HTTP server spans arrive in Tempo for service " + sdkDotnetApp)
 				assertTempoHasSpansForService(sdkDotnetApp)
 			})
 		})
 
 		Context("musl (mcr.microsoft.com/dotnet/aspnet:9.0-alpine)", func() {
 			It("instruments an ASP.NET Core app and emits HTTP server spans", func() {
-				By("waiting for an instrumented, ready .NET musl pod")
-				waitInstrumentedReadyPod(sdkTestNS, "app="+sdkDotnetMuslApp)
-				By("asserting HTTP server spans arrive in Tempo for service " + sdkDotnetMuslApp)
 				assertTempoHasSpansForService(sdkDotnetMuslApp)
 			})
 		})
