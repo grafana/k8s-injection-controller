@@ -62,7 +62,7 @@ func demoRegistry() *registry.Registry {
 
 func TestClassify(t *testing.T) {
 	cfg := config.SDKInject{ImageVolumeRoot: "registry.example/img", ImageVersion: "1"}
-	wantVersion := cfg.PackageVersion()
+	wantVersion := config.PodConfigHash(&cfg, &configmap.RuleConfig{})
 
 	tests := []struct {
 		name           string

@@ -60,7 +60,6 @@ const (
 	envInjectorDebugName              = "OTEL_INJECTOR_LOG_LEVEL"
 	envOtelK8sNodeName                = "OTEL_RESOURCE_ATTRIBUTES_NODE_NAME" // stored in OTEL_INJECTOR_RESOURCE_ATTRIBUTES, since there's no individual OTEL_INJECTOR_K8S_NODE_NAME
 	envOtelK8sPodIP                   = "OTEL_RESOURCE_ATTRIBUTES_POD_IP"
-	envVarSDKVersion                  = "BEYLA_INJECTOR_SDK_PKG_VERSION"
 
 	// Enabling/disabling of language specific SDKs
 	envDotnetEnabledName = "DOTNET_AUTO_INSTRUMENTATION_AGENT_PATH_PREFIX"
@@ -80,6 +79,10 @@ func init() {
 // pod already has an LD_PRELOAD set to a value other than our injector path.
 // We use this to skip both injection (would clobber the user's preload) and
 // eviction (a pod we couldn't safely instrument shouldn't be restarted).
+//
+// We are assuming here that Beyla will never ever modify the value of the
+// LD_PRELOAD variable. Otherwise, it would be wrongly assumed as a
+// "ld preload conflict" and any LD_PRELOAD change from Beyla would be ignored
 func PreloadsSomethingElse(pod *corev1.Pod) bool {
 	for i := range pod.Spec.Containers {
 		if isLDPreloadConflict(&pod.Spec.Containers[i]) {
@@ -273,10 +276,6 @@ func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container, r
 	// Rule env vars are applied first (lowest precedence) so fixed injector
 	// vars below can always override them.
 	applyEnvVars(c, ruleEnv)
-	// we set the SDK version on the environment variable so that
-	// we can tell on start, when we scan the processes of the oldest
-	// SDK version in use.
-	setEnvVar(c, envVarSDKVersion, pm.Cfg.PackageVersion())
 	setEnvVar(c, envVarLdPreloadName, envVarLdPreloadValue)
 	setEnvVar(c, envOtelInjectorConfigFileName, envOtelInjectorConfigFileValue)
 	setEnvVar(c, envOtelSemConvStabilityName, "http")
@@ -570,7 +569,7 @@ func (pm *PodMutator) CanInstrument(kind svc.InstrumentableType) bool {
 	return false
 }
 
-// AlreadyInstrumented reports whether the pod is already instrumented at the
+// IsInstrumentedWithWantedConfig reports whether the pod is already instrumented at the
 // requested SDK package version, in which case the caller should skip
 // mutation. A pod instrumented at a *different* version returns false so the
 // webhook re-instruments it on top of the older payload — the mutator's
@@ -579,58 +578,27 @@ func (pm *PodMutator) CanInstrument(kind svc.InstrumentableType) bool {
 // We treat the in-pod state as the truth, checking both our own annotation
 // (set on the last admission that mutated this pod) and the SDK-version env
 // we stamp onto every instrumented container. The two checks mirror Beyla's
-// own AlreadyInstrumented on the agent side, so the agent and the webhook
+// own IsInstrumentedWithWantedConfig on the agent side, so the agent and the webhook
 // agree on what "instrumented at version X" means.
-func AlreadyInstrumented(spec *corev1.PodSpec, meta *metav1.ObjectMeta, wantVersion string) bool {
-	if val, ok := meta.Annotations[InjectedAnnotation]; ok && val != "" {
-		return val == wantVersion
-	}
-	for i := range spec.Containers {
-		if v, ok := sdkVersionEnvValue(&spec.Containers[i]); ok && v != "" {
-			return v == wantVersion
-		}
-	}
-	for i := range spec.InitContainers {
-		if v, ok := sdkVersionEnvValue(&spec.InitContainers[i]); ok && v != "" {
-			return v == wantVersion
-		}
-	}
-	return false
+func IsInstrumentedWithWantedConfig(
+	spec *corev1.PodSpec,
+	meta *metav1.ObjectMeta,
+	wantConfigHash string,
+) bool {
+	val, ok := meta.Annotations[InjectedAnnotation]
+	return ok && val == wantConfigHash
 }
 
 // IsInstrumented reports whether the pod currently carries our instrumentation
-// at *any* SDK version. Unlike AlreadyInstrumented — which compares against a
+// at *any* SDK version. Unlike IsInstrumentedWithWantedConfig — which compares against a
 // specific wanted version to decide whether to (re-)inject — this is the signal
 // the controller uses to decide whether a pod that no longer matches any
 // rule must be restarted to *remove* its instrumentation. We
 // treat the in-pod state as the truth, checking both our annotation and the
 // SDK-version env we stamp onto every instrumented container.
-func IsInstrumented(spec *corev1.PodSpec, meta *metav1.ObjectMeta) bool {
-	if val, ok := meta.Annotations[InjectedAnnotation]; ok && val != "" {
-		return true
-	}
-	for i := range spec.Containers {
-		if v, ok := sdkVersionEnvValue(&spec.Containers[i]); ok && v != "" {
-			return true
-		}
-	}
-	for i := range spec.InitContainers {
-		if v, ok := sdkVersionEnvValue(&spec.InitContainers[i]); ok && v != "" {
-			return true
-		}
-	}
-	return false
-}
-
-// sdkVersionEnvValue returns the value of the SDK-version env var we stamp onto
-// every instrumented container, if present. It's the per-container half of the
-// in-pod instrumentation signal used by AlreadyInstrumented and IsInstrumented.
-func sdkVersionEnvValue(c *corev1.Container) (string, bool) {
-	pos, ok := findEnvVar(c, envVarSDKVersion)
-	if !ok {
-		return "", false
-	}
-	return c.Env[pos].Value, true
+func IsInstrumented(meta *metav1.ObjectMeta) bool {
+	val, ok := meta.Annotations[InjectedAnnotation]
+	return ok && val != ""
 }
 
 func ownersFrom(meta *metav1.ObjectMeta) []*informer.Owner {
