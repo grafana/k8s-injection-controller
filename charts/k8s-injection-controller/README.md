@@ -41,10 +41,11 @@ provisioned:
 
 ### cert-manager pre-install hook
 
-The hook runs **only when it is needed**: `mode=cert-manager` is forced *and* the
-`cert-manager.io/v1` API is absent (or you set `certManager.installHook.enabled=true`
-to force it). In `auto` mode a missing cert-manager falls back to self-signed and
-the hook never runs. When triggered, a short-lived `pre-install` hook Pod runs
+The hook runs **only when it is needed**: `webhook.certManager.mode=cert-manager`
+is forced *and* the `cert-manager.io/v1` API is absent. In `auto` mode a missing
+cert-manager falls back to self-signed and the hook never runs; to install
+cert-manager on the fly, set the mode to `cert-manager`. When triggered, a
+short-lived `pre-install` hook Pod runs
 [`hooks/install-cert-manager.sh`](./hooks/install-cert-manager.sh) before the rest
 of the chart is applied. It:
 
@@ -81,8 +82,10 @@ and waited for the cert-manager webhook to be Ready, so they always resolve.
 
 ### Installing cert-manager yourself
 
-If you prefer to manage cert-manager out of band, disable the hook and install
-it once per cluster beforehand:
+If you prefer to manage cert-manager out of band, install it once per cluster
+beforehand. The install hook only fires when cert-manager is *absent*, so with
+cert-manager already present it never runs (in either `auto` or `cert-manager`
+mode):
 
 ```bash
 helm repo add jetstack https://charts.jetstack.io
@@ -92,8 +95,7 @@ helm install cert-manager jetstack/cert-manager \
   --set crds.enabled=true
 kubectl -n cert-manager rollout status deployment/cert-manager-webhook
 
-helm install kic ./k8s-injection-controller \
-  --set certManager.installHook.enabled=false
+helm install kic ./k8s-injection-controller
 ```
 
 ## Configuration
@@ -111,8 +113,7 @@ See [`values.yaml`](./values.yaml) for the full list. Common knobs:
 | `webhook.excludedNamespaces` | system/infra namespaces | Namespaces the mutating webhook never touches (install namespace is always added). |
 | `webhook.certManager.mode` | auto | How the webhook serving certificate is provisioned: auto, cert-manager, self-signed. |
 | `metrics.enabled` / `metrics.port` | `true` / `8080` | Plain-HTTP Prometheus metrics, advertised via pod annotations (no Prometheus Operator required). |
-| `certManager.installHook.enabled` | `false` | Force the cert-manager pre-install hook on. By default the hook runs automatically only when `webhook.certManager.mode=cert-manager` and cert-manager is absent. |
-| `certManager.installHook.image.*` | `dtzar/helm-kubectl:3.16` | Image (with `kubectl` + `helm`) used by the cert-manager install hook Pod. |
+| `certManager.installHook.image.*` | `dtzar/helm-kubectl:3.16` | Image (with `kubectl` + `helm`) used by the cert-manager install hook Pod (runs only when `webhook.certManager.mode=cert-manager` and cert-manager is absent). |
 
 ## Uninstall
 
