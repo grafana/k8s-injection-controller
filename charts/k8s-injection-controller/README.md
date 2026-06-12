@@ -129,7 +129,7 @@ separately if nothing else uses it.
 ```sh
 IMG=beyla-k8s-injector:dev make docker-build
 ```
-2. Create your cluster (if you don't have one with)
+2. Create your cluster (if you don't already have one)
 ```sh
 kind create cluster
 ```
