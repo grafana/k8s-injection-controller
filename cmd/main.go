@@ -19,6 +19,7 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"strings"
 
@@ -26,9 +27,11 @@ import (
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
+	"github.com/open-policy-agent/cert-controller/pkg/rotator"
 	"gopkg.in/yaml.v3"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/kubernetes"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -47,6 +50,7 @@ import (
 	"github.com/grafana/beyla-k8s-injector/internal/metrics"
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
 	webhookv1 "github.com/grafana/beyla-k8s-injector/internal/webhook/v1"
+	"github.com/grafana/beyla-k8s-injector/internal/webhookcert"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -71,6 +75,9 @@ func main() {
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
+	var enableCertRotation bool
+	var webhookCertSecret string
+	var mutatingWebhookName, validatingWebhookName string
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -83,6 +90,20 @@ func main() {
 	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
 	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
 	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
+	flag.BoolVar(&enableCertRotation, "enable-cert-rotation", false,
+		"If set, the controller self-manages its webhook serving certificate "+
+			"(generates a self-signed CA + cert, persists it to --webhook-cert-secret, "+
+			"writes it to --webhook-cert-path, and injects the caBundle into the webhook "+
+			"configurations). Use when cert-manager is not installed.")
+	flag.StringVar(&webhookCertSecret, "webhook-cert-secret", "",
+		"Name of the Secret (in the controller's namespace) used to persist the "+
+			"self-managed webhook serving cert. Required when --enable-cert-rotation is set.")
+	flag.StringVar(&mutatingWebhookName, "mutating-webhook-name", "",
+		"Name of the MutatingWebhookConfiguration to inject the caBundle into "+
+			"when --enable-cert-rotation is set.")
+	flag.StringVar(&validatingWebhookName, "validating-webhook-name", "",
+		"Name of the ValidatingWebhookConfiguration to inject the caBundle into "+
+			"when --enable-cert-rotation is set.")
 	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
 		"The directory that contains the metrics server certificate.")
 	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
@@ -99,7 +120,13 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
-	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	// the ctrl logger may display errors in logs while the certificate generation
+	// is still happening. This manifests in two separate exception forms:
+	// - cert-rotation    secret is not well-formed, cannot update webhook configurations
+	// - cert-rotation    could not refresh CA and server certs
+	// These transient errors go away soon, but they pollute the logs, we wrap the
+	// logger into one that eliminates those errors.
+	ctrl.SetLogger(filterCertRotationConflicts(zap.New(zap.UseFlagOptions(&opts))))
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -264,12 +291,27 @@ func main() {
 	// cluster-wide injection state (beyla_injection_pods).
 	ctrlmetrics.Registry.MustRegister(metrics.NewPodStateCollector(mgr.GetClient(), reg, sdkConfig))
 
+	// When ENABLE_WEBHOOKS=false we never register the webhook handlers, so the
+	// webhook server is never added to the manager and its listener never starts
+	// — webhookServer.StartedChecker() would then never go green. Every gate that
+	// waits on it must be bypassed in that case, or it blocks forever: the
+	// eviction sweep's WebhookReady gate and Service dial below would requeue
+	// indefinitely, and the "webhook" readyz check further down would keep the
+	// pod permanently NotReady.
+	webhooksEnabled := os.Getenv("ENABLE_WEBHOOKS") != "false" // nolint:goconst
+	var webhookReady healthz.Checker
+	var webhookServiceAddr string
+	if webhooksEnabled {
+		webhookReady = webhookServer.StartedChecker()
+		webhookServiceAddr = os.Getenv("WEBHOOK_SERVICE_ADDR")
+	}
+
 	if err := (&controller.ConfigMapReconciler{
 		Client:             mgr.GetClient(),
 		Clientset:          clientset,
 		Registry:           reg,
-		WebhookReady:       mgr.GetWebhookServer().StartedChecker(),
-		WebhookServiceAddr: os.Getenv("WEBHOOK_SERVICE_ADDR"),
+		WebhookReady:       webhookReady,
+		WebhookServiceAddr: webhookServiceAddr,
 		DefaultSDKConfig:   sdkConfig,
 		Metrics:            injMetrics,
 	}).SetupWithManager(mgr); err != nil {
@@ -277,11 +319,20 @@ func main() {
 		os.Exit(1)
 	}
 
-	// nolint:goconst
-	if os.Getenv("ENABLE_WEBHOOKS") != "false" {
+	// setupWebhooks registers the mutating + validating webhook handlers. It
+	// calls mgr.GetWebhookServer() (via NewWebhookManagedBy / Register), which
+	// lazily adds the webhook server to the manager's runnables. In self-signed
+	// mode we defer this until the cert rotator has written the cert,
+	// otherwise the webhook server's certwatcher fails to start (no cert yet).
+	//
+	// In self-signed mode the closure runs from the goroutine below AFTER
+	// mgr.Start has already been called, so mgr.GetWebhookServer() then triggers
+	// mgr.Add(webhookServer) on the already-running manager. controller-runtime
+	// v0.24 supports adding runnables after Start — it starts the runnable
+	// immediately rather than rejecting it — so this late registration is safe.
+	setupWebhooks := func() error {
 		if err := webhookv1.SetupPodWebhookWithManager(mgr, reg, mgr.GetAPIReader(), podMutator, injMetrics); err != nil {
-			setupLog.Error(err, "Failed to create webhook", "webhook", "Pod")
-			os.Exit(1)
+			return fmt.Errorf("setting up Pod webhook: %w", err)
 		}
 
 		// Validating webhook that gates writes to annotated ConfigMaps. The
@@ -299,6 +350,88 @@ func main() {
 			&webhook.Admission{Handler: webhookv1.NewConfigMapValidator(scheme, allowedWriters)})
 		setupLog.Info("registered ConfigMap validating webhook",
 			"path", webhookv1.ValidateConfigMapPath, "allowedWriters", allowedWriters)
+		return nil
+	}
+
+	// Shared signal-handler context: it drives both the cert-rotation goroutine
+	// (so it can unblock if the manager shuts down before the cert is ready) and
+	// mgr.Start below. ctrl.SetupSignalHandler must be called exactly once per
+	// process — it panics on a second call — so it is established here.
+	signalCtx := ctrl.SetupSignalHandler()
+
+	if !webhooksEnabled {
+		// Webhooks disabled: skip registration and cert rotation entirely. The
+		// webhook server is never started, which is why the readiness gates above
+		// and the "webhook" readyz check below are also skipped for this mode.
+		setupLog.Info("ENABLE_WEBHOOKS=false: skipping webhook registration, cert rotation and webhook readiness gate")
+	} else if enableCertRotation {
+		// Self-managed cert path (no cert-manager). The rotator generates a
+		// self-signed CA + serving cert, persists it to the pre-created Secret,
+		// writes it to the webhook cert dir, and injects the caBundle into the
+		// webhook configurations. Defer webhook registration until it is ready.
+		if webhookCertSecret == "" || webhookCertPath == "" || mutatingWebhookName == "" || validatingWebhookName == "" {
+			setupLog.Error(nil, "--enable-cert-rotation requires --webhook-cert-secret, --webhook-cert-path, "+
+				"--mutating-webhook-name and --validating-webhook-name")
+			os.Exit(1)
+		}
+		podNamespace := os.Getenv("POD_NAMESPACE")
+		if podNamespace == "" {
+			setupLog.Error(nil, "POD_NAMESPACE must be set (downward API) when --enable-cert-rotation is set")
+			os.Exit(1)
+		}
+		dnsName, extraDNSNames := webhookcert.ServiceDNSNames(os.Getenv("WEBHOOK_SERVICE_ADDR"))
+		if dnsName == "" {
+			setupLog.Error(nil, "WEBHOOK_SERVICE_ADDR must be a non-empty host[:port] when --enable-cert-rotation is set")
+			os.Exit(1)
+		}
+		setupFinished := make(chan struct{})
+		if err := rotator.AddRotator(mgr, &rotator.CertRotator{
+			SecretKey:      types.NamespacedName{Namespace: podNamespace, Name: webhookCertSecret},
+			CertDir:        webhookCertPath,
+			CAName:         "k8s-injection-controller",
+			CAOrganization: "grafana.com",
+			DNSName:        dnsName,
+			ExtraDNSNames:  extraDNSNames,
+			IsReady:        setupFinished,
+			Webhooks: []rotator.WebhookInfo{
+				{Name: mutatingWebhookName, Type: rotator.Mutating},
+				{Name: validatingWebhookName, Type: rotator.Validating},
+			},
+			// Keep the webhook reconcile path from racing the startup cert
+			// refresh; it only needs to inject the CA after the Secret has been
+			// projected into this pod.
+			EnableReadinessCheck: true,
+			// Every replica must provision its own on-disk cert from the shared
+			// Secret, so the rotator must run on all replicas, not just the leader.
+			RequireLeaderElection: false,
+		}); err != nil {
+			setupLog.Error(err, "Failed to set up webhook cert rotator")
+			os.Exit(1)
+		}
+		setupLog.Info("self-managing webhook certificate via cert rotator",
+			"secret", webhookCertSecret, "dnsName", dnsName)
+		go func() {
+			select {
+			case <-setupFinished:
+				setupLog.Info("webhook certificate ready; registering webhooks")
+				if err := setupWebhooks(); err != nil {
+					setupLog.Error(err, "Failed to register webhooks after cert rotation")
+					os.Exit(1)
+				}
+			case <-signalCtx.Done():
+				// Manager is shutting down (e.g. cert provisioning failed before the
+				// cert was ready); webhooks were never registered. The process is
+				// already on its way out via the mgr.Start error path.
+				setupLog.Info("shutting down before webhook certificate was ready; webhooks not registered")
+			}
+		}()
+	} else {
+		// cert-manager (or externally) provided cert: register synchronously,
+		// exactly as before.
+		if err := setupWebhooks(); err != nil {
+			setupLog.Error(err, "Failed to register webhooks")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 
@@ -312,14 +445,18 @@ func main() {
 	}
 	// Block readiness until the webhook listener is up. kube-proxy keeps the
 	// pod out of the Service endpoints until /readyz returns 200, so the
-	// apiserver won't get "connection refused" admissions during boot.
-	if err := mgr.AddReadyzCheck("webhook", mgr.GetWebhookServer().StartedChecker()); err != nil {
-		setupLog.Error(err, "Failed to set up webhook ready check")
-		os.Exit(1)
+	// apiserver won't get "connection refused" admissions during boot. Skipped
+	// when webhooks are disabled: the server never starts, so this check would
+	// never pass and the pod would never become Ready.
+	if webhooksEnabled {
+		if err := mgr.AddReadyzCheck("webhook", webhookServer.StartedChecker()); err != nil {
+			setupLog.Error(err, "Failed to set up webhook ready check")
+			os.Exit(1)
+		}
 	}
 
 	setupLog.Info("Starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(signalCtx); err != nil {
 		setupLog.Error(err, "Failed to run manager")
 		os.Exit(1)
 	}

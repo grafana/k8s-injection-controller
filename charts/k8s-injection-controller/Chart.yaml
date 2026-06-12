@@ -25,9 +25,10 @@ version: 0.1.0
 # It is recommended to use it with quotes.
 appVersion: "0.1.0"
 
-# NOTE: cert-manager is a *prerequisite*, not a dependency of this chart. It
-# must be installed (CRDs + webhook ready) before installing this chart, since
-# the chart creates cert-manager Issuer/Certificate resources. See the chart
-# README for the two-step install. cert-manager is intentionally not vendored
-# as a subchart: its CRDs and validating webhook cannot be created and used
-# within the same `helm install`.
+# cert-manager is OPTIONAL. By default (webhook.certManager.mode=auto) the chart
+# uses cert-manager when its API (cert-manager.io/v1) is present on the cluster,
+# and otherwise the controller self-signs and rotates its own webhook serving
+# certificate in-process — so a single `helm install` works on any cluster with
+# no prerequisites. Force either path with webhook.certManager.mode=cert-manager
+# or =self-signed. cert-manager is intentionally not vendored as a subchart: its
+# CRDs cannot be created and consumed within the same `helm install`.

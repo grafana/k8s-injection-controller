@@ -94,3 +94,44 @@ Name of the cert-manager Certificate / serving cert Secret for the webhook.
 {{- define "k8s-injection-controller.servingCertName" -}}
 {{- printf "%s-serving-cert" (include "k8s-injection-controller.fullname" .) | trunc 63 | trimSuffix "-" }}
 {{- end }}
+
+{{/*
+Resolve the effective webhook cert mode to either "cert-manager" or
+"self-signed". `auto` (the default) picks cert-manager when the cluster
+exposes the cert-manager.io/v1 API, otherwise self-signed. An explicit
+`cert-manager` always resolves to cert-manager: when the API is absent the
+chart's pre-install hook installs cert-manager first (see installCertManager)
+rather than failing. Any other value is rejected.
+*/}}
+{{- define "k8s-injection-controller.certMode" -}}
+{{- $mode := .Values.webhook.certManager.mode | default "auto" -}}
+{{- $hasCM := .Capabilities.APIVersions.Has "cert-manager.io/v1" -}}
+{{- if eq $mode "auto" -}}
+{{- /* auto never installs cert-manager: use it only if already present. */ -}}
+{{- if $hasCM }}cert-manager{{ else }}self-signed{{ end -}}
+{{- else if eq $mode "cert-manager" -}}
+{{- /* Forced cert-manager. If the API is absent the pre-install hook installs
+       it (see installCertManager), so we no longer fail here. */ -}}
+cert-manager
+{{- else if eq $mode "self-signed" -}}
+self-signed
+{{- else -}}
+{{- fail (printf "invalid webhook.certManager.mode %q: must be auto, cert-manager, or self-signed" $mode) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Whether the chart should install cert-manager itself via the pre-install hook.
+Renders "true" (non-empty) only when the user FORCED cert-manager mode and the
+cert-manager.io/v1 API is absent — auto mode never installs (it falls back to
+self-signed). An explicit certManager.installHook.enabled=true also forces it on.
+When this is true the Issuer/Certificate are emitted as post-install hooks so
+they are validated only after the installer hook has registered the CRDs.
+*/}}
+{{- define "k8s-injection-controller.installCertManager" -}}
+{{- $mode := .Values.webhook.certManager.mode | default "auto" -}}
+{{- $hasCM := .Capabilities.APIVersions.Has "cert-manager.io/v1" -}}
+{{- if or .Values.certManager.installHook.enabled (and (eq $mode "cert-manager") (not $hasCM)) -}}
+true
+{{- end -}}
+{{- end -}}

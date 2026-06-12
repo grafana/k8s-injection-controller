@@ -206,12 +206,17 @@ func applyKustomization(dir string) error {
 	if err != nil {
 		return fmt.Errorf("rendering kustomize output: %w", err)
 	}
-	// Force init_container injection mode (rather than the ImageVolumeSource the
-	// config/test overlay would pick via "auto"): the e2e cluster has no
-	// ImageVolume feature gate, and init_container works on any node. This is
-	// scoped to the suite — config/test (used by `make demo-deploy`) is untouched.
+	// Two mutations applied to the rendered objects before they are created:
+	//   - forceInitContainerMode: the e2e cluster has no ImageVolume feature gate,
+	//     so override the SDK config's "auto" injection mode to init_container.
+	//   - forceManagerImage: point the manager container at the image this suite
+	//     built and loaded into kind. Doing it here (pre-create) rather than via a
+	//     post-apply Update means the first and only manager pod already has the
+	//     correct image — no ErrImagePull window against config/manager's
+	//     committed placeholder tag, and no extra rollout to wait out.
 	objs, err := decoder.DecodeAll(suiteCtx, bytes.NewReader(rendered),
-		decoder.MutateOption(forceInitContainerMode))
+		decoder.MutateOption(forceInitContainerMode),
+		decoder.MutateOption(forceManagerImage))
 	if err != nil {
 		return fmt.Errorf("decoding kustomize output: %w", err)
 	}
@@ -279,19 +284,23 @@ func ensureNamespace(name string) error {
 	return decoder.CreateIgnoreAlreadyExists(k8sClient.Resources())(suiteCtx, ns)
 }
 
-// overrideManagerImage rewrites the manager container's image on the deployed
-// controller to the locally-built image loaded into kind, and waits for the Get
-// to succeed (the Deployment exists right after applyKustomization).
-func overrideManagerImage() {
-	var dep appsv1.Deployment
-	Expect(k8sClient.Resources().Get(suiteCtx, ctrlDeployment, ctrlNamespace, &dep)).
-		To(Succeed(), "controller Deployment should exist after applying config/test")
+// forceManagerImage rewrites the manager container's image to the one this suite
+// built and loaded into kind. It is a decoder MutateFunc applied while rendering
+// the overlay, so the Deployment is created with the right image up front (the
+// committed config/manager tag is a placeholder that is not present in the
+// cluster). Setting it pre-create avoids an ErrImagePull window and the extra
+// rollout that a post-apply image override would incur.
+func forceManagerImage(obj k8s.Object) error {
+	dep, ok := obj.(*appsv1.Deployment)
+	if !ok || dep.Name != ctrlDeployment {
+		return nil
+	}
 	for i := range dep.Spec.Template.Spec.Containers {
 		if dep.Spec.Template.Spec.Containers[i].Name == "manager" {
 			dep.Spec.Template.Spec.Containers[i].Image = managerImage
 		}
 	}
-	Expect(k8sClient.Resources().Update(suiteCtx, &dep)).To(Succeed(), "failed to override manager image")
+	return nil
 }
 
 // waitDeploymentReady blocks until the named Deployment has fully rolled out (all

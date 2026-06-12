@@ -35,6 +35,31 @@ rules:
   - get
   - list
   - watch
+{{- if eq (include "k8s-injection-controller.certMode" .) "self-signed" }}
+# Self-managed webhook cert: the in-process rotator watches the webhook
+# configurations and injects the caBundle. list/watch cannot be name-scoped;
+# the mutating writes are scoped by resourceNames to this release's configs.
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - mutatingwebhookconfigurations
+  - validatingwebhookconfigurations
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - admissionregistration.k8s.io
+  resources:
+  - mutatingwebhookconfigurations
+  - validatingwebhookconfigurations
+  resourceNames:
+  - {{ $fullName }}-mutating-webhook
+  - {{ $fullName }}-validating-webhook
+  verbs:
+  - update
+  - patch
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -50,3 +75,49 @@ subjects:
 - kind: ServiceAccount
   name: {{ $saName }}
   namespace: {{ $namespace }}
+{{- if eq (include "k8s-injection-controller.certMode" .) "self-signed" }}
+---
+# Self-managed webhook cert: the rotator persists the serving cert into a Secret
+# in the controller's own namespace. list/watch cannot be name-scoped (the
+# rotator's cache lists Secrets in this namespace); get/update are.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullName }}-cert-rotator-role
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  verbs:
+  - list
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - secrets
+  resourceNames:
+  - {{ include "k8s-injection-controller.servingCertName" . }}
+  verbs:
+  - get
+  - update
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullName }}-cert-rotator-rolebinding
+  namespace: {{ $namespace }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullName }}-cert-rotator-role
+subjects:
+- kind: ServiceAccount
+  name: {{ $saName }}
+  namespace: {{ $namespace }}
+{{- end }}
