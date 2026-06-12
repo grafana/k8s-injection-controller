@@ -30,21 +30,18 @@ imagePullSecrets: []
 nameOverride: ""
 fullnameOverride: ""
 
-# -- On-the-fly cert-manager installation. The chart installs cert-manager via a
-# short-lived `pre-install` hook Pod (hooks/install-cert-manager.sh: checks
-# whether cert-manager is already present and, if not, installs it via Helm and
-# waits for its webhook to become Ready) ONLY when it is actually needed:
-# `webhook.certManager.mode=cert-manager` is forced AND the cert-manager.io/v1
-# API is absent. In `auto` mode a missing cert-manager falls back to self-signed
-# and the hook never runs. Set `installHook.enabled: true` to force the hook on
-# regardless (e.g. to pre-provision cert-manager for other workloads). The hook
+# -- On-the-fly cert-manager installation. When `webhook.certManager.mode` is
+# forced to `cert-manager` AND the cert-manager.io/v1 API is absent, the chart
+# installs cert-manager via a short-lived `pre-install` hook Pod
+# (hooks/install-cert-manager.sh: checks whether cert-manager is already present
+# and, if not, installs it via Helm and waits for its webhook to become Ready).
+# In `auto` mode a missing cert-manager falls back to self-signed and the hook
+# never runs; in `self-signed` mode cert-manager is never used. So to install
+# cert-manager on the fly, set `webhook.certManager.mode: cert-manager`. The hook
 # Pod uses a temporary ServiceAccount + (Cluster)Role(Binding) deleted as soon as
 # it succeeds.
 certManager:
   installHook:
-    # Force the install hook on even when auto-detection would not trigger it.
-    # Leave false to get the automatic behavior described above.
-    enabled: false
     # Image carrying both `kubectl` and `helm` (used by the hook Pod).
     # TODO: look for an official image or create our own
     image:
