@@ -1,0 +1,132 @@
+{{- if .Values.certManager.installHook.enabled }}
+{{- $name := printf "%s-cert-manager-install" (include "k8s-injection-controller.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- /*
+  These resources are anchored to the Helm *release* namespace
+  (.Release.Namespace), NOT the chart's namespace.name: the latter is a regular
+  manifest applied during the main install, which happens *after* pre-install
+  hooks run, so it does not exist yet at hook time. The release namespace is
+  guaranteed to exist (Helm requires it, or creates it with --create-namespace,
+  before hooks execute).
+
+  Every resource carries:
+    helm.sh/hook: pre-install                -> run before the chart is applied
+    helm.sh/hook-weight: "-5"/"0"            -> create RBAC/script before the Pod
+    helm.sh/hook-delete-policy:
+      before-hook-creation -> clean leftovers from a previous failed run
+      hook-succeeded       -> tear everything down once the Pod completes OK
+  (hook-failed is deliberately omitted so a failed run can be inspected.)
+*/}}
+{{- $hookAnnotations := dict
+  "helm.sh/hook" "pre-install"
+  "helm.sh/hook-weight" "-5"
+  "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded" }}
+---
+# Short-lived ServiceAccount used only by the cert-manager install hook Pod.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hookAnnotations | nindent 4 }}
+---
+# Installing cert-manager creates cluster-scoped objects (CRDs, ClusterRoles,
+# ClusterRoleBindings, webhook configurations, a Namespace, ...), which in
+# practice requires cluster-admin. This wildcard ClusterRole is intentionally
+# broad but extremely short-lived: it exists only while the hook Pod runs and is
+# deleted the moment it succeeds.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hookAnnotations | nindent 4 }}
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+  - nonResourceURLs: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hookAnnotations | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+# The installer script, embedded from hooks/install-cert-manager.sh and mounted
+# read-only into the hook Pod.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml $hookAnnotations | nindent 4 }}
+data:
+  install-cert-manager.sh: |-
+{{ .Files.Get "hooks/install-cert-manager.sh" | indent 4 }}
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "k8s-injection-controller.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml (merge (dict "helm.sh/hook-weight" "0") $hookAnnotations) | nindent 4 }}
+spec:
+  serviceAccountName: {{ $name }}
+  restartPolicy: Never
+  {{- with .Values.imagePullSecrets }}
+  imagePullSecrets:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  securityContext:
+    runAsNonRoot: false
+  containers:
+    - name: install-cert-manager
+      image: "{{ .Values.certManager.installHook.image.repository }}:{{ .Values.certManager.installHook.image.tag }}"
+      imagePullPolicy: {{ .Values.certManager.installHook.image.pullPolicy }}
+      command: ["/bin/sh", "/scripts/install-cert-manager.sh"]
+      env:
+        # helm/kubectl write cache & config under $HOME; point it at the
+        # writable emptyDir below.
+        - name: HOME
+          value: /tmp
+      volumeMounts:
+        - name: script
+          mountPath: /scripts
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+      {{- with .Values.certManager.installHook.resources }}
+      resources:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  volumes:
+    - name: script
+      configMap:
+        name: {{ $name }}
+        defaultMode: 0555
+    - name: tmp
+      emptyDir: {}
+{{- end }}
