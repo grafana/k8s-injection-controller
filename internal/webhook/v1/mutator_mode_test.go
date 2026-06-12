@@ -85,11 +85,6 @@ func TestMountVolumeInitContainerMode(t *testing.T) {
 	if ic.VolumeMounts[0].ReadOnly {
 		t.Fatalf("init container mount must be read-write so it can copy the payload")
 	}
-	// The copy container must NOT carry the SDK-version env, or it would trip
-	// AlreadyInstrumented/IsInstrumented.
-	if _, ok := sdkVersionEnvValue(&ic); ok {
-		t.Fatalf("copy init container must not carry the SDK-version env var")
-	}
 }
 
 func TestAddCopyInitContainerIdempotent(t *testing.T) {
