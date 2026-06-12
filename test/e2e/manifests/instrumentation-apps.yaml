@@ -1,0 +1,270 @@
+# Sample apps and their load generator for the language SDK happy-path e2e
+# tests. Each app is a minimal HTTP server using a framework that the OTel
+# auto-instrumentation supports, deployed into the sdk-test namespace that Beyla
+# is configured to watch. The injected SDK emits HTTP server spans to otel-lgtm;
+# the tests assert those spans arrive in Tempo.
+#
+# imagePullPolicy: Never — all images are built locally and loaded into Kind by
+# the suite's BeforeSuite; they are never present in a registry.
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: sdk-test
+---
+# ---- Node.js (Express) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sdk-nodejs
+  namespace: sdk-test
+  labels:
+    app: sdk-nodejs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sdk-nodejs
+  template:
+    metadata:
+      labels:
+        app: sdk-nodejs
+    spec:
+      containers:
+        - name: app
+          image: sdk-nodejs-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sdk-nodejs
+  namespace: sdk-test
+spec:
+  selector:
+    app: sdk-nodejs
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# ---- Python glibc (Flask on python:3.11-slim) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sdk-python
+  namespace: sdk-test
+  labels:
+    app: sdk-python
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sdk-python
+  template:
+    metadata:
+      labels:
+        app: sdk-python
+    spec:
+      containers:
+        - name: app
+          image: sdk-python-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sdk-python
+  namespace: sdk-test
+spec:
+  selector:
+    app: sdk-python
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# ---- Java (JDK HttpServer, instrumented via jdk-http-server agent) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sdk-java
+  namespace: sdk-test
+  labels:
+    app: sdk-java
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sdk-java
+  template:
+    metadata:
+      labels:
+        app: sdk-java
+    spec:
+      containers:
+        - name: app
+          image: sdk-java-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sdk-java
+  namespace: sdk-test
+spec:
+  selector:
+    app: sdk-java
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# ---- Python musl (Flask on python:3.11-alpine) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sdk-python-musl
+  namespace: sdk-test
+  labels:
+    app: sdk-python-musl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sdk-python-musl
+  template:
+    metadata:
+      labels:
+        app: sdk-python-musl
+    spec:
+      containers:
+        - name: app
+          image: sdk-python-musl-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sdk-python-musl
+  namespace: sdk-test
+spec:
+  selector:
+    app: sdk-python-musl
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# ---- .NET glibc (ASP.NET Core minimal API on mcr.microsoft.com/dotnet/aspnet:9.0) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sdk-dotnet
+  namespace: sdk-test
+  labels:
+    app: sdk-dotnet
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sdk-dotnet
+  template:
+    metadata:
+      labels:
+        app: sdk-dotnet
+    spec:
+      containers:
+        - name: app
+          image: sdk-dotnet-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sdk-dotnet
+  namespace: sdk-test
+spec:
+  selector:
+    app: sdk-dotnet
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# ---- .NET musl (ASP.NET Core minimal API on mcr.microsoft.com/dotnet/aspnet:9.0-alpine) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sdk-dotnet-musl
+  namespace: sdk-test
+  labels:
+    app: sdk-dotnet-musl
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sdk-dotnet-musl
+  template:
+    metadata:
+      labels:
+        app: sdk-dotnet-musl
+    spec:
+      containers:
+        - name: app
+          image: sdk-dotnet-musl-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sdk-dotnet-musl
+  namespace: sdk-test
+spec:
+  selector:
+    app: sdk-dotnet-musl
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# ---- Load generator (single pod, drives traffic to all apps) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sdk-load
+  namespace: sdk-test
+  labels:
+    app: sdk-load
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sdk-load
+  template:
+    metadata:
+      labels:
+        app: sdk-load
+    spec:
+      containers:
+        - name: load
+          image: curlimages/curl:8.11.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              while true; do
+                curl -s -o /dev/null http://sdk-nodejs:8080/ || true
+                curl -s -o /dev/null http://sdk-python:8080/ || true
+                curl -s -o /dev/null http://sdk-python-musl:8080/ || true
+                curl -s -o /dev/null http://sdk-java:8080/ || true
+                curl -s -o /dev/null http://sdk-dotnet:8080/ || true
+                curl -s -o /dev/null http://sdk-dotnet-musl:8080/ || true
+                sleep 1
+              done

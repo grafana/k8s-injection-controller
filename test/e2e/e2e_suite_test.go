@@ -16,16 +16,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package e2emetrics holds the "full" end-to-end suite: it stands up a real
-// telemetry pipeline (otel-lgtm + the controller + a real Beyla DaemonSet + a
-// demo app) and asserts the demo app's HTTP metrics reach LGTM, queried with
-// PromQL. It is intentionally separate from the test/e2e suite (which exercises
-// the controller/webhook in isolation) so the two can evolve independently.
-//
-// The suite has no binary prerequisites beyond a reachable Docker daemon: it
-// builds the manager image with the Docker Go SDK, drives Kubernetes through the
-// e2e-framework Go clients (kind + klient), and renders the controller overlay
-// with the kustomize Go API. No docker/kubectl/kustomize/make CLI is invoked.
+// Package e2e is the end-to-end test suite for the k8s-injection-controller.
+// It covers the controller/webhook in isolation (e2e_injection_test.go) and the
+// full Beyla -> controller -> inject-sdk-image -> LGTM pipeline
+// (e2e_instrumentation_test.go). The suite has no binary prerequisites beyond a
+// reachable Docker daemon: it builds all images with the Docker Go SDK, drives
+// Kubernetes through the e2e-framework Go clients (kind + klient), and renders
+// the controller overlay with the kustomize Go API.
 package e2e
 
 import (
@@ -85,20 +82,18 @@ var (
 	suiteCtx = context.Background()
 )
 
-// TestE2EMetrics runs the metrics e2e suite. The suite owns its Kind cluster: it
-// builds and loads the manager image, creates the cluster (with the Prometheus
-// NodePort mapping from test/e2e/kind-config.yaml), installs CertManager,
-// and tears the cluster down afterwards. The controller is driven in
-// init_container injection mode, so no ImageVolume feature gate or specific node
-// version is required. A Docker daemon and the `kind` tooling the e2e-framework
-// drives must be available.
+// TestE2E is the e2e suite entry point. The suite owns its Kind cluster: it
+// builds and loads the manager and app images, creates the cluster, installs
+// CertManager, and tears the cluster down afterwards. The controller is driven
+// in init_container injection mode, so no ImageVolume feature gate or specific
+// node version is required. A Docker daemon and the `kind` tooling the
+// e2e-framework drives must be available.
 //
 // To keep the Kind cluster after the run (e.g. for debugging), set:
 // KIND_KEEP_CLUSTER=true
-func TestE2EMetrics(t *testing.T) {
+func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
-	_, _ = fmt.Fprintf(GinkgoWriter, "Starting k8s-injection-controller metrics e2e test suite\n")
-	RunSpecs(t, "metrics e2e suite")
+	RunSpecs(t, "e2e suite")
 }
 
 var _ = BeforeSuite(func() {
@@ -111,6 +106,20 @@ var _ = BeforeSuite(func() {
 	Expect(buildManagerImage(suiteCtx, projectDir, managerImage)).
 		To(Succeed(), "Failed to build the manager image")
 
+	By("building the SDK language test app images")
+	Expect(buildSDKAppImages(suiteCtx, projectDir)).
+		To(Succeed(), "Failed to build SDK app images")
+
+	By("building the safety test app images")
+	Expect(buildSafetyAppImages(suiteCtx, projectDir)).
+		To(Succeed(), "Failed to build safety app images")
+
+	By("building the Beyla startup filter test app images")
+	for _, app := range filterAppDirs(projectDir) {
+		Expect(buildImage(suiteCtx, app.dir, app.tag)).
+			To(Succeed(), "Failed to build %s", app.tag)
+	}
+
 	By("creating the Kind cluster")
 	testCluster = kind.NewCluster(clusterName)
 	_, err = testCluster.CreateWithConfig(suiteCtx, kindConfig)
@@ -119,6 +128,24 @@ var _ = BeforeSuite(func() {
 	By("loading the manager image into the Kind cluster")
 	Expect(testCluster.LoadImage(suiteCtx, managerImage)).
 		To(Succeed(), "Failed to load the manager image into Kind")
+
+	By("loading the SDK app images into the Kind cluster")
+	for _, app := range sdkAppDirs(projectDir) {
+		Expect(testCluster.LoadImage(suiteCtx, app.tag)).
+			To(Succeed(), "Failed to load %s into Kind", app.tag)
+	}
+
+	By("loading the safety app images into the Kind cluster")
+	for _, app := range safetyAppDirs(projectDir) {
+		Expect(testCluster.LoadImage(suiteCtx, app.tag)).
+			To(Succeed(), "Failed to load %s into Kind", app.tag)
+	}
+
+	By("loading the Beyla startup filter test app images into the Kind cluster")
+	for _, app := range filterAppDirs(projectDir) {
+		Expect(testCluster.LoadImage(suiteCtx, app.tag)).
+			To(Succeed(), "Failed to load %s into Kind", app.tag)
+	}
 
 	By("building the Kubernetes clients")
 	kubeconfig := testCluster.GetKubeconfig()
@@ -135,15 +162,6 @@ var _ = BeforeSuite(func() {
 	By("installing CertManager")
 	Expect(utils.InstallCertManager(suiteCtx, k8sClient.Resources())).
 		To(Succeed(), "Failed to install CertManager")
-
-	// The controller, webhook, telemetry backend, real Beyla and demo app are all
-	// stood up here, once, so both the controller/webhook specs (Manager,
-	// Injection lifecycle) and the metrics-pipeline specs share a single Kind
-	// cluster instead of each suite creating its own.
-	manifestsDir := filepath.Join(projectDir, "test", "e2e", "manifests")
-
-	By("deploying grafana/otel-lgtm")
-	Expect(applyManifestFile(filepath.Join(manifestsDir, "otel-lgtm.yaml"))).To(Succeed())
 
 	By("ensuring the controller namespace exists")
 	// krusty does not reorder (ReorderOptionNone), so the rendered config/test
@@ -166,20 +184,11 @@ var _ = BeforeSuite(func() {
 	waitDeploymentReady(ctrlDeployment, ctrlNamespace, 3*time.Minute)
 
 	By("waiting for the webhook to be reachable (CA injected + endpoints ready)")
-	// Beyla's beyla-config ConfigMap is written into ctrlNamespace, where the
-	// controller's ConfigMap validating webhook runs failurePolicy=Fail. The
-	// webhook must be reachable before we apply beyla.yaml, or the apply fails
-	// with "connection refused".
+	// The ConfigMap validating webhook runs failurePolicy=Fail in ctrlNamespace.
+	// It must be reachable before the instrumentation test deploys instrumentation-beyla.yaml,
+	// otherwise Beyla's first ConfigMap write arrives with "connection refused"
+	// and is dropped permanently (no retry on Beyla's side).
 	waitWebhookReachable()
-
-	By("deploying the demo application")
-	Expect(applyManifestFile(filepath.Join(manifestsDir, "sample-app.yaml"))).To(Succeed())
-
-	By("deploying the real Beyla DaemonSet wired to the controller")
-	Expect(applyManifestFile(filepath.Join(manifestsDir, "beyla.yaml"))).To(Succeed())
-
-	By("deploying the load generator")
-	Expect(applyManifestFile(filepath.Join(manifestsDir, "load-generator.yaml"))).To(Succeed())
 })
 
 var _ = AfterSuite(func() {
@@ -196,8 +205,7 @@ var _ = AfterSuite(func() {
 	Expect(testCluster.Destroy(context.Background())).To(Succeed(), "Failed to destroy the Kind cluster")
 })
 
-// buildManagerImage builds the manager image from the project's Dockerfile using
-// the Docker Engine Go SDK, so the suite needs no `docker` CLI.
+// buildManagerImage builds the manager image from the project's Dockerfile.
 //
 // It deliberately does NOT reuse the project's .dockerignore: that file relies on
 // `**` blanket-ignore + `!` re-include semantics that only BuildKit honors. The

@@ -38,6 +38,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/e2e-framework/klient/decoder"
@@ -54,131 +55,23 @@ const (
 	webhookService = "beyla-k8s-injector-webhook-service"
 	mutatingWHName = "beyla-k8s-injector-mutating-webhook-configuration"
 
-	// Telemetry backend + workload.
-	lgtmNS  = "e2e-lgtm"
-	demoNS  = "demo"
-	demoApp = "hello-node"
+	// Telemetry backend.
+	lgtmNS = "e2e-lgtm"
 
 	// The webhook stamps this annotation on instrumented pods.
 	injectAnno = "beyla.grafana.com/inject"
 
-	// LGTM's Prometheus as seen from the host (kind extraPortMapping). Use
+	// sdkImageVersion is the inject-sdk-image version the controller injects
+	// (config/test/sdk-inject.yaml). Used when crafting manual injection
+	// ConfigMaps in the injection lifecycle and safety tests.
+	sdkImageVersion = "0.0.13"
+
+	// LGTM's Tempo as seen from the host (kind extraPortMapping). Use
 	// 127.0.0.1, not "localhost": kind/Docker binds the host port on IPv4 only,
 	// while "localhost" may resolve to IPv6 ::1 (nothing listens there) and the
 	// query fails with "connection refused".
-	promBaseURL = "http://127.0.0.1:30090"
-
-	// LGTM's Tempo as seen from the host (kind extraPortMapping). Same 127.0.0.1
-	// rationale as promBaseURL. The suite hits Tempo's trace search API here.
 	tempoBaseURL = "http://127.0.0.1:30320"
 )
-
-var _ = Describe("Telemetry pipeline", Ordered, func() {
-	// otel-lgtm (Prometheus + Tempo), the controller, the real Beyla DaemonSet and
-	// the demo app are all deployed once in BeforeSuite (see
-	// e2e_metrics_suite_test.go); these specs run against that shared deployment.
-
-	AfterEach(func() {
-		if !CurrentSpecReport().Failed() {
-			return
-		}
-		dumpPodLogs("controller-manager", ctrlNamespace, "control-plane=controller-manager")
-		dumpPodLogs("beyla", ctrlNamespace, "app.kubernetes.io/name=beyla")
-		dumpPodLogs("demo app", demoNS, "app="+demoApp)
-		dumpInjectionConfigMaps()
-	})
-
-	SetDefaultEventuallyTimeout(2 * time.Minute)
-	SetDefaultEventuallyPollingInterval(2 * time.Second)
-
-	// ---- Stand up Beyla and instrument the demo app (shared prerequisites) ----
-	// These ordered specs bring the full pipeline up: backend ready, Beyla
-	// publishing its per-node ConfigMap, and the demo app actually instrumented.
-	// The per-signal assertions below (metrics, traces) all depend on this.
-
-	It("brings up otel-lgtm", func() {
-		By("waiting for the LGTM deployment to become ready")
-		waitDeploymentReady("lgtm", lgtmNS, 5*time.Minute)
-	})
-
-	It("runs a real Beyla that publishes a per-node injection ConfigMap", func() {
-		By("waiting for the Beyla DaemonSet to be ready")
-		// grafana/beyla:main is pulled fresh (imagePullPolicy: Always), so allow time.
-		Eventually(func(g Gomega) {
-			var ds appsv1.DaemonSet
-			g.Expect(k8sClient.Resources().Get(suiteCtx, "beyla", ctrlNamespace, &ds)).To(Succeed())
-			g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0), "DaemonSet not scheduled yet")
-			g.Expect(ds.Status.NumberReady).To(Equal(ds.Status.DesiredNumberScheduled), "Beyla pods not all ready")
-		}, 5*time.Minute, 5*time.Second).Should(Succeed())
-
-		By("waiting until Beyla writes a ConfigMap marked for the injection controller")
-		// Beyla stamps the per-node state ConfigMap with the beyla.grafana.com/node
-		// label (the same key it uses as the selector annotation), so a
-		// label-existence selector reliably finds it.
-		Eventually(func(g Gomega) {
-			var cms corev1.ConfigMapList
-			g.Expect(k8sClient.Resources(ctrlNamespace).List(suiteCtx, &cms,
-				resources.WithLabelSelector("beyla.grafana.com/node"))).To(Succeed())
-			g.Expect(cms.Items).NotTo(BeEmpty(),
-				"Beyla has not published a per-node injection ConfigMap yet")
-		}, 5*time.Minute, 5*time.Second).Should(Succeed())
-	})
-
-	It("instruments the demo app via the injection controller", func() {
-		By("waiting until a demo app pod is instrumented and Ready")
-		// A pod that carries the inject annotation AND is Ready proves the SDK
-		// image actually pulled, mounted and started — i.e. the full
-		// Beyla -> ConfigMap -> controller -> webhook path worked end to end.
-		waitInstrumentedReadyPod(demoNS, "app="+demoApp)
-	})
-
-	// ---- The instrumented app's metrics reach Prometheus ----
-	Context("metrics", func() {
-		It("exports the demo app's HTTP metrics to LGTM (queryable via PromQL)", func() {
-			By("querying LGTM's Prometheus until the demo app's HTTP server metrics appear")
-			// The Node.js SDK (stable HTTP semconv, OTEL_SEMCONV_STABILITY_OPT_IN=http)
-			// emits http.server.request.duration, which otel-lgtm ingests as
-			// http_server_request_duration_seconds_*. Try a few candidate names so the
-			// assertion does not hinge on otel-lgtm's exact OTLP->Prometheus naming.
-			Eventually(func(g Gomega) {
-				matched, n, err := promHasSeries(promBaseURL,
-					`http_server_request_duration_seconds_count`,
-					`http_server_request_duration_seconds_bucket`,
-					`{__name__=~"http_server_request_duration.*"}`,
-					`{__name__=~"http_server_.*"}`,
-				)
-				g.Expect(err).NotTo(HaveOccurred(), "Prometheus query failed")
-				g.Expect(n).To(BeNumerically(">", 0),
-					"no HTTP server metrics in LGTM yet (last query tried: %s)", matched)
-				_, _ = fmt.Fprintf(GinkgoWriter, "matched %d series with query %q\n", n, matched)
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
-		})
-	})
-
-	// ---- The instrumented app's traces reach Tempo ----
-	Context("traces", func() {
-		It("exports the demo app's HTTP traces to Tempo (queryable via TraceQL)", func() {
-			By("querying LGTM's Tempo until the demo app's HTTP server spans appear")
-			// The injected SDK exports spans over the same OTLP endpoint as metrics
-			// (see beyla-config: otel_traces_export), so otel-lgtm's Tempo ingests
-			// them. Try a few TraceQL queries so the assertion does not hinge on the
-			// exact resource.service.name the injector stamps: prefer the demo app's
-			// name, then fall back to any HTTP server span.
-			Eventually(func(g Gomega) {
-				matched, n, err := tempoHasTraces(tempoBaseURL,
-					`{ resource.service.name = "`+demoApp+`" }`,
-					`{ resource.service.name =~ "`+demoApp+`.*" }`,
-					`{ span.http.request.method != "" }`,
-					`{ name =~ "GET.*" }`,
-				)
-				g.Expect(err).NotTo(HaveOccurred(), "Tempo query failed")
-				g.Expect(n).To(BeNumerically(">", 0),
-					"no HTTP server traces in Tempo yet (last query tried: %s)", matched)
-				_, _ = fmt.Fprintf(GinkgoWriter, "matched %d traces with query %q\n", n, matched)
-			}, 5*time.Minute, 10*time.Second).Should(Succeed())
-		})
-	})
-})
 
 // applyManifestFile applies every document in a manifest file, creating each
 // object (ignoring ones that already exist).
@@ -273,10 +166,103 @@ func isAdmissionWebhookConfig(obj k8s.Object) bool {
 	return false
 }
 
+// waitNamespaceDeleted blocks until the named namespace no longer exists (HTTP
+// 404) or the timeout fires. It specifically requires a not-found response so
+// transient errors such as connection refused do not prematurely unblock callers
+// and mask cluster instability.
+func waitNamespaceDeleted(name string, timeout time.Duration) {
+	Eventually(func(g Gomega) {
+		var ns corev1.Namespace
+		err := k8sClient.Resources().Get(suiteCtx, name, "", &ns)
+		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+			"namespace %s still exists or unreachable: %v", name, err)
+	}, timeout, 5*time.Second).Should(Succeed())
+}
+
 // ensureNamespace creates the namespace if it does not already exist.
 func ensureNamespace(name string) error {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
 	return decoder.CreateIgnoreAlreadyExists(k8sClient.Resources())(suiteCtx, ns)
+}
+
+// waitBeylaReady blocks until the beyla DaemonSet is scheduled and all pods
+// are Ready. grafana/beyla:main uses imagePullPolicy: Always, so allow time.
+func waitBeylaReady() {
+	Eventually(func(g Gomega) {
+		var ds appsv1.DaemonSet
+		g.Expect(k8sClient.Resources().Get(suiteCtx, "beyla", ctrlNamespace, &ds)).To(Succeed())
+		g.Expect(ds.Status.DesiredNumberScheduled).To(BeNumerically(">", 0), "DaemonSet not scheduled yet")
+		g.Expect(ds.Status.NumberReady).To(Equal(ds.Status.DesiredNumberScheduled), "Beyla pods not all ready")
+	}, 5*time.Minute, 5*time.Second).Should(Succeed())
+}
+
+// deployBeyla applies the shared Beyla manifest (SA, RBAC, DaemonSet) and
+// creates the per-suite beyla-config ConfigMap targeting the given namespace.
+// The DaemonSet picks up whatever beyla-config exists at pod start, so callers
+// must invoke this once per suite (after a tearDownBeyla) rather than mutating
+// the ConfigMap of a running DaemonSet.
+func deployBeyla(targetNamespace string) error {
+	manifestsDir := filepath.Join(projectDir, "test", "e2e", "manifests")
+	if err := applyManifestFile(filepath.Join(manifestsDir, "beyla.yaml")); err != nil {
+		return fmt.Errorf("apply beyla.yaml: %w", err)
+	}
+	cm := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: "beyla-config", Namespace: ctrlNamespace},
+		Data:       map[string]string{"beyla-config.yaml": beylaConfigYAML(targetNamespace)},
+	}
+	return decoder.CreateIgnoreAlreadyExists(k8sClient.Resources())(suiteCtx, cm)
+}
+
+// beylaConfigYAML renders Beyla's config with the target instrumentation
+// namespace and the controller's SDK image version. image_version must match
+// the controller's own SDKInject config (config/test/sdk-inject.yaml).
+func beylaConfigYAML(targetNamespace string) string {
+	return fmt.Sprintf(`log_level: debug
+attributes:
+  kubernetes:
+    enable: true
+# OTLP export destinations. The injected SDK's OTLP endpoint is taken from
+# the traces export (one endpoint carries both signals into the per-node
+# ConfigMap that the controller reads). otel_metrics_export is set to the
+# same otel-lgtm address to match the e2e's metrics intent.
+otel_traces_export:
+  endpoint: http://lgtm.e2e-lgtm.svc.cluster.local:4318
+  protocol: http/protobuf
+otel_metrics_export:
+  endpoint: http://lgtm.e2e-lgtm.svc.cluster.local:4318
+  protocol: http/protobuf
+injector:
+  # Workloads in these namespaces are recorded in the per-node ConfigMap as
+  # eligible_for_restart and sent to the external controller.
+  instrument:
+    - k8s_namespace: %s
+  # Delegate mutation to the external controller-manager Deployment. When
+  # set, Beyla skips its own TLS webhook server and only publishes the
+  # per-node ConfigMap.
+  webhook:
+    external_deployment_name: beyla-k8s-injector/beyla-k8s-injector-controller-manager
+  image_version: %s
+`, targetNamespace, sdkImageVersion)
+}
+
+// tearDownBeyla removes the per-suite Beyla state so a subsequent suite starts
+// from a clean slate: the DaemonSet (so the next deployBeyla picks up a fresh
+// ConfigMap), the beyla-config ConfigMap itself, and all per-node injection
+// ConfigMaps Beyla published (which the controller has already drained from its
+// in-memory registry via the delete event — see configmap_controller.go).
+// Errors are intentionally ignored: AfterAll best-effort.
+func tearDownBeyla() {
+	_ = k8sClient.Resources().Delete(suiteCtx,
+		&appsv1.DaemonSet{ObjectMeta: metav1.ObjectMeta{Name: "beyla", Namespace: ctrlNamespace}})
+	_ = k8sClient.Resources().Delete(suiteCtx,
+		&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "beyla-config", Namespace: ctrlNamespace}})
+	var cms corev1.ConfigMapList
+	if err := k8sClient.Resources(ctrlNamespace).List(suiteCtx, &cms,
+		resources.WithLabelSelector("beyla.grafana.com/node")); err == nil {
+		for i := range cms.Items {
+			_ = k8sClient.Resources().Delete(suiteCtx, &cms.Items[i])
+		}
+	}
 }
 
 // overrideManagerImage rewrites the manager container's image on the deployed
@@ -365,49 +351,6 @@ func podReady(p *corev1.Pod) bool {
 		}
 	}
 	return false
-}
-
-// promQueryResult is the slice of the Prometheus instant-query API response the
-// suite asserts on: just the result vector.
-type promQueryResult struct {
-	Data struct {
-		Result []struct {
-			Metric map[string]string `json:"metric"`
-		} `json:"result"`
-	} `json:"data"`
-}
-
-// promHasSeries runs each PromQL query in order against the Prometheus instant
-// query API and returns the first query that yields at least one series, plus
-// the number of series it returned. Trying several candidate queries keeps the
-// assertion resilient to how otel-lgtm names OTLP-derived series.
-func promHasSeries(baseURL string, queries ...string) (string, int, error) {
-	client := &http.Client{Timeout: 10 * time.Second}
-	last := ""
-	for _, q := range queries {
-		last = q
-		u := baseURL + "/api/v1/query?query=" + url.QueryEscape(q)
-		resp, err := client.Get(u) //nolint:gosec // test-only request to a local Prometheus
-		if err != nil {
-			return q, 0, err
-		}
-		body, err := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if err != nil {
-			return q, 0, err
-		}
-		if resp.StatusCode != http.StatusOK {
-			return q, 0, fmt.Errorf("prometheus query %q returned HTTP %d: %s", q, resp.StatusCode, string(body))
-		}
-		var pr promQueryResult
-		if err := json.Unmarshal(body, &pr); err != nil {
-			return q, 0, fmt.Errorf("decoding prometheus response for %q: %w", q, err)
-		}
-		if len(pr.Data.Result) > 0 {
-			return q, len(pr.Data.Result), nil
-		}
-	}
-	return last, 0, nil
 }
 
 // tempoSearchResult is the slice of Tempo's /api/search response the suite

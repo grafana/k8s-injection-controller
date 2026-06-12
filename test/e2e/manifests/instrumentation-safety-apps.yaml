@@ -1,0 +1,230 @@
+# Sample apps for the SDK auto-instrumentation safety e2e tests. Each app
+# triggers a specific safety check in the injected SDK runtime scripts
+# (sitecustomize.py for Python, register.js for Node.js), proving the safety
+# mechanism skips instrumentation without crashing the app.
+#
+# All images are built locally and loaded into Kind (imagePullPolicy: Never).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: safety-test
+---
+# ---- Python: check_python_version (Python < 3.9) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: safety-python-old
+  namespace: safety-test
+  labels:
+    app: safety-python-old
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: safety-python-old
+  template:
+    metadata:
+      labels:
+        app: safety-python-old
+    spec:
+      containers:
+        - name: app
+          image: safety-python-old-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: safety-python-old
+  namespace: safety-test
+spec:
+  selector:
+    app: safety-python-old
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# ---- Python: verify_and_load (opentelemetry-api==1.0.0 conflicts with SDK) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: safety-python-conflict
+  namespace: safety-test
+  labels:
+    app: safety-python-conflict
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: safety-python-conflict
+  template:
+    metadata:
+      labels:
+        app: safety-python-conflict
+    spec:
+      containers:
+        - name: app
+          image: safety-python-conflict-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: safety-python-conflict
+  namespace: safety-test
+spec:
+  selector:
+    app: safety-python-conflict
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# ---- Node.js: version range check (Node.js 16, outside ^18.19.0 || >=20.6.0) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: safety-nodejs-old
+  namespace: safety-test
+  labels:
+    app: safety-nodejs-old
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: safety-nodejs-old
+  template:
+    metadata:
+      labels:
+        app: safety-nodejs-old
+    spec:
+      containers:
+        - name: app
+          image: safety-nodejs-old-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: safety-nodejs-old
+  namespace: safety-test
+spec:
+  selector:
+    app: safety-nodejs-old
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# ---- Node.js: isOtelSdkInstalled (@opentelemetry/sdk-node in node_modules) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: safety-nodejs-sdk-installed
+  namespace: safety-test
+  labels:
+    app: safety-nodejs-sdk-installed
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: safety-nodejs-sdk-installed
+  template:
+    metadata:
+      labels:
+        app: safety-nodejs-sdk-installed
+    spec:
+      containers:
+        - name: app
+          image: safety-nodejs-sdk-installed-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: safety-nodejs-sdk-installed
+  namespace: safety-test
+spec:
+  selector:
+    app: safety-nodejs-sdk-installed
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# ---- Node.js: isOtelSdkRequiredViaArgs (CMD --require otel-init.js) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: safety-nodejs-sdk-required
+  namespace: safety-test
+  labels:
+    app: safety-nodejs-sdk-required
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: safety-nodejs-sdk-required
+  template:
+    metadata:
+      labels:
+        app: safety-nodejs-sdk-required
+    spec:
+      containers:
+        - name: app
+          image: safety-nodejs-sdk-required-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: safety-nodejs-sdk-required
+  namespace: safety-test
+spec:
+  selector:
+    app: safety-nodejs-sdk-required
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# ---- Load generator (single pod, drives traffic to all apps) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: safety-load
+  namespace: safety-test
+  labels:
+    app: safety-load
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: safety-load
+  template:
+    metadata:
+      labels:
+        app: safety-load
+    spec:
+      containers:
+        - name: load
+          image: curlimages/curl:8.11.0
+          command:
+            - /bin/sh
+            - -c
+            - |
+              while true; do
+                curl -s -o /dev/null http://safety-python-old:8080/ || true
+                curl -s -o /dev/null http://safety-python-conflict:8080/ || true
+                curl -s -o /dev/null http://safety-nodejs-old:8080/ || true
+                curl -s -o /dev/null http://safety-nodejs-sdk-installed:8080/ || true
+                curl -s -o /dev/null http://safety-nodejs-sdk-required:8080/ || true
+                sleep 1
+              done

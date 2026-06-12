@@ -6,7 +6,7 @@ nodes:
     # directly, without a long-lived `kubectl port-forward`:
     #   - 30090 -> Prometheus (PromQL: http://127.0.0.1:30090/api/v1/query)
     #   - 30320 -> Tempo      (search: http://127.0.0.1:30320/api/search)
-    # Keep these nodePorts in sync with test/e2e/manifests/otel-lgtm.yaml and the
+    # Keep these nodePorts in sync with test/e2e/manifests/instrumentation-lgtm.yaml and the
     # promBaseURL/tempoBaseURL constants in the suite.
     extraPortMappings:
       - containerPort: 30090

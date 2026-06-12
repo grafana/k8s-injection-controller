@@ -1,9 +1,11 @@
-# Beyla deployment that is tuned for e2e tests:
+# Shared Beyla deployment for the e2e suites (instrumentation pipeline, safety,
+# startup filter). The per-suite k8s_namespace target is supplied at apply time
+# via the beyla-config ConfigMap built in Go (deployBeyla in e2e_helpers_test.go),
+# so this file carries only resources that are identical across suites.
+#
 #   - It always pulls grafana/beyla:main (the latest dev image): imagePullPolicy
 #     Always.
 #     TODO: build local Beyla if we end up placing this code within the same repository
-#   - Both otel_traces_export and otel_metrics_export point at the in-cluster
-#     otel-lgtm.
 #
 # Beyla runs in the beyla-k8s-injector namespace (created by the controller's
 # config/test deploy): co-located with the controller (its watched namespace)
@@ -71,40 +73,6 @@ roleRef:
   kind: Role
   name: beyla-e2e
   apiGroup: rbac.authorization.k8s.io
----
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: beyla-config
-  namespace: beyla-k8s-injector
-data:
-  beyla-config.yaml: |
-    log_level: debug
-    attributes:
-      kubernetes:
-        enable: true
-    # OTLP export destinations. The injected SDK's OTLP endpoint is taken from
-    # the traces export (one endpoint carries both signals into the per-node
-    # ConfigMap that the controller reads). otel_metrics_export is set to the
-    # same otel-lgtm address to match the e2e's metrics intent.
-    otel_traces_export:
-      endpoint: http://lgtm.e2e-lgtm.svc.cluster.local:4318
-      protocol: http/protobuf
-    otel_metrics_export:
-      endpoint: http://lgtm.e2e-lgtm.svc.cluster.local:4318
-      protocol: http/protobuf
-    injector:
-      # Workloads in the `demo` namespace are recorded in the per-node ConfigMap
-      # as eligible_for_restart and sent to the external controller.
-      instrument:
-        - k8s_namespace: demo
-      # Delegate mutation to the external controller-manager Deployment. When
-      # set, Beyla skips its own TLS webhook server and only publishes the
-      # per-node ConfigMap.
-      webhook:
-        external_deployment_name: beyla-k8s-injector/beyla-k8s-injector-controller-manager
-      # Must match the controller's own SDK image version (config/test/sdk-inject.yaml).
-      image_version: 0.0.13
 ---
 apiVersion: apps/v1
 kind: DaemonSet
