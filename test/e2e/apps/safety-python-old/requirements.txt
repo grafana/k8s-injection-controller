@@ -1,0 +1,2 @@
+# Flask 3.1+ requires Python >= 3.9, so this app (Python 3.8) pins to 3.0.3.
+flask==3.0.3

@@ -1,0 +1,119 @@
+# Workloads for the Beyla startup filter test. These are deployed BEFORE Beyla
+# starts so Beyla's initial process scan sees them. The test then asserts that:
+#   - Incompatible workloads are absent from eligible_for_restart.yaml
+#   - The compatible workload is present (confirming Beyla scanned the namespace)
+#
+# Incompatible markers:
+#   filter-java-agented:    JAVA_TOOL_OPTIONS contains -javaagent (set in image)
+#   filter-dotnet-hooked:   DOTNET_STARTUP_HOOKS is set (set in image)
+#   filter-python-old:      Python 3.8 (libpython3.8.so, version < 3.9)
+#
+# Compatible:
+#   filter-nodejs:          Node.js 20, no existing OTel instrumentation
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: filter-test
+---
+# ---- Java with existing -javaagent (incompatible) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filter-java-agented
+  namespace: filter-test
+  labels:
+    app: filter-java-agented
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: filter-java-agented
+  template:
+    metadata:
+      labels:
+        app: filter-java-agented
+    spec:
+      containers:
+        - name: app
+          image: filter-java-agented-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+# ---- .NET with existing DOTNET_STARTUP_HOOKS (incompatible) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filter-dotnet-hooked
+  namespace: filter-test
+  labels:
+    app: filter-dotnet-hooked
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: filter-dotnet-hooked
+  template:
+    metadata:
+      labels:
+        app: filter-dotnet-hooked
+    spec:
+      containers:
+        - name: app
+          image: filter-dotnet-hooked-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+# ---- Python 3.8 (incompatible: version < 3.9) ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filter-python-old
+  namespace: filter-test
+  labels:
+    app: filter-python-old
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: filter-python-old
+  template:
+    metadata:
+      labels:
+        app: filter-python-old
+    spec:
+      containers:
+        - name: app
+          image: safety-python-old-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+# ---- Node.js 20 (compatible) ----
+# Present so the test can assert Beyla DID scan the namespace (compatible workload
+# appears in eligible_for_restart) before asserting the incompatible ones are absent.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: filter-nodejs
+  namespace: filter-test
+  labels:
+    app: filter-nodejs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: filter-nodejs
+  template:
+    metadata:
+      labels:
+        app: filter-nodejs
+    spec:
+      containers:
+        - name: app
+          image: sdk-nodejs-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
