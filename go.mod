@@ -6,7 +6,7 @@ require (
 	github.com/distribution/reference v0.6.0
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/go-logr/logr v1.4.3
-	github.com/grafana/beyla/v3 v3.12.1-0.20260612115143-830b69e29ec1
+	github.com/grafana/beyla/v3 v3.22.2
 	github.com/moby/go-archive v0.2.0
 	github.com/onsi/ginkgo/v2 v2.30.0
 	github.com/onsi/gomega v1.41.0
