@@ -122,16 +122,17 @@ self-signed
 
 {{/*
 Whether the chart should install cert-manager itself via the pre-install hook.
-Renders "true" (non-empty) only when the user FORCED cert-manager mode and the
-cert-manager.io/v1 API is absent — auto mode never installs (it falls back to
-self-signed). An explicit certManager.installHook.enabled=true also forces it on.
-When this is true the Issuer/Certificate are emitted as post-install hooks so
-they are validated only after the installer hook has registered the CRDs.
+Renders "true" (non-empty) only when the user FORCED cert-manager mode
+(webhook.certManager.mode=cert-manager) and the cert-manager.io/v1 API is absent —
+auto mode never installs (it falls back to self-signed). To install cert-manager
+on the fly, set the cert mode to cert-manager. When this is true the
+Issuer/Certificate are emitted as post-install hooks so they are validated only
+after the installer hook has registered the CRDs.
 */}}
 {{- define "k8s-injection-controller.installCertManager" -}}
 {{- $mode := .Values.webhook.certManager.mode | default "auto" -}}
 {{- $hasCM := .Capabilities.APIVersions.Has "cert-manager.io/v1" -}}
-{{- if or .Values.certManager.installHook.enabled (and (eq $mode "cert-manager") (not $hasCM)) -}}
+{{- if and (eq $mode "cert-manager") (not $hasCM) -}}
 true
 {{- end -}}
 {{- end -}}
