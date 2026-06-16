@@ -1,0 +1,18 @@
+# Override the ConfigMap-writer allowlist for the shipped deploy manifest. The
+# base (config/manager) defaults to just Beyla's own ServiceAccount; this
+# overlay also watches the "monitoring" namespace (see WATCH_NAMESPACE in
+# manager_sdk_config_patch.yaml), so it additionally permits Alloy's
+# ServiceAccount there. Strategic-merge (keyed on env var name) replaces the
+# single ALLOWED_CONFIGMAP_WRITERS value rather than appending a duplicate.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controller-manager
+spec:
+  template:
+    spec:
+      containers:
+        - name: manager
+          env:
+            - name: ALLOWED_CONFIGMAP_WRITERS
+              value: system:serviceaccount:monitoring:beyla,system:serviceaccount:monitoring:alloy

@@ -31,6 +31,10 @@ patches:
     target:
       kind: Deployment
       name: controller-manager
+  - path: manager_allowed_writers_patch.yaml
+    target:
+      kind: Deployment
+      name: controller-manager
   # Scope the ConfigMap validating webhook to WATCH_NAMESPACE (monitoring), not
   # the install namespace. config/webhook's default selector targets the install
   # namespace, which is only correct when watch ns == install ns (config/test).

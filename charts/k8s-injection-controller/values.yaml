@@ -68,7 +68,7 @@ serviceAccount:
 # -- Comma-separated allowlist of usernames permitted to create/update the
 # annotated injection ConfigMaps — typically Beyla's ServiceAccount. Members of
 # system:masters are always allowed (break-glass).
-allowedConfigMapWriters: "system:serviceaccount:beyla-k8s-injector:beyla,system:serviceaccount:beyla-k8s-injector:alloy"
+allowedConfigMapWriters: "system:serviceaccount:beyla-k8s-injector:beyla"
 
 # -- Run the controller with leader election enabled.
 leaderElection: true
