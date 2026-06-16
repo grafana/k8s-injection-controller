@@ -86,7 +86,7 @@ spec:
         # Members of system:masters are always allowed (break-glass). Adjust to
         # match Beyla's actual ServiceAccount and namespace.
         - name: ALLOWED_CONFIGMAP_WRITERS
-          value: system:serviceaccount:beyla-k8s-injector:beyla,system:serviceaccount:monitoring:alloy
+          value: system:serviceaccount:beyla-k8s-injector:beyla,system:serviceaccount:beyla-k8s-injector:alloy
         ports:
         - containerPort: 8081
           name: health
