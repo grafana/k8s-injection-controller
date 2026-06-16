@@ -267,12 +267,30 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 			waitInstrumentedReadyPod(safetyTestNS, "app="+app)
 		}
 
-		By("waiting 30s for all safety apps to settle before Act 3 assertions")
-		// Single settle wait shared across every Act-3 spec: gives OTLP retry
-		// backoff headroom (no spans) and a window for any post-startup crash
-		// to surface (resilience). Apps were deployed as groups, so paying
-		// this wait once is enough — the per-assert helpers can run immediately.
-		time.Sleep(30 * time.Second)
+		By("settling: for 30s, every safety pod must stay Running and Tempo must stay empty")
+		// Consistently fails fast if any violation appears within the window
+		// (rogue span, pod crash). On success it takes the full 30s — same
+		// upper bound as a fixed sleep, but with early-failure detection.
+		Consistently(func(g Gomega) {
+			for _, app := range append(append([]string{}, safetyClass1Apps...), safetyClass2Apps...) {
+				_, n, err := tempoHasTraces(
+					fmt.Sprintf(`{ resource.service.name = "%s" }`, app),
+				)
+				g.Expect(err).NotTo(HaveOccurred(), "Tempo query failed for %s", app)
+				g.Expect(n).To(Equal(0),
+					"unexpected spans for %s during settle window", app)
+
+				var pods corev1.PodList
+				g.Expect(k8sClient.Resources(safetyTestNS).List(suiteCtx, &pods,
+					resources.WithLabelSelector("app="+app))).To(Succeed())
+				g.Expect(pods.Items).NotTo(BeEmpty(), "no pods for %s", app)
+				p := &pods.Items[0]
+				g.Expect(p.Status.Phase).To(Equal(corev1.PodRunning),
+					"pod %s/%s left Running during settle window", safetyTestNS, p.Name)
+				g.Expect(podReady(p)).To(BeTrue(),
+					"pod %s/%s left Ready during settle window", safetyTestNS, p.Name)
+			}
+		}, 30*time.Second, 2*time.Second).Should(Succeed())
 	})
 
 	// ---- Act 3: safety gates fire (Class-1) and resilience holds (Class-2) ----
@@ -323,7 +341,7 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 		It("pod stays Running after injection into a native binary", func() {
 			// No JVM to process JAVA_TOOL_OPTIONS, so LD_PRELOAD of
 			// libotelinject.so is a no-op — just verify it doesn't crash.
-			assertSafetySkip(safetyJavaGraalvmApp, "")
+			assertSafetyResilience(safetyJavaGraalvmApp)
 		})
 	})
 
@@ -331,7 +349,7 @@ var _ = Describe("SDK auto-instrumentation safety", Ordered, func() {
 		It("pod stays Running after injection into a native AOT binary", func() {
 			// No CLR to process DOTNET_STARTUP_HOOKS — same resilience class
 			// as GraalVM.
-			assertSafetySkip(safetyDotnetAOTApp, "")
+			assertSafetyResilience(safetyDotnetAOTApp)
 		})
 	})
 })

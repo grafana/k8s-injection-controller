@@ -34,6 +34,11 @@ spec:
         - name: app
           image: sdk-nodejs-app:dev
           imagePullPolicy: Never
+          env:
+            # Short export interval so metrics show up within the test timeout
+            # (SDK default is 60s).
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "1000"
           ports:
             - containerPort: 8080
 ---
@@ -71,6 +76,11 @@ spec:
         - name: app
           image: sdk-python-app:dev
           imagePullPolicy: Never
+          env:
+            # Short export interval so metrics show up within the test timeout
+            # (SDK default is 60s).
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "1000"
           ports:
             - containerPort: 8080
 ---
@@ -108,6 +118,11 @@ spec:
         - name: app
           image: sdk-java-app:dev
           imagePullPolicy: Never
+          env:
+            # Short export interval so metrics show up within the test timeout
+            # (SDK default is 60s).
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "1000"
           ports:
             - containerPort: 8080
 ---
@@ -145,6 +160,11 @@ spec:
         - name: app
           image: sdk-python-musl-app:dev
           imagePullPolicy: Never
+          env:
+            # Short export interval so metrics show up within the test timeout
+            # (SDK default is 60s).
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "1000"
           ports:
             - containerPort: 8080
 ---
@@ -182,6 +202,11 @@ spec:
         - name: app
           image: sdk-dotnet-app:dev
           imagePullPolicy: Never
+          env:
+            # Short export interval so metrics show up within the test timeout
+            # (SDK default is 60s).
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "1000"
           ports:
             - containerPort: 8080
 ---
@@ -219,6 +244,11 @@ spec:
         - name: app
           image: sdk-dotnet-musl-app:dev
           imagePullPolicy: Never
+          env:
+            # Short export interval so metrics show up within the test timeout
+            # (SDK default is 60s).
+            - name: OTEL_METRIC_EXPORT_INTERVAL
+              value: "1000"
           ports:
             - containerPort: 8080
 ---

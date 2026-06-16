@@ -64,6 +64,7 @@ const (
 
 	// Use 127.0.0.1, not localhost: kind binds the host port on IPv4 only.
 	tempoBaseURL = "http://127.0.0.1:30320"
+	promBaseURL  = "http://127.0.0.1:30090"
 )
 
 // applyManifestFile applies every document in a manifest file, creating each
@@ -348,6 +349,39 @@ func podReady(p *corev1.Pod) bool {
 		}
 	}
 	return false
+}
+
+// promSeriesResponse is the slice of Prometheus's /api/v1/series response we
+// read. Each entry is a metric series with its labels; we only need the count.
+type promSeriesResponse struct {
+	Status string              `json:"status"`
+	Data   []map[string]string `json:"data"`
+}
+
+// promSeriesCountForService returns the number of distinct series carrying
+// service_name=<serviceName> in Prometheus. OTel collector exporter maps
+// resource.service.name → the service_name label.
+func promSeriesCountForService(serviceName string) (int, error) {
+	client := &http.Client{Timeout: 10 * time.Second}
+	matcher := fmt.Sprintf(`{service_name="%s"}`, serviceName)
+	u := promBaseURL + "/api/v1/series?match[]=" + url.QueryEscape(matcher)
+	resp, err := client.Get(u) //nolint:gosec // test-only request to a local Prometheus
+	if err != nil {
+		return 0, err
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return 0, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("prometheus series query returned HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	var sr promSeriesResponse
+	if err := json.Unmarshal(body, &sr); err != nil {
+		return 0, fmt.Errorf("decoding prometheus response: %w", err)
+	}
+	return len(sr.Data), nil
 }
 
 // tempoSearchResult is the slice of Tempo's /api/search response we read.

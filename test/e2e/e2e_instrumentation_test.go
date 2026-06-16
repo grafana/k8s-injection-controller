@@ -127,19 +127,20 @@ var _ = Describe("SDK auto-instrumentation pipeline", Ordered, func() {
 	// ---- Act 1: apps are running and receiving traffic, but uninstrumented ----
 
 	It("apps produce no telemetry before Beyla instruments them", func() {
-		By("letting load generators drive traffic to the uninstrumented apps")
-		// Small buffer in case anything is in flight; apps have no SDK so 0
-		// spans is the steady state.
-		time.Sleep(5 * time.Second)
+		By("asserting Tempo + Prometheus stay empty for every SDK service across a 5s window")
+		Consistently(func(g Gomega) {
+			for _, svcName := range sdkApps {
+				_, traces, err := tempoHasTraces(
+					fmt.Sprintf(`{ resource.service.name = "%s" }`, svcName),
+				)
+				g.Expect(err).NotTo(HaveOccurred(), "Tempo query failed for %s", svcName)
+				g.Expect(traces).To(Equal(0), "unexpected spans for %s before Beyla instruments it", svcName)
 
-		By("asserting Tempo has no spans for any SDK app service")
-		for _, svcName := range sdkApps {
-			_, n, err := tempoHasTraces(
-				fmt.Sprintf(`{ resource.service.name = "%s" }`, svcName),
-			)
-			Expect(err).NotTo(HaveOccurred(), "Tempo query failed for %s", svcName)
-			Expect(n).To(Equal(0), "unexpected spans for %s before Beyla instruments it", svcName)
-		}
+				series, err := promSeriesCountForService(svcName)
+				g.Expect(err).NotTo(HaveOccurred(), "Prometheus query failed for %s", svcName)
+				g.Expect(series).To(Equal(0), "unexpected metrics for %s before Beyla instruments it", svcName)
+			}
+		}, 5*time.Second, 1*time.Second).Should(Succeed())
 	})
 
 	// ---- Act 2: Beyla deploys and triggers injection ----
@@ -171,49 +172,49 @@ var _ = Describe("SDK auto-instrumentation pipeline", Ordered, func() {
 	// ---- Act 3: each language SDK is installed and spans reach Tempo ----
 
 	Context("Node.js", func() {
-		It("instruments an Express app and emits HTTP server spans", func() {
-			assertTempoHasSpansForService(sdkNodejsApp)
+		It("instruments an Express app and emits HTTP server spans and metrics", func() {
+			assertTelemetryForService(sdkNodejsApp)
 		})
 	})
 
 	Context("Python", func() {
 		Context("glibc (python:3.11-slim)", func() {
-			It("instruments a Flask app and emits HTTP server spans", func() {
-				assertTempoHasSpansForService(sdkPythonApp)
+			It("instruments a Flask app and emits HTTP server spans and metrics", func() {
+				assertTelemetryForService(sdkPythonApp)
 			})
 		})
 
 		Context("musl (python:3.11-alpine)", func() {
-			It("instruments a Flask app and emits HTTP server spans", func() {
-				assertTempoHasSpansForService(sdkPythonMuslApp)
+			It("instruments a Flask app and emits HTTP server spans and metrics", func() {
+				assertTelemetryForService(sdkPythonMuslApp)
 			})
 		})
 	})
 
 	Context("Java", func() {
-		It("instruments a JDK HTTP server app and emits HTTP server spans", func() {
-			assertTempoHasSpansForService(sdkJavaApp)
+		It("instruments a JDK HTTP server app and emits HTTP server spans and metrics", func() {
+			assertTelemetryForService(sdkJavaApp)
 		})
 	})
 
 	Context(".NET", func() {
 		Context("glibc (mcr.microsoft.com/dotnet/aspnet:9.0)", func() {
-			It("instruments an ASP.NET Core app and emits HTTP server spans", func() {
-				assertTempoHasSpansForService(sdkDotnetApp)
+			It("instruments an ASP.NET Core app and emits HTTP server spans and metrics", func() {
+				assertTelemetryForService(sdkDotnetApp)
 			})
 		})
 
 		Context("musl (mcr.microsoft.com/dotnet/aspnet:9.0-alpine)", func() {
-			It("instruments an ASP.NET Core app and emits HTTP server spans", func() {
-				assertTempoHasSpansForService(sdkDotnetMuslApp)
+			It("instruments an ASP.NET Core app and emits HTTP server spans and metrics", func() {
+				assertTelemetryForService(sdkDotnetMuslApp)
 			})
 		})
 	})
 })
 
-// assertTempoHasSpansForService polls Tempo until at least one trace exists
-// for the given service name.
-func assertTempoHasSpansForService(serviceName string) {
+// assertTelemetryForService polls until both traces (Tempo) and metrics
+// (Prometheus) exist for the given service name.
+func assertTelemetryForService(serviceName string) {
 	Eventually(func(g Gomega) {
 		matched, n, err := tempoHasTraces(
 			fmt.Sprintf(`{ resource.service.name = "%s" }`, serviceName),
@@ -222,5 +223,10 @@ func assertTempoHasSpansForService(serviceName string) {
 		g.Expect(err).NotTo(HaveOccurred(), "Tempo query failed")
 		g.Expect(n).To(BeNumerically(">", 0),
 			"no HTTP server spans in Tempo for service %q yet (last query: %s)", serviceName, matched)
+
+		series, err := promSeriesCountForService(serviceName)
+		g.Expect(err).NotTo(HaveOccurred(), "Prometheus query failed")
+		g.Expect(series).To(BeNumerically(">", 0),
+			"no metrics in Prometheus for service %q yet", serviceName)
 	}).Should(Succeed())
 }
