@@ -110,9 +110,9 @@ sdkConfig:
   imageVolumeRoot: ghcr.io/grafana/beyla/inject-sdk-image
   imageVersion: 0.0.13
   # How the SDK payload is delivered into instrumented pods:
-  #   image          - mount the OCI image via ImageVolumeSource (k8s 1.31+)
-  #   init_container - copy the payload via an init container (k8s < 1.31)
-  #   auto           - "image" on k8s 1.31+, "init_container" otherwise
+  #   image          - mount the OCI image via ImageVolumeSource (k8s 1.35+)
+  #   init_container - copy the payload via an init container (k8s < 1.35)
+  #   auto           - "image" on k8s 1.35+, "init_container" otherwise
   injectionMode: auto
   propagators:
     - tracecontext

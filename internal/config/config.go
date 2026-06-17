@@ -20,13 +20,13 @@ type InjectionMode string
 
 const (
 	// InjectionModeImage mounts the SDK image directly via a Kubernetes
-	// ImageVolumeSource. Requires k8s 1.31+.
+	// ImageVolumeSource. Requires k8s 1.35+.
 	InjectionModeImage InjectionMode = "image"
 	// InjectionModeInitContainer provisions an ephemeral emptyDir volume and
 	// adds an init container that copies the SDK payload into it. Works on
-	// clusters older than 1.31 that lack ImageVolumeSource support.
+	// clusters older than 1.35 that lack ImageVolumeSource support.
 	InjectionModeInitContainer InjectionMode = "init_container"
-	// InjectionModeAuto resolves to InjectionModeImage on k8s 1.31+ and
+	// InjectionModeAuto resolves to InjectionModeImage on k8s 1.35+ and
 	// InjectionModeInitContainer for older versions. The check runs once at controller
 	// boot against the cluster's reported server version.
 	InjectionModeAuto InjectionMode = "auto"
@@ -50,7 +50,7 @@ type SDKInject struct {
 	// language instrumentations.
 	EnabledSDKs []bservices.InstrumentableType `yaml:"enabled_sdks"`
 	// InjectionMode selects how the SDK payload is delivered into pods:
-	// "image" (direct ImageVolumeSource, k8s 1.31+), "init_container"
+	// "image" (direct ImageVolumeSource, k8s 1.35+), "init_container"
 	// (ephemeral volume populated by a copy init container) or "auto"
 	// (resolved at boot from the cluster's server version). Defaults to "auto".
 	InjectionMode InjectionMode `yaml:"injection_mode"`
@@ -61,9 +61,9 @@ type SDKInject struct {
 const DefaultImageVolumeRoot = "ghcr.io/grafana/beyla/inject-sdk-image"
 
 // EphemeralVolumeSize bounds the emptyDir volume provisioned in
-// init-container mode. 250Mi leaves some amount of headroom, since
+// init-container mode. 500Mi leaves some amount of headroom, since
 // the actual current image size is a bit less than 200Mi.
-const EphemeralVolumeSize = "250Mi"
+const EphemeralVolumeSize = "500Mi"
 
 // SetDefaults populates zero-value fields with their defaults.
 // Call this after unmarshalling from YAML or constructing an empty SDKInject.
@@ -121,9 +121,11 @@ func parseVersionComponent(s string) (int, error) {
 
 // SupportsImageVolume reports whether the given server version supports the
 // Kubernetes ImageVolumeSource, which graduated to beta (on by default) in
-// 1.31.
+// 1.35.
+// https://kubernetes.io/blog/2025/04/29/kubernetes-v1-33-image-volume-beta/
+// https://kubernetes.io/blog/2025/12/17/kubernetes-v1-35-release/
 func SupportsImageVolume(major, minor int) bool {
-	return major > 1 || (major == 1 && minor >= 31)
+	return major > 1 || (major == 1 && minor >= 35)
 }
 
 // WithConfigMapOverrides returns a copy of s with any per-ConfigMap overrides

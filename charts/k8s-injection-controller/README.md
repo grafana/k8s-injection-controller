@@ -12,7 +12,7 @@ or via cert-manager), and (optionally) the default SDK injection config. It does
 
 ## Prerequisites
 
-- Kubernetes **1.31+** (required for `image` injection mode via
+- Kubernetes **1.35+** (required for `image` injection mode via
   `ImageVolumeSource`; older clusters work with `sdkConfig.injectionMode:
   init_container`).
 - **No cert-manager required by default.** `webhook.certManager.mode` defaults to

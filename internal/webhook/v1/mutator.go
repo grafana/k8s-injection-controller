@@ -106,14 +106,14 @@ func (pm *PodMutator) UpdateConfig(cfg *config.SDKInject) {
 }
 
 // This is the undesirable mode, since it uses a lot of ephemeral storage.
-// Typically it's used on old k8s clusters, version < 1.31.
+// Typically it's used on old k8s clusters, version < 1.35.
 func (pm *PodMutator) usesInitContainer() bool {
 	return pm.Cfg.InjectionMode != config.InjectionModeImage
 }
 
 func (pm *PodMutator) buildVolumeDefinition() corev1.Volume {
 	if pm.usesInitContainer() {
-		// Older clusters (k8s < 1.31) lack ImageVolumeSource. Provision an
+		// Older clusters (k8s < 1.35) lack ImageVolumeSource. Provision an
 		// ephemeral emptyDir that the copy init container populates from the
 		// SDK image before the app containers start.
 		sizeLimit := resource.MustParse(config.EphemeralVolumeSize)
@@ -126,7 +126,7 @@ func (pm *PodMutator) buildVolumeDefinition() corev1.Volume {
 			},
 		}
 	}
-	// Kubernetes ImageVolumeSource (k8s 1.31+).
+	// Kubernetes ImageVolumeSource (k8s 1.35+).
 	return corev1.Volume{
 		Name: injectVolumeName,
 		VolumeSource: corev1.VolumeSource{
