@@ -63,8 +63,9 @@ func TestSupportsImageVolume(t *testing.T) {
 		want         bool
 	}{
 		{1, 30, false},
-		{1, 31, true},
-		{1, 32, true},
+		{1, 31, false},
+		{1, 32, false},
+		{1, 35, false},
 		{2, 0, true},
 		{0, 99, false},
 	}

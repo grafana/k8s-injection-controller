@@ -18,7 +18,7 @@ Two components, both registered in `cmd/main.go`:
    `failurePolicy=Ignore` (a broken injector must never block pod creation), excludes its own
    namespace via `namespaceSelector`. `PodCustomDefaulter.Default` resolves the pod's owner
    chain (`internal/podinfo`), matches it against the in-memory `registry.Registry`, and on a
-   hit `PodMutator` (`mutator.go`) mounts an OCI **`ImageVolumeSource`** (requires k8s 1.31+)
+   hit `PodMutator` (`mutator.go`) mounts an OCI **`ImageVolumeSource`** (requires k8s 1.35+)
    and instruments each container. It stamps the `beyla.grafana.com/inject` annotation with the
    SHA-224 of the image ref so a later admission can detect version skew and skip / re-inject.
 If no SDK config is loaded (`ImageVolumePath` empty), the webhook selects but does not mutate.

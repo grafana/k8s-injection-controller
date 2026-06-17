@@ -17,8 +17,8 @@ instrumented, and writes a ConfigMap that the controller-manager consumes.
 
 - A running Kubernetes cluster reachable via the current kubecontext.
   `kind`, `minikube`, or any real cluster all work.
-- Cluster Kubernetes version **1.31+** (the controller's sample SDK config
-  uses `ImageVolumeSource`, which requires 1.31).
+- Cluster Kubernetes version **1.35+** (the controller's sample SDK config
+  uses `ImageVolumeSource`, which requires 1.35).
 - `kubectl` and `make` on your PATH.
 - Two container images pushed to a registry your cluster can pull from:
   - the injection controller image (`IMG`, defaults to
