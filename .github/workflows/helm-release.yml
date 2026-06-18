@@ -1,6 +1,7 @@
 name: Release Helm chart
 on:
   workflow_dispatch:
+  pull_request: # TEMPORARY: validate token auth on PR; revert before merge
 
 jobs:
   get-helm-charts-token:
@@ -19,6 +20,7 @@ jobs:
 
   release-k8s-injection-controller-helm-chart:
     needs: get-helm-charts-token
+    if: github.event_name == 'workflow_dispatch' # TEMPORARY: skip publish on PR; revert before merge
     uses: grafana/helm-charts/.github/workflows/update-helm-repo.yaml@8522a28e16bc2c84c9339c22c6bdf5446b5e431a
     permissions:
       contents: "write"
