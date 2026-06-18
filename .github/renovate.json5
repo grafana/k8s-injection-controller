@@ -1,0 +1,101 @@
+{
+  $schema: 'https://docs.renovatebot.com/renovate-schema.json',
+  extends: [
+    'config:best-practices',
+    'helpers:pinGitHubActionDigestsToSemver',
+  ],
+  postUpdateOptions: [
+    'gomodMassage',
+    'gomodTidy',
+  ],
+  ignorePaths: [
+    'scratch/**',
+    'vendor/**',
+  ],
+  customManagers: [
+    {
+      customType: 'regex',
+      description: 'Update inject-sdk-image version in sdk-inject.yaml files',
+      datasourceTemplate: 'docker',
+      depNameTemplate: 'ghcr.io/grafana/beyla/inject-sdk-image',
+      managerFilePatterns: [
+        '(^|/)config/.*/sdk-inject\\.yaml$',
+      ],
+      matchStrings: [
+        'image_version:\\s*(?<currentValue>[^\\s]+)',
+      ],
+    },
+    {
+      customType: 'regex',
+      description: 'Update inject-sdk-image version in Helm chart values',
+      datasourceTemplate: 'docker',
+      depNameTemplate: 'ghcr.io/grafana/beyla/inject-sdk-image',
+      managerFilePatterns: [
+        '(^|/)charts/.*/values\\.yaml$',
+      ],
+      matchStrings: [
+        'imageVersion:\\s*(?<currentValue>[^\\s]+)',
+      ],
+    },
+    {
+      customType: 'regex',
+      description: 'Update kustomize version in Makefile',
+      datasourceTemplate: 'github-releases',
+      depNameTemplate: 'kubernetes-sigs/kustomize',
+      extractVersionTemplate: '^kustomize/v?(?<version>.*)$',
+      managerFilePatterns: [
+        '(^|/)Makefile$',
+      ],
+      matchStrings: [
+        'KUSTOMIZE_VERSION\\s*\\?=\\s*(?<currentValue>v[^\\s]+)',
+      ],
+    },
+    {
+      customType: 'regex',
+      description: 'Update controller-gen version in Makefile',
+      datasourceTemplate: 'github-releases',
+      depNameTemplate: 'kubernetes-sigs/controller-tools',
+      managerFilePatterns: [
+        '(^|/)Makefile$',
+      ],
+      matchStrings: [
+        'CONTROLLER_TOOLS_VERSION\\s*\\?=\\s*(?<currentValue>v[^\\s]+)',
+      ],
+    },
+    {
+      customType: 'regex',
+      description: 'Update golangci-lint version in Makefile',
+      datasourceTemplate: 'github-releases',
+      depNameTemplate: 'golangci/golangci-lint',
+      managerFilePatterns: [
+        '(^|/)Makefile$',
+      ],
+      matchStrings: [
+        'GOLANGCI_LINT_VERSION\\s*\\?=\\s*(?<currentValue>v[^\\s]+)',
+      ],
+    },
+  ],
+  packageRules: [
+    // Intentionally pinned to a pre-release commit; let the team update manually.
+    {
+      matchPackageNames: [
+        'github.com/grafana/beyla/v3',
+      ],
+      enabled: false,
+    },
+    // Default: group everything into one weekly PR to keep noise low.
+    {
+      matchPackageNames: ['*'],
+      groupName: 'all dependencies',
+      schedule: ['before 8am on Monday'],
+    },
+    // inject-sdk-image: immediate updates so e2e catches regressions fast.
+    {
+      matchPackageNames: [
+        'ghcr.io/grafana/beyla/inject-sdk-image',
+      ],
+      groupName: 'inject-sdk-image',
+      schedule: ['at any time'],
+    },
+  ],
+}
