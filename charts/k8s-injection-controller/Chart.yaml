@@ -32,3 +32,17 @@ appVersion: "0.1.0"
 # no prerequisites. Force either path with webhook.certManager.mode=cert-manager
 # or =self-signed. cert-manager is intentionally not vendored as a subchart: its
 # CRDs cannot be created and consumed within the same `helm install`.
+
+keywords:
+  - observability
+  - autoinstrumentation
+  - OpenTelemetry
+maintainers:
+  - name: mariomac
+    url: https://github.com/mariomac
+  - name: grcevski
+    url: https://github.com/grcevski
+  - name: jack-berg
+    url: https://github.com/jack-berg
+  - name: jaydeluca
+    url: https://github.com/jaydeluca
