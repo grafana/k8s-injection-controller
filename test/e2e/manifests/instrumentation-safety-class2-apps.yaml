@@ -1,0 +1,119 @@
+# Class-2 safety apps: injection resilience. LD_PRELOAD of libotelinject.so
+# is a no-op for these runtimes (no JVM in GraalVM native, no CLR in .NET
+# AOT, ESM loads after --require), and the test asserts the app stays
+# Running anyway. Beyla's eBPF scanner may not recognise them as
+# instrumentable, so they rely on webhook admission rather than
+# eligible_for_restart.
+#
+# All images are built locally and loaded into Kind (imagePullPolicy: Never).
+---
+# ---- Java GraalVM native image ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: safety-java-graalvm
+  namespace: safety-test
+  labels:
+    app: safety-java-graalvm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: safety-java-graalvm
+  template:
+    metadata:
+      labels:
+        app: safety-java-graalvm
+    spec:
+      containers:
+        - name: app
+          image: safety-java-graalvm-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: safety-java-graalvm
+  namespace: safety-test
+spec:
+  selector:
+    app: safety-java-graalvm
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# ---- .NET Native AOT ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: safety-dotnet-aot
+  namespace: safety-test
+  labels:
+    app: safety-dotnet-aot
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: safety-dotnet-aot
+  template:
+    metadata:
+      labels:
+        app: safety-dotnet-aot
+    spec:
+      containers:
+        - name: app
+          image: safety-dotnet-aot-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: safety-dotnet-aot
+  namespace: safety-test
+spec:
+  selector:
+    app: safety-dotnet-aot
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+# ---- Node.js ESM app ----
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: safety-nodejs-esm
+  namespace: safety-test
+  labels:
+    app: safety-nodejs-esm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: safety-nodejs-esm
+  template:
+    metadata:
+      labels:
+        app: safety-nodejs-esm
+    spec:
+      containers:
+        - name: app
+          image: safety-nodejs-esm-app:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: safety-nodejs-esm
+  namespace: safety-test
+spec:
+  selector:
+    app: safety-nodejs-esm
+  ports:
+    - port: 8080
+      targetPort: 8080
