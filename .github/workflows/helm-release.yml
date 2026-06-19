@@ -1,0 +1,18 @@
+name: Release Helm chart
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+
+jobs:
+  release-k8s-injection-controller-helm-chart:
+    uses: grafana/helm-charts/.github/workflows/update-helm-repo.yaml@77e5ea2de369fa1ff3441b08765c164be209eaa2
+    permissions:
+      contents: "write"
+      id-token: "write"
+      packages: "write"
+    with:
+      github_app: grafana-beyla-bot
+      charts_dir: charts/k8s-injection-controller
+      cr_configfile: .github/configs/cr.yml
+      ct_configfile: .github/configs/ct.yml
