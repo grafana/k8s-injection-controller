@@ -1,8 +1,6 @@
 apiVersion: v2
 name: k8s-injection-controller
-description: |
-  A Kubernetes mutating-admission controller that injects an environment variable
-  into pods running in namespaces selected by annotated ConfigMaps.
+description: Kubernetes admission controller for Grafana Beyla SDK auto-instrumentation.
 
 # A chart can be either an 'application' or a 'library' chart.
 #
