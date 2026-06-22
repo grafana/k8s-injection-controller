@@ -83,6 +83,17 @@
       ],
       enabled: false,
     },
+    // Deliberate test fixtures for runtime version rejection gates — must never be updated.
+    {
+      description: 'safety-python-old must stay on Python 3.8 (tests the Python <3.9 rejection gate)',
+      matchFileNames: ['test/e2e/apps/safety-python-old/Dockerfile'],
+      enabled: false,
+    },
+    {
+      description: 'safety-nodejs-old must stay on Node.js 16 (tests the Node.js minimum-version rejection gate)',
+      matchFileNames: ['test/e2e/apps/safety-nodejs-old/Dockerfile'],
+      enabled: false,
+    },
     // Default: group everything into one weekly PR to keep noise low.
     {
       matchPackageNames: ['*'],
