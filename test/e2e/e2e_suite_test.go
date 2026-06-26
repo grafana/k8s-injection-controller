@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/docker/docker/api/types/build"
+	"github.com/docker/docker/api/types/image"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/jsonmessage"
 	"github.com/moby/go-archive"
@@ -144,6 +146,16 @@ var _ = BeforeSuite(func() {
 			To(Succeed(), "Failed to load %s into Kind", app.tag)
 	}
 
+	By("pre-pulling grafana/otel-lgtm into the Kind cluster")
+	lgtmImage, err := lgtmImageRef(filepath.Join(manifestsDir, "instrumentation-lgtm.yaml"))
+	Expect(err).NotTo(HaveOccurred(), "Failed to resolve lgtm image from manifest")
+	pullCtx, pullCancel := context.WithTimeout(suiteCtx, 10*time.Minute)
+	defer pullCancel()
+	Expect(pullImage(pullCtx, lgtmImage)).
+		To(Succeed(), "Failed to pull %s", lgtmImage)
+	Expect(testCluster.LoadImage(suiteCtx, lgtmImage)).
+		To(Succeed(), "Failed to load %s into Kind", lgtmImage)
+
 	By("building the Kubernetes clients")
 	kubeconfig := testCluster.GetKubeconfig()
 	k8sClient, err = klient.NewWithKubeConfigFile(kubeconfig)
@@ -230,6 +242,42 @@ func buildImage(ctx context.Context, dir, tag string, excludes ...string) error 
 
 	if err := jsonmessage.DisplayJSONMessagesStream(resp.Body, GinkgoWriter, 0, false, nil); err != nil {
 		return fmt.Errorf("image build failed: %w", err)
+	}
+	return nil
+}
+
+// lgtmImageRef extracts the grafana/otel-lgtm image ref from the lgtm manifest
+// so the suite can pre-pull it without duplicating the pinned tag here.
+func lgtmImageRef(manifestPath string) (string, error) {
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if s := strings.TrimSpace(line); strings.HasPrefix(s, "image: grafana/otel-lgtm:") {
+			return strings.TrimPrefix(s, "image: "), nil
+		}
+	}
+	return "", fmt.Errorf("grafana/otel-lgtm image not found in %s", manifestPath)
+}
+
+// pullImage pulls an image from a registry into the local Docker daemon using
+// the Docker Engine Go SDK (no `docker` CLI).
+func pullImage(ctx context.Context, ref string) error {
+	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
+	if err != nil {
+		return fmt.Errorf("creating docker client: %w", err)
+	}
+	defer func() { _ = cli.Close() }()
+
+	resp, err := cli.ImagePull(ctx, ref, image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("pulling image %s: %w", ref, err)
+	}
+	defer func() { _ = resp.Close() }()
+
+	if err := jsonmessage.DisplayJSONMessagesStream(resp, GinkgoWriter, 0, false, nil); err != nil {
+		return fmt.Errorf("image pull failed: %w", err)
 	}
 	return nil
 }
