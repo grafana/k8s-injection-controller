@@ -45,6 +45,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
+	"github.com/grafana/beyla-k8s-injector/internal/buildinfo"
 	"github.com/grafana/beyla-k8s-injector/internal/config"
 	"github.com/grafana/beyla-k8s-injector/internal/controller"
 	"github.com/grafana/beyla-k8s-injector/internal/metrics"
@@ -127,6 +128,11 @@ func main() {
 	// These transient errors go away soon, but they pollute the logs, we wrap the
 	// logger into one that eliminates those errors.
 	ctrl.SetLogger(filterCertRotationConflicts(zap.New(zap.UseFlagOptions(&opts))))
+
+	setupLog.Info("starting k8s-injection-controller",
+		"version", buildinfo.Version,
+		"revision", buildinfo.Revision,
+		"buildDate", buildinfo.Date)
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will

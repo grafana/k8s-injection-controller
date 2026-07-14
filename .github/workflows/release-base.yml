@@ -1,0 +1,233 @@
+name: release-base
+
+# Shared, reusable image build + publish pipeline. Called by:
+#   - release-main (push to main) -> version: main,              push-gar: false
+#   - release-tag  (semver tag)   -> version: ${{ ref_name }},   push-gar: true
+# The caller passes the version to stamp; image tags are derived from it (a
+# vX.Y.Z version -> semver tags :X.Y.Z/:X.Y/:X/:latest; anything else -> that tag
+# plus the short commit sha). push-gar controls whether GAR is also a target.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: Version to stamp into the binary and derive image tags from ("main" or a "vX.Y.Z" tag).
+        required: true
+        type: string
+      push-gar:
+        description: Also push to the Grafana GAR mirror (tagged releases only).
+        default: false
+        type: boolean
+
+permissions: {}
+
+env:
+  GHCR_IMAGE: ghcr.io/grafana/k8s-injection-controller
+  # GAR mirror (tagged releases only). This repository
+  # (dockerhub-k8s-injection-controller-prod-mirror) must be provisioned by
+  # Grafana infra and grant push access to this workflow's OIDC identity; images
+  # pushed here are mirrored out to Docker Hub.
+  GAR_IMAGE: us-docker.pkg.dev/grafanalabs-global/dockerhub-k8s-injection-controller-prod-mirror/k8s-injection-controller
+
+jobs:
+  # A multi-arch image is one manifest list pointing at a per-architecture image,
+  # so building it is a fan-out / fan-in across two jobs:
+  #
+  #   image-build (this job) — the fan-out. A matrix runs once per architecture on
+  #   a NATIVE runner (amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm) so each
+  #   arch compiles on real hardware instead of under slow QEMU emulation. Each
+  #   run pushes its single-arch image to the registry BY DIGEST (content-
+  #   addressed, no tag yet) and uploads that digest as a workflow artifact — the
+  #   only way to hand the digest to the next job, since jobs don't share a disk.
+  #
+  #   image-publish — the fan-in. It waits for both arches, then combines their
+  #   digests into one tagged multi-arch manifest. The tag can't be applied until
+  #   both arch images exist, and a matrix leg only knows its own arch, so the
+  #   merge must be a separate job.
+  #
+  # GHCR is always a push target; GAR is added only when push-gar is true.
+  image-build:
+    name: Build image (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write # GHCR push
+      id-token: write # GAR OIDC login
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to GAR
+        if: inputs.push-gar
+        uses: grafana/shared-workflows/actions/login-to-gar@c7ad5f57693ac858c698d95783685a9cbfd91223 # login-to-gar/v1.0.1
+        with:
+          registry: us-docker.pkg.dev
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      # Same `make docker-build` used locally, pushing this architecture by digest
+      # to GHCR (and GAR when push-gar). The content digest is identical across
+      # registries.
+      - name: Build and push by digest
+        id: build
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          VERSION: ${{ inputs.version }}
+          REVISION: ${{ github.sha }}
+          PUSH_GAR: ${{ inputs.push-gar }}
+        run: |
+          set -euo pipefail
+          outputs="type=image,name=${GHCR_IMAGE},push-by-digest=true,name-canonical=true,push=true"
+          if [ "$PUSH_GAR" = "true" ]; then
+            outputs="${outputs} type=image,name=${GAR_IMAGE},push-by-digest=true,name-canonical=true,push=true"
+          fi
+          make docker-build \
+            IMAGE_PLATFORMS="${PLATFORM}" \
+            VERSION="${VERSION}" \
+            REVISION="${REVISION}" \
+            DOCKER_METADATA_FILE=metadata.json \
+            DOCKER_BUILDX_OUTPUT="${outputs}"
+          echo "digest=$(jq -r '.["containerimage.digest"]' metadata.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # The fan-in (see image-build above). Waits for every architecture, downloads
+  # their digests, and combines them into one tagged multi-arch manifest per
+  # registry, then cosign-signs it and attaches SLSA provenance + SBOM
+  # attestations. Runs per registry (matrix): GHCR only, or GHCR + GAR when
+  # push-gar is true.
+  image-publish:
+    name: Publish image (${{ matrix.registry.name }})
+    needs: image-build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # cosign keyless + GAR login + attestations
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        # Registries to publish to: GHCR + GAR when push-gar is set, GHCR only
+        # otherwise — so no idle runner is spun up for GAR on main. `cond && A ||
+        # B` is GitHub's ternary; fromJSON parses the JSON list. The folded block
+        # scalar (>-) joins these lines back into a single expression, letting the
+        # JSON be written one registry per line for readability.
+        registry: >-
+          ${{ inputs.push-gar
+          && fromJSON('[
+          {"name": "ghcr", "image": "ghcr.io/grafana/k8s-injection-controller"},
+          {"name": "gar", "image": "us-docker.pkg.dev/grafanalabs-global/dockerhub-k8s-injection-controller-prod-mirror/k8s-injection-controller"}
+          ]')
+          || fromJSON('[
+          {"name": "ghcr", "image": "ghcr.io/grafana/k8s-injection-controller"}
+          ]') }}
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Log in to GHCR
+        if: matrix.registry.name == 'ghcr'
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to GAR
+        if: matrix.registry.name == 'gar'
+        uses: grafana/shared-workflows/actions/login-to-gar@c7ad5f57693ac858c698d95783685a9cbfd91223 # login-to-gar/v1.0.1
+        with:
+          registry: us-docker.pkg.dev
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@d7543c93d881b35a8faa02e8e3605f69b7a1ce62 # v3.10.0
+
+      - name: Create manifest, tag, and sign
+        id: publish
+        working-directory: /tmp/digests
+        env:
+          IMAGE: ${{ matrix.registry.image }}
+          VERSION: ${{ inputs.version }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # Tags from the version input: a vX.Y.Z version expands to semver tags
+          # (rolling major/minor/latest only for a stable release); anything else
+          # (e.g. "main") becomes that tag plus the short commit sha.
+          if [[ "$VERSION" == v*.*.* ]]; then
+            v="${VERSION#v}"; tags=("$v")
+            if [[ "$VERSION" != *-* ]]; then
+              major="${v%%.*}"; rest="${v#*.}"; minor="${rest%%.*}"
+              tags+=("${major}.${minor}" "${major}" "latest")
+            fi
+          else
+            tags=("$VERSION" "${SHA:0:7}")
+          fi
+          tag_args=(); for t in "${tags[@]}"; do tag_args+=(-t "${IMAGE}:${t}"); done
+          docker buildx imagetools create "${tag_args[@]}" $(printf "${IMAGE}@sha256:%s " *)
+          digest="$(docker buildx imagetools inspect "${IMAGE}:${tags[0]}" --format '{{ .Manifest.Digest }}')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+          cosign sign --yes "${IMAGE}@${digest}"
+          docker buildx imagetools inspect "${IMAGE}@${digest}"
+
+      - name: Attest image provenance (SLSA)
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-name: ${{ matrix.registry.image }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          push-to-registry: true
+
+      - name: Generate SBOM for the image
+        uses: anchore/sbom-action@fbfd9c6c189226748411491745178e0c2017392d # v0.20.10
+        with:
+          image: ${{ matrix.registry.image }}@${{ steps.publish.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Attest image SBOM
+        uses: actions/attest-sbom@4651f806c01d8637787e274ac3bdf724ef169f34 # v3.0.0
+        with:
+          subject-name: ${{ matrix.registry.image }}
+          subject-digest: ${{ steps.publish.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
