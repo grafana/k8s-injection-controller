@@ -22,9 +22,8 @@ replicaCount: 1
 image:
   repository: ghcr.io/grafana/k8s-injection-controller
   pullPolicy: IfNotPresent
-  # Overrides the image tag
-  # TODO: leave as empty so it would default to the chart version
-  tag: main
+  # Overrides the image tag. Leave empty to default to the chart appVersion.
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""
