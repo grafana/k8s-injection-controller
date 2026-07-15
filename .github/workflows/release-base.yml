@@ -146,8 +146,7 @@ jobs:
     needs: image-build
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      packages: write
+      packages: write # push manifest/tags + attestations to GHCR
       id-token: write # cosign keyless signing + attestations
       attestations: write
     strategy:
