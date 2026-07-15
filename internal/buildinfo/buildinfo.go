@@ -23,8 +23,8 @@ package buildinfo
 //
 //	-ldflags "-X github.com/grafana/beyla-k8s-injector/internal/buildinfo.Version=v1.2.3 ..."
 //
-// See the Makefile (`make build`, `make docker-build`) and the release workflow
-// (.github/workflows/release.yml) for the canonical set of ldflags.
+// See the Makefile (`make build`, `make docker-build`) and the Dockerfile for
+// the canonical set of ldflags.
 var (
 	// Version is the semantic version of the release (e.g. "v1.2.3").
 	Version = "dev"

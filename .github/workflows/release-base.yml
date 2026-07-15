@@ -1,11 +1,16 @@
 name: release-base
 
-# Shared, reusable image build + publish pipeline. Called by:
-#   - release-main (push to main) -> version: main,              push-gar: false
-#   - release-tag  (semver tag)   -> version: ${{ ref_name }},   push-gar: true
-# The caller passes the version to stamp; image tags are derived from it (a
-# vX.Y.Z version -> semver tags :X.Y.Z/:X.Y/:X/:latest; anything else -> that tag
-# plus the short commit sha). push-gar controls whether GAR is also a target.
+# Shared, reusable image build + publish pipeline
+#
+# To add a destination later (e.g. the GAR mirror), all changes stay in THIS file:
+#   1. add its image URL to `env` and a `push-<name>` boolean input (default false);
+#   2. add a term for it to the "Determine registries" step, and `|| inputs.push-<name>`
+#      to image-build's `if:` gate;
+#   3. add a login step in both jobs (image-build gated on inputs.push-<name>,
+#      image-publish gated on matrix.registry.name).
+# The push targets and the publish matrix are data-driven off the registries list,
+# so they need no changes. An OIDC-authenticated registry (e.g. GAR via
+# login-to-gar) also needs `id-token: write` added to image-build's permissions.
 on:
   workflow_call:
     inputs:
@@ -13,20 +18,15 @@ on:
         description: Version to stamp into the binary and derive image tags from ("main" or a "vX.Y.Z" tag).
         required: true
         type: string
-      push-gar:
-        description: Also push to the Grafana GAR mirror (tagged releases only).
-        default: false
+      push-ghcr:
+        description: Publish the image to GHCR.
         type: boolean
+        default: true
 
 permissions: {}
 
 env:
   GHCR_IMAGE: ghcr.io/grafana/k8s-injection-controller
-  # GAR mirror (tagged releases only). This repository
-  # (dockerhub-k8s-injection-controller-prod-mirror) must be provisioned by
-  # Grafana infra and grant push access to this workflow's OIDC identity; images
-  # pushed here are mirrored out to Docker Hub.
-  GAR_IMAGE: us-docker.pkg.dev/grafanalabs-global/dockerhub-k8s-injection-controller-prod-mirror/k8s-injection-controller
 
 jobs:
   # A multi-arch image is one manifest list pointing at a per-architecture image,
@@ -35,23 +35,29 @@ jobs:
   #   image-build (this job) — the fan-out. A matrix runs once per architecture on
   #   a NATIVE runner (amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm) so each
   #   arch compiles on real hardware instead of under slow QEMU emulation. Each
-  #   run pushes its single-arch image to the registry BY DIGEST (content-
-  #   addressed, no tag yet) and uploads that digest as a workflow artifact — the
-  #   only way to hand the digest to the next job, since jobs don't share a disk.
+  #   run pushes its single-arch image to every enabled registry BY DIGEST
+  #   (content-addressed, no tag yet) and uploads that digest as a workflow
+  #   artifact — the only way to hand the digest to the next job, as jobs don't
+  #   share a disk.
   #
   #   image-publish — the fan-in. It waits for both arches, then combines their
-  #   digests into one tagged multi-arch manifest. The tag can't be applied until
-  #   both arch images exist, and a matrix leg only knows its own arch, so the
-  #   merge must be a separate job.
-  #
-  # GHCR is always a push target; GAR is added only when push-gar is true.
+  #   digests into one tagged multi-arch manifest per registry. The tag can't be
+  #   applied until both arch images exist, and a matrix leg only knows its own
+  #   arch, so the merge must be a separate job.
   image-build:
     name: Build image (${{ matrix.arch }})
+    # Build only when at least one publish destination is enabled. Extend this
+    # with `|| inputs.push-<name>` for each destination added later.
+    if: inputs.push-ghcr
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
       packages: write # GHCR push
-      id-token: write # GAR OIDC login
+    # The enabled registries are identical across matrix legs (they depend only on
+    # the push-* inputs), so this job output is deterministic. image-publish
+    # matrixes over it.
+    outputs:
+      registries: ${{ steps.registries.outputs.registries }}
     strategy:
       fail-fast: false
       matrix:
@@ -63,43 +69,51 @@ jobs:
             runner: ubuntu-24.04-arm
             arch: arm64
     steps:
+      # The enabled registries as a JSON array of {name, image}, built from the
+      # push-* inputs. Both jobs consume this: image-build to know where to push,
+      # image-publish (via the job output) to matrix over. Add one term per
+      # destination (e.g. gar) — nothing else here needs to change.
+      - name: Determine registries
+        id: registries
+        env:
+          PUSH_GHCR: ${{ inputs.push-ghcr }}
+        run: |
+          set -euo pipefail
+          registries="$(jq -cn \
+            --arg ghcr_image "$GHCR_IMAGE" \
+            --argjson ghcr "$PUSH_GHCR" \
+            '[ if $ghcr then {name: "ghcr", image: $ghcr_image} else empty end ]')"
+          echo "registries=${registries}" >> "$GITHUB_OUTPUT"
+
       - name: Clone the code
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Log in to GHCR
+        if: inputs.push-ghcr
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to GAR
-        if: inputs.push-gar
-        uses: grafana/shared-workflows/actions/login-to-gar@c7ad5f57693ac858c698d95783685a9cbfd91223 # login-to-gar/v1.0.1
-        with:
-          registry: us-docker.pkg.dev
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
       # Same `make docker-build` used locally, pushing this architecture by digest
-      # to GHCR (and GAR when push-gar). The content digest is identical across
-      # registries.
+      # to every enabled registry (one buildx output per entry in the registries
+      # list). The content digest is identical across them.
       - name: Build and push by digest
         id: build
         env:
           PLATFORM: ${{ matrix.platform }}
           VERSION: ${{ inputs.version }}
           REVISION: ${{ github.sha }}
-          PUSH_GAR: ${{ inputs.push-gar }}
+          REGISTRIES: ${{ steps.registries.outputs.registries }}
         run: |
           set -euo pipefail
-          outputs="type=image,name=${GHCR_IMAGE},push-by-digest=true,name-canonical=true,push=true"
-          if [ "$PUSH_GAR" = "true" ]; then
-            outputs="${outputs} type=image,name=${GAR_IMAGE},push-by-digest=true,name-canonical=true,push=true"
-          fi
+          outputs="$(jq -r '[.[] | "type=image,name=\(.image),push-by-digest=true,name-canonical=true,push=true"] | join(" ")' <<< "$REGISTRIES")"
           make docker-build \
             IMAGE_PLATFORMS="${PLATFORM}" \
             VERSION="${VERSION}" \
@@ -123,11 +137,10 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # The fan-in (see image-build above). Waits for every architecture, downloads
-  # their digests, and combines them into one tagged multi-arch manifest per
-  # registry, then cosign-signs it and attaches SLSA provenance + SBOM
-  # attestations. Runs per registry (matrix): GHCR only, or GHCR + GAR when
-  # push-gar is true.
+  # The fan-in (see image-build above). Runs once per enabled registry: assembles
+  # the multi-arch manifest, tags it, cosign-signs it, and attaches SLSA
+  # provenance + SBOM attestations. The matrix contains only the registries whose
+  # push-<name> input is true.
   image-publish:
     name: Publish image (${{ matrix.registry.name }})
     needs: image-build
@@ -135,25 +148,13 @@ jobs:
     permissions:
       contents: read
       packages: write
-      id-token: write # cosign keyless + GAR login + attestations
+      id-token: write # cosign keyless signing + attestations
       attestations: write
     strategy:
       fail-fast: false
+      # One leg per enabled registry, from the list image-build computed.
       matrix:
-        # Registries to publish to: GHCR + GAR when push-gar is set, GHCR only
-        # otherwise — so no idle runner is spun up for GAR on main. `cond && A ||
-        # B` is GitHub's ternary; fromJSON parses the JSON list. The folded block
-        # scalar (>-) joins these lines back into a single expression, letting the
-        # JSON be written one registry per line for readability.
-        registry: >-
-          ${{ inputs.push-gar
-          && fromJSON('[
-          {"name": "ghcr", "image": "ghcr.io/grafana/k8s-injection-controller"},
-          {"name": "gar", "image": "us-docker.pkg.dev/grafanalabs-global/dockerhub-k8s-injection-controller-prod-mirror/k8s-injection-controller"}
-          ]')
-          || fromJSON('[
-          {"name": "ghcr", "image": "ghcr.io/grafana/k8s-injection-controller"}
-          ]') }}
+        registry: ${{ fromJSON(needs.image-build.outputs.registries) }}
     steps:
       - name: Download digests
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -169,12 +170,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Log in to GAR
-        if: matrix.registry.name == 'gar'
-        uses: grafana/shared-workflows/actions/login-to-gar@c7ad5f57693ac858c698d95783685a9cbfd91223 # login-to-gar/v1.0.1
-        with:
-          registry: us-docker.pkg.dev
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0

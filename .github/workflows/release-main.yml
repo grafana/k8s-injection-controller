@@ -23,4 +23,4 @@ jobs:
     uses: ./.github/workflows/release-base.yml
     with:
       version: main
-      push-gar: false
+      # Registries default to GHCR (push-ghcr: true).

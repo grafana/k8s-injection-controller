@@ -2,9 +2,9 @@ name: release-tag
 
 run-name: Release ${{ github.ref_name }}
 
-# On a semver tag push, build and publish the multi-arch image to GHCR and the
-# GAR mirror (tagged :X.Y.Z / :X.Y / :X / :latest), then record a GitHub Release.
-# Delegates the image build/publish to the shared release-base pipeline.
+# On a semver tag push, build and publish the multi-arch image (tagged
+# :X.Y.Z / :X.Y / :X / :latest), then record a GitHub Release. Delegates the
+# image build/publish to the shared release-base pipeline.
 on:
   push:
     tags:
@@ -27,7 +27,8 @@ jobs:
     uses: ./.github/workflows/release-base.yml
     with:
       version: ${{ github.ref_name }}
-      push-gar: true
+      # Registries default to GHCR (push-ghcr: true). Once the GAR mirror is
+      # provisioned and wired into release-base, enable it here with push-gar: true.
 
   # Record the release on GitHub with auto-generated notes (no assets — the
   # artifacts are the published container images). Runs after the images are
