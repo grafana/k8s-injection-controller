@@ -6,7 +6,7 @@ permissions:
 
 jobs:
   release-k8s-injection-controller-helm-chart:
-    uses: grafana/helm-charts/.github/workflows/update-helm-repo.yaml@77e5ea2de369fa1ff3441b08765c164be209eaa2
+    uses: grafana/helm-charts/.github/workflows/update-helm-repo.yaml@8ac07d41b2fa02ca16dc0fc084d8f145cb690988
     permissions:
       contents: "write"
       id-token: "write"
