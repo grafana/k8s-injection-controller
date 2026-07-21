@@ -122,6 +122,36 @@ the kustomize overlay with the kustomize Go API. It only needs a reachable Docke
 the controller in **`init_container` injection mode**, so it needs no `ImageVolume` feature gate. All
 third-party container images are pinned to specific tags — no floating refs.
 
+### Smoke test suite (`test/smoke/`, build tag `e2esmoke`)
+
+A separate suite in `test/smoke/` tests the end-to-end integration at the
+level of the user-facing delivery artifact: it installs **k8s-monitoring-helm**
+(with Beyla and the injection controller sub-charts enabled) against a
+locally-built controller image, then asserts that the full SDK
+auto-instrumentation pipeline delivers traces and metrics to the bundled
+otel-lgtm stack. Its purpose is to catch controller changes that would break
+the k8s-monitoring-helm integration before a release.
+
+The smoke suite uses the Helm Go SDK (`helm.sh/helm/v3/pkg/{chart/loader,chartutil,engine,registry}`)
+to render the chart in-process — no `helm` CLI required. By default the chart
+is pulled from GHCR at the pinned version constant in `smoke_suite_test.go`;
+set `K8S_MONITORING_HELM_CHART_DIR` to use a local checkout instead. Rendered
+`kind: Alloy` objects are filtered before apply because the alloy-operator (and
+its CRD) is not installed in the test cluster; a minimal placeholder collector
+is defined only to satisfy the chart's validation gate.
+
+**Run:**
+```
+go test -tags=e2esmoke ./test/smoke/...
+```
+
+**With a local chart checkout (e.g. when iterating on k8s-monitoring-helm):**
+```
+K8S_MONITORING_HELM_CHART_DIR=... go test -tags=e2esmoke ./test/smoke/...
+```
+
+Set `KIND_KEEP_CLUSTER=true` to keep the cluster for debugging.
+
 ## After Making Changes
 
 **After editing `*_types.go` or markers:**

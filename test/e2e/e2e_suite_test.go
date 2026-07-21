@@ -24,6 +24,7 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -36,9 +37,10 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/docker/docker/api/types/build"
-	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/container"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/jsonmessage"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/moby/go-archive"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -151,10 +153,8 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred(), "Failed to resolve lgtm image from manifest")
 	pullCtx, pullCancel := context.WithTimeout(suiteCtx, 10*time.Minute)
 	defer pullCancel()
-	Expect(pullImage(pullCtx, lgtmImage)).
-		To(Succeed(), "Failed to pull %s", lgtmImage)
-	Expect(testCluster.LoadImage(suiteCtx, lgtmImage)).
-		To(Succeed(), "Failed to load %s into Kind", lgtmImage)
+	Expect(pullAndLoadImage(pullCtx, clusterName, lgtmImage)).
+		To(Succeed(), "Failed to pull/load %s", lgtmImage)
 
 	By("building the Kubernetes clients")
 	kubeconfig := testCluster.GetKubeconfig()
@@ -261,24 +261,61 @@ func lgtmImageRef(manifestPath string) (string, error) {
 	return "", fmt.Errorf("grafana/otel-lgtm image not found in %s", manifestPath)
 }
 
-// pullImage pulls an image from a registry into the local Docker daemon using
-// the Docker Engine Go SDK (no `docker` CLI).
-func pullImage(ctx context.Context, ref string) error {
+// pullAndLoadImage pulls a registry image into the Kind node's containerd via
+// ctr images pull, bypassing docker save → kind load. On Docker Desktop for Mac,
+// docker save always emits the multi-arch manifest-list index regardless of
+// local tagging; ctr import --all-platforms then fails on missing non-native
+// platform blobs. Pulling via ctr fetches only the requested platform.
+func pullAndLoadImage(ctx context.Context, clusterName, ref string) error {
 	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
 	if err != nil {
 		return fmt.Errorf("creating docker client: %w", err)
 	}
 	defer func() { _ = cli.Close() }()
 
-	resp, err := cli.ImagePull(ctx, ref, image.PullOptions{})
+	info, err := cli.Info(ctx)
 	if err != nil {
-		return fmt.Errorf("pulling image %s: %w", ref, err)
+		return fmt.Errorf("getting docker info: %w", err)
 	}
-	defer func() { _ = resp.Close() }()
+	platform := "linux/amd64"
+	if info.Architecture == "aarch64" || info.Architecture == "arm64" {
+		platform = "linux/arm64"
+	}
 
-	if err := jsonmessage.DisplayJSONMessagesStream(resp, GinkgoWriter, 0, false, nil); err != nil {
-		return fmt.Errorf("image pull failed: %w", err)
+	// ctr doesn't expand short names; prepend docker.io if no registry host.
+	ctrRef := ref
+	if !strings.Contains(strings.SplitN(ref, "/", 2)[0], ".") {
+		ctrRef = "docker.io/" + ref
 	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "Pulling %s (%s) into Kind via ctr\n", ctrRef, platform)
+
+	kindNode := clusterName + "-control-plane"
+	execCreate, err := cli.ContainerExecCreate(ctx, kindNode, container.ExecOptions{
+		AttachStdout: true,
+		AttachStderr: true,
+		Cmd: []string{"ctr", "--namespace=k8s.io", "images", "pull", "--platform", platform, ctrRef},
+	})
+	if err != nil {
+		return fmt.Errorf("creating ctr pull exec in %s: %w", kindNode, err)
+	}
+
+	conn, err := cli.ContainerExecAttach(ctx, execCreate.ID, container.ExecStartOptions{})
+	if err != nil {
+		return fmt.Errorf("attaching ctr pull exec: %w", err)
+	}
+	defer conn.Close()
+
+	var out bytes.Buffer
+	_, _ = stdcopy.StdCopy(&out, &out, conn.Reader)
+
+	result, err := cli.ContainerExecInspect(ctx, execCreate.ID)
+	if err != nil {
+		return fmt.Errorf("inspecting ctr pull result: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("ctr images pull failed (exit %d):\n%s", result.ExitCode, out.String())
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "ctr pull: %s\n", out.String())
 	return nil
 }
 

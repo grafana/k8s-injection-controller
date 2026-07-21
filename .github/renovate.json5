@@ -15,6 +15,18 @@
   customManagers: [
     {
       customType: 'regex',
+      description: 'Update pinned k8s-monitoring Helm chart version in smoke suite',
+      datasourceTemplate: 'docker',
+      depNameTemplate: 'ghcr.io/grafana/helm-charts/k8s-monitoring',
+      managerFilePatterns: [
+        '(^|/)test/smoke/smoke_suite_test\.go$',
+      ],
+      matchStrings: [
+        'pinnedChartVersion\\s*=\\s*"(?<currentValue>[^"]+)"',
+      ],
+    },
+    {
+      customType: 'regex',
       description: 'Update inject-sdk-image version in sdk-inject.yaml files',
       datasourceTemplate: 'docker',
       depNameTemplate: 'ghcr.io/grafana/beyla/inject-sdk-image',
@@ -100,10 +112,12 @@
       groupName: 'all dependencies',
       schedule: ['before 8am on Monday'],
     },
-    // inject-sdk-image: immediate updates so e2e catches regressions fast.
+    // inject-sdk-image and k8s-monitoring chart: immediate updates so the
+    // smoke suite catches integration regressions as soon as a new version ships.
     {
       matchPackageNames: [
         'ghcr.io/grafana/beyla/inject-sdk-image',
+        'ghcr.io/grafana/helm-charts/k8s-monitoring',
       ],
       groupName: 'inject-sdk-image',
       schedule: ['at any time'],
