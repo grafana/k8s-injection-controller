@@ -104,12 +104,9 @@ const (
 	tempoBaseURL = "http://127.0.0.1:30320"
 	promBaseURL  = "http://127.0.0.1:30090"
 
-	// pinnedChartVersion is the k8s-monitoring chart version pulled from GHCR
-	// when K8S_MONITORING_HELM_CHART_DIR is not set. Bump intentionally when
-	// validating against a newer chart release.
+	// Managed by Renovate.
 	pinnedChartVersion = "4.3.0"
-	// pinnedChartOCI is the full OCI reference for the pinned chart.
-	pinnedChartOCI = "ghcr.io/grafana/helm-charts/k8s-monitoring:" + pinnedChartVersion
+	pinnedChartOCI     = "ghcr.io/grafana/helm-charts/k8s-monitoring:" + pinnedChartVersion
 
 	// chartDirEnvVar overrides the OCI download with a local chart directory,
 	// useful when iterating on k8s-monitoring-helm changes locally.
@@ -328,6 +325,9 @@ func smokeChartValues() map[string]interface{} {
 			},
 		},
 		"telemetryServices": map[string]interface{}{
+			// Disable DaemonSets that default to deploy:true but aren't under test.
+			"node-exporter":    map[string]interface{}{"deploy": false},
+			"windows-exporter": map[string]interface{}{"deploy": false},
 			"sdkInjector": map[string]interface{}{
 				"deploy": true,
 				// Same namespace as Beyla — watcher and writer share it without cross-namespace RBAC.
