@@ -102,6 +102,16 @@ test-e2e: manifests generate fmt vet
 	CERT_MODE=cert-manager go test -tags=e2e ./test/e2e/... -v -ginkgo.v -timeout 30m
 	CERT_MODE=self-signed go test -tags=e2e ./test/e2e/... -v -ginkgo.v -ginkgo.focus-file="e2e_injection_test.go" -timeout 15m
 
+# Runs the k8s-monitoring-helm integration smoke test. By default the chart is
+# pulled from GHCR at the pinned version in smoke_suite_test.go. To use a local
+# chart checkout instead (e.g. when iterating on k8s-monitoring-helm changes):
+#
+#   make test-e2e-smoke K8S_MONITORING_HELM_CHART_DIR=/path/to/k8s-monitoring-helm/charts/k8s-monitoring
+.PHONY: test-e2e-smoke
+test-e2e-smoke:
+	K8S_MONITORING_HELM_CHART_DIR="$(K8S_MONITORING_HELM_CHART_DIR)" \
+	  go test -tags=e2esmoke ./test/smoke/... -v -ginkgo.v -timeout 40m
+
 .PHONY: helm-template-check
 helm-template-check: ## Assert the chart renders correctly in cert-manager and self-signed modes.
 	@set -e; set +o pipefail; CHART=charts/k8s-injection-controller; \
