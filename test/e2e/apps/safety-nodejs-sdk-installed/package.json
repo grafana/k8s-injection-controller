@@ -3,6 +3,6 @@
   "version": "1.0.0",
   "dependencies": {
     "express": "5.2.1",
-    "@opentelemetry/sdk-node": "0.219.0"
+    "@opentelemetry/sdk-node": "0.220.0"
   }
 }
