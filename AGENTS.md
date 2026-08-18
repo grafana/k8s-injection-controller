@@ -414,3 +414,4 @@ make docker-build docker-push IMG=$IMG
 - **controller-runtime**: https://github.com/kubernetes-sigs/controller-runtime
 - **controller-tools**: https://github.com/kubernetes-sigs/controller-tools
 - **Kubebuilder Repo**: https://github.com/kubernetes-sigs/kubebuilder
+- Security issues should be reported via [Grafana's security issue reporting page](https://grafana.com/legal/report-a-security-issue/) and not directly in this repository.
