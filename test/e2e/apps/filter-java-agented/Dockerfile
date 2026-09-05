@@ -1,4 +1,4 @@
-FROM eclipse-temurin:25.0.3_9-jdk@sha256:dfc0093e3dbf43dae57827111c6e374f5b44fac19a9451584b2b336b81474d64 AS build
+FROM eclipse-temurin:25.0.4_7-jdk@sha256:e787e08ef76f4c16866108cd7f9fcd96a68eef3ac6cc76866897d4d02d5a2262 AS build
 WORKDIR /app
 
 # Compile the HTTP server app
@@ -13,7 +13,7 @@ RUN mkdir nop && \
     printf 'Premain-Class: NopAgent\n' > nop/MANIFEST.MF && \
     jar cfm nop-agent.jar nop/MANIFEST.MF -C nop NopAgent.class
 
-FROM eclipse-temurin:25.0.3_9-jre@sha256:7ea65de6187ad8fbcc0ad155950c38664a7371148bb3ccf1ec1e1b286b44ad08
+FROM eclipse-temurin:25.0.4_7-jre@sha256:f9e65324a37f28209ce7dd0e5149a7aa954520ed936fb87813cf6ded2400a112
 WORKDIR /app
 COPY --from=build /app/*.class .
 COPY --from=build /app/nop-agent.jar /opt/nop-agent.jar
