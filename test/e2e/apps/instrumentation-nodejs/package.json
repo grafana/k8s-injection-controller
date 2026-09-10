@@ -2,6 +2,6 @@
   "name": "sdk-test-nodejs",
   "version": "1.0.0",
   "dependencies": {
-    "express": "4.22.2"
+    "express": "5.2.1"
   }
 }

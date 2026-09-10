@@ -1,0 +1,26 @@
+name: release-main
+
+# On every push to main, build and publish the multi-arch image to GHCR
+# (tagged :main and :<short_sha>). Delegates to the shared release-base pipeline.
+on:
+  push:
+    branches:
+      - main
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  images:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/release-base.yml
+    with:
+      version: main
+      # Registries default to GHCR (push-ghcr: true).

@@ -65,6 +65,14 @@ const (
 	// Use 127.0.0.1, not localhost: kind binds the host port on IPv4 only.
 	tempoBaseURL = "http://127.0.0.1:30320"
 	promBaseURL  = "http://127.0.0.1:30090"
+
+	// Image tags match test/smoke so images are interchangeable between suites.
+	sdkNodejsImage     = "sdk-nodejs-app:dev"
+	sdkPythonImage     = "sdk-python-app:dev"
+	sdkPythonMuslImage = "sdk-python-musl-app:dev"
+	sdkJavaImage       = "sdk-java-app:dev"
+	sdkDotnetImage     = "sdk-dotnet-app:dev"
+	sdkDotnetMuslImage = "sdk-dotnet-musl-app:dev"
 )
 
 // applyManifestFile applies every document in a manifest file, creating each
@@ -443,6 +451,20 @@ func dumpPodLogs(what, ns, selector string) {
 		data, _ := io.ReadAll(stream)
 		_ = stream.Close()
 		_, _ = fmt.Fprintf(GinkgoWriter, "=== %s logs (%s/%s) ===\n%s\n", what, ns, name, data)
+	}
+}
+
+// sdkAppDirs returns SDK test app dirs/tags. Tags match test/smoke so images
+// are interchangeable between suites.
+func sdkAppDirs(projectDir string) []struct{ dir, tag string } {
+	base := filepath.Join(projectDir, "test", "e2e", "apps")
+	return []struct{ dir, tag string }{
+		{filepath.Join(base, "instrumentation-nodejs"), sdkNodejsImage},
+		{filepath.Join(base, "instrumentation-python-glibc"), sdkPythonImage},
+		{filepath.Join(base, "instrumentation-python-musl"), sdkPythonMuslImage},
+		{filepath.Join(base, "instrumentation-java"), sdkJavaImage},
+		{filepath.Join(base, "instrumentation-dotnet-glibc"), sdkDotnetImage},
+		{filepath.Join(base, "instrumentation-dotnet-musl"), sdkDotnetMuslImage},
 	}
 }
 

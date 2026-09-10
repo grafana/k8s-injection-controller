@@ -24,10 +24,12 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,8 +37,10 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/docker/docker/api/types/build"
+	"github.com/docker/docker/api/types/container"
 	dockerclient "github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/jsonmessage"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/moby/go-archive"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -144,6 +148,14 @@ var _ = BeforeSuite(func() {
 			To(Succeed(), "Failed to load %s into Kind", app.tag)
 	}
 
+	By("pre-pulling grafana/otel-lgtm into the Kind cluster")
+	lgtmImage, err := lgtmImageRef(filepath.Join(manifestsDir, "instrumentation-lgtm.yaml"))
+	Expect(err).NotTo(HaveOccurred(), "Failed to resolve lgtm image from manifest")
+	pullCtx, pullCancel := context.WithTimeout(suiteCtx, 10*time.Minute)
+	defer pullCancel()
+	Expect(pullAndLoadImage(pullCtx, clusterName, lgtmImage)).
+		To(Succeed(), "Failed to pull/load %s", lgtmImage)
+
 	By("building the Kubernetes clients")
 	kubeconfig := testCluster.GetKubeconfig()
 	k8sClient, err = klient.NewWithKubeConfigFile(kubeconfig)
@@ -231,6 +243,79 @@ func buildImage(ctx context.Context, dir, tag string, excludes ...string) error 
 	if err := jsonmessage.DisplayJSONMessagesStream(resp.Body, GinkgoWriter, 0, false, nil); err != nil {
 		return fmt.Errorf("image build failed: %w", err)
 	}
+	return nil
+}
+
+// lgtmImageRef extracts the grafana/otel-lgtm image ref from the lgtm manifest
+// so the suite can pre-pull it without duplicating the pinned tag here.
+func lgtmImageRef(manifestPath string) (string, error) {
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if s := strings.TrimSpace(line); strings.HasPrefix(s, "image: grafana/otel-lgtm:") {
+			return strings.TrimPrefix(s, "image: "), nil
+		}
+	}
+	return "", fmt.Errorf("grafana/otel-lgtm image not found in %s", manifestPath)
+}
+
+// pullAndLoadImage pulls a registry image into the Kind node's containerd via
+// ctr images pull, bypassing docker save → kind load. On Docker Desktop for Mac,
+// docker save always emits the multi-arch manifest-list index regardless of
+// local tagging; ctr import --all-platforms then fails on missing non-native
+// platform blobs. Pulling via ctr fetches only the requested platform.
+func pullAndLoadImage(ctx context.Context, clusterName, ref string) error {
+	cli, err := dockerclient.NewClientWithOpts(dockerclient.FromEnv, dockerclient.WithAPIVersionNegotiation())
+	if err != nil {
+		return fmt.Errorf("creating docker client: %w", err)
+	}
+	defer func() { _ = cli.Close() }()
+
+	info, err := cli.Info(ctx)
+	if err != nil {
+		return fmt.Errorf("getting docker info: %w", err)
+	}
+	platform := "linux/amd64"
+	if info.Architecture == "aarch64" || info.Architecture == "arm64" {
+		platform = "linux/arm64"
+	}
+
+	// ctr doesn't expand short names; prepend docker.io if no registry host.
+	ctrRef := ref
+	if !strings.Contains(strings.SplitN(ref, "/", 2)[0], ".") {
+		ctrRef = "docker.io/" + ref
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "Pulling %s (%s) into Kind via ctr\n", ctrRef, platform)
+
+	kindNode := clusterName + "-control-plane"
+	execCreate, err := cli.ContainerExecCreate(ctx, kindNode, container.ExecOptions{
+		AttachStdout: true,
+		AttachStderr: true,
+		Cmd: []string{"ctr", "--namespace=k8s.io", "images", "pull", "--platform", platform, ctrRef},
+	})
+	if err != nil {
+		return fmt.Errorf("creating ctr pull exec in %s: %w", kindNode, err)
+	}
+
+	conn, err := cli.ContainerExecAttach(ctx, execCreate.ID, container.ExecStartOptions{})
+	if err != nil {
+		return fmt.Errorf("attaching ctr pull exec: %w", err)
+	}
+	defer conn.Close()
+
+	var out bytes.Buffer
+	_, _ = stdcopy.StdCopy(&out, &out, conn.Reader)
+
+	result, err := cli.ContainerExecInspect(ctx, execCreate.ID)
+	if err != nil {
+		return fmt.Errorf("inspecting ctr pull result: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("ctr images pull failed (exit %d):\n%s", result.ExitCode, out.String())
+	}
+	_, _ = fmt.Fprintf(GinkgoWriter, "ctr pull: %s\n", out.String())
 	return nil
 }
 

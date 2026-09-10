@@ -4,6 +4,8 @@ A Kubernetes mutating-admission controller that injects an environment variable
 into pods running in namespaces selected by annotated ConfigMaps. Built with
 [Kubebuilder](https://book.kubebuilder.io/) but it does **not** define any CRD.
 
+It's meant to be used with Grafana Beyla and/or Grafana Alloy.
+
 ## How it works
 
 1. The **ConfigMap controller** watches every `ConfigMap` carrying the

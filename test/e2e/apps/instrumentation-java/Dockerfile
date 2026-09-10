@@ -1,9 +1,9 @@
-FROM eclipse-temurin:21.0.11_10-jdk AS build
+FROM eclipse-temurin:25.0.3_9-jdk@sha256:dfc0093e3dbf43dae57827111c6e374f5b44fac19a9451584b2b336b81474d64 AS build
 WORKDIR /app
 COPY SimpleHttpServer.java .
 RUN javac SimpleHttpServer.java
 
-FROM eclipse-temurin:21.0.11_10-jre
+FROM eclipse-temurin:25.0.3_9-jre@sha256:7ea65de6187ad8fbcc0ad155950c38664a7371148bb3ccf1ec1e1b286b44ad08
 WORKDIR /app
 COPY --from=build /app/*.class .
 CMD ["java", "SimpleHttpServer"]

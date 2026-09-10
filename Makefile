@@ -6,6 +6,20 @@ BEYLA_IMG ?= grafana/beyla:main
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
 YEAR ?= $(shell date +%Y)
 
+# Version metadata stamped into the binary. Supply VERSION to stamp a real
+# version (the release workflow passes the tag); otherwise it defaults to "dev".
+# See internal/buildinfo.
+VERSION ?= dev
+REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+# Derived from the HEAD commit's committer date so image builds are reproducible
+# (same commit -> same date).
+BUILD_DATE ?= $(shell git show -s --format=%cI HEAD 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)
+BUILDINFO_PKG := github.com/grafana/beyla-k8s-injector/internal/buildinfo
+LDFLAGS := -s -w \
+	-X $(BUILDINFO_PKG).Version=$(VERSION) \
+	-X $(BUILDINFO_PKG).Revision=$(REVISION) \
+	-X $(BUILDINFO_PKG).Date=$(BUILD_DATE)
+
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
 GOBIN=$(shell go env GOPATH)/bin
@@ -88,6 +102,16 @@ test-e2e: manifests generate fmt vet
 	CERT_MODE=cert-manager go test -tags=e2e ./test/e2e/... -v -ginkgo.v -timeout 30m
 	CERT_MODE=self-signed go test -tags=e2e ./test/e2e/... -v -ginkgo.v -ginkgo.focus-file="e2e_injection_test.go" -timeout 15m
 
+# Runs the k8s-monitoring-helm integration smoke test. By default the chart is
+# pulled from GHCR at the pinned version in smoke_suite_test.go. To use a local
+# chart checkout instead (e.g. when iterating on k8s-monitoring-helm changes):
+#
+#   make test-e2e-smoke K8S_MONITORING_HELM_CHART_DIR=/path/to/k8s-monitoring-helm/charts/k8s-monitoring
+.PHONY: test-e2e-smoke
+test-e2e-smoke:
+	K8S_MONITORING_HELM_CHART_DIR="$(K8S_MONITORING_HELM_CHART_DIR)" \
+	  go test -tags=e2esmoke ./test/smoke/... -v -ginkgo.v -timeout 40m
+
 .PHONY: helm-template-check
 helm-template-check: ## Assert the chart renders correctly in cert-manager and self-signed modes.
 	@set -e; set +o pipefail; CHART=charts/k8s-injection-controller; \
@@ -120,39 +144,37 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 
 .PHONY: build
 build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager ./cmd
+	go build -trimpath -ldflags="$(LDFLAGS)" -o bin/manager ./cmd
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
 	go run ./cmd
 
-# If you wish to build the manager image targeting other platforms you can use the --platform flag.
-# (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
-# More info: https://docs.docker.com/develop/develop-images/build_enhancements/
+# Platform(s) for the container image. Local builds default to the host arch so
+# the resulting image can be loaded into the local Docker store.
+IMAGE_PLATFORMS ?= linux/$(shell go env GOARCH)
+# buildx output(s). The default loads a single image into the local Docker store
+# and NEVER pushes. The release workflow overrides this to push by digest to the
+# release registries. Space-separate multiple outputs.
+DOCKER_BUILDX_OUTPUT ?= type=docker,name=$(IMG)
+# Optional buildx metadata file; the release workflow reads the pushed digest
+# from it.
+DOCKER_METADATA_FILE ?=
 .PHONY: docker-build
-docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+docker-build: ## Build the manager image with buildx. Builds locally WITHOUT pushing by default; the release overrides IMAGE_PLATFORMS/DOCKER_BUILDX_OUTPUT to push a multi-arch image by digest.
+	$(CONTAINER_TOOL) buildx build \
+		--platform=$(IMAGE_PLATFORMS) \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg REVISION=$(REVISION) \
+		--build-arg BUILD_DATE=$(BUILD_DATE) \
+		--provenance=false \
+		$(foreach o,$(DOCKER_BUILDX_OUTPUT),--output=$(o)) \
+		$(if $(DOCKER_METADATA_FILE),--metadata-file=$(DOCKER_METADATA_FILE),) \
+		-f Dockerfile .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
 	$(CONTAINER_TOOL) push ${IMG}
-
-# PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
-# architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
-# - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
-# - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-# - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
-# To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
-PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
-.PHONY: docker-buildx
-docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
-	- $(CONTAINER_TOOL) buildx create --name k8s-injection-controller-builder
-	$(CONTAINER_TOOL) buildx use k8s-injection-controller-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
-	- $(CONTAINER_TOOL) buildx rm k8s-injection-controller-builder
-	rm Dockerfile.cross
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
