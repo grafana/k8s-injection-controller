@@ -7,7 +7,7 @@ require (
 	github.com/docker/docker v28.5.2+incompatible
 	github.com/go-logr/logr v1.4.3
 	github.com/grafana/beyla/v3 v3.12.1-0.20260612115143-830b69e29ec1
-	github.com/moby/go-archive v0.3.0
+	github.com/moby/go-archive v0.3.3
 	github.com/onsi/ginkgo/v2 v2.31.0
 	github.com/onsi/gomega v1.42.0
 	github.com/open-policy-agent/cert-controller v0.16.0
