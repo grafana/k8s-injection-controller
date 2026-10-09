@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"sort"
 	"time"
 
@@ -202,7 +203,14 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	r.Registry.Set(cmKey, inst)
-	if len(restartTargets) == 0 {
+	_, hasConfig := cm.Data[configmap.KeyInstrumentation]
+	// An explicit empty selection (including exclusion-only rules) requests
+	// cleanup. Discover injected pods here instead of relying on Beyla's
+	// possibly node-restricted informers or a workload list in the ConfigMap.
+	cleanupOnly := hasConfig && !slices.ContainsFunc(inst.InjectConfig.Rules, func(rule configmap.Rule) bool {
+		return rule.Config.Mode != configmap.ModeSkip
+	})
+	if !cleanupOnly && len(restartTargets) == 0 {
 		return ctrl.Result{}, nil
 	}
 	if r.WebhookReady != nil {
@@ -218,13 +226,45 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 		}
 	}
-	if err := r.rolloutMatching(ctx, restartTargets); err != nil {
+	if cleanupOnly {
+		// An empty ConfigMap may reconcile before the other ConfigMaps on
+		// controller startup. Load their current rules before a global sweep
+		// so still-selected pods remain protected during re-admission.
+		if err := r.refreshRegistry(ctx); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	if err := r.rolloutMatching(ctx, restartTargets, cleanupOnly); err != nil {
 		logger.Error(err, "failed to trigger rollouts for pre-existing pods")
+		if cleanupOnly {
+			return ctrl.Result{}, err
+		}
 	}
 
-	// We don't need to resweep, Beyla will notice we restarted and update the config map
-	// for us so we can see a new pod that launched while we were away.
+	// Subsequent ConfigMap updates trigger another sweep. Empty updates also
+	// revisit pods whose cleanup was blocked by another node's old rules.
 	return ctrl.Result{}, nil
+}
+
+func (r *ConfigMapReconciler) refreshRegistry(ctx context.Context) error {
+	var cms corev1.ConfigMapList
+	if err := r.List(ctx, &cms); err != nil {
+		return fmt.Errorf("list ConfigMaps before cleanup: %w", err)
+	}
+	instruments := make(map[string]registry.Instrumentation, len(cms.Items))
+	for _, cm := range cms.Items {
+		if !hasSelectorAnnotation(&cm) {
+			continue
+		}
+		inst, _, err := parseConfigMap(cm.Data)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "Ignored ConfigMap with invalid payload", "name", cm.Name, "namespace", cm.Namespace)
+			continue
+		}
+		instruments[client.ObjectKeyFromObject(&cm).String()] = inst
+	}
+	r.Registry.Replace(instruments)
+	return nil
 }
 
 // parseConfigMap extracts the injection record (from instrumentation.yaml)
@@ -293,13 +333,29 @@ func sortEligible(eligible []*configmap.EligibleDeployment) {
 //
 // A pod that neither matches nor is instrumented needs no action. Bare pods are
 // skipped (no controller to recreate them).
-func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []restartCriterion) error {
+// cleanupOnly discovers injected pods cluster-wide and only removes SDKs
+// from pods that no longer match the registry. Remaining rules, including
+// another node's not-yet-updated ConfigMap, continue to protect their pods.
+func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []restartCriterion, cleanupOnly bool) error {
 	logger := log.FromContext(ctx)
 
 	// One LIST per distinct namespace, regardless of how many entries name it.
 	byNamespace := map[string][]restartCriterion{}
 	for _, t := range targets {
 		byNamespace[t.Namespace] = append(byNamespace[t.Namespace], t)
+	}
+	cleanupPods := map[string][]corev1.Pod{}
+	if cleanupOnly {
+		var pods corev1.PodList
+		if err := r.List(ctx, &pods); err != nil {
+			return fmt.Errorf("list injected pods for cleanup: %w", err)
+		}
+		for _, pod := range pods.Items {
+			if webhookv1.IsInstrumented(&pod.ObjectMeta) {
+				cleanupPods[pod.Namespace] = append(cleanupPods[pod.Namespace], pod)
+				byNamespace[pod.Namespace] = nil
+			}
+		}
 	}
 
 	toRestart := map[workloadKey]struct{}{}
@@ -311,7 +367,9 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 		}
 
 		var pods corev1.PodList
-		if err := r.List(ctx, &pods, client.InNamespace(namespace)); err != nil {
+		if cleanupOnly {
+			pods.Items = cleanupPods[namespace]
+		} else if err := r.List(ctx, &pods, client.InNamespace(namespace)); err != nil {
 			return fmt.Errorf("list pods in %s: %w", namespace, err)
 		}
 		for i := range pods.Items {
@@ -323,7 +381,7 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 				continue
 			}
 			info := podinfo.Resolve(ctx, r.Client, pod)
-			if !matchesAnyTarget(info, nsTargets) {
+			if !cleanupOnly && !matchesAnyTarget(info, nsTargets) {
 				continue
 			}
 			if match, cfg, ok := r.Registry.Match(info); !ok {
@@ -337,6 +395,9 @@ func (r *ConfigMapReconciler) rolloutMatching(ctx context.Context, targets []res
 				logger.Info("pod no longer matches any rule; scheduling rollout to remove instrumentation",
 					"namespace", pod.Namespace, "pod", pod.Name)
 			} else {
+				if cleanupOnly {
+					continue
+				}
 				// Pod matches: this is the (re-)instrumentation path.
 				effective := r.DefaultSDKConfig.WithConfigMapOverrides(cfg)
 				if effective.ImageVersion == "" {
