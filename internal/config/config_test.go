@@ -61,6 +61,12 @@ func TestPodConfigHash(t *testing.T) {
 				&SDKInject{ImageVolumeRoot: "foo/sdks", ImageVersion: "3.12"},
 				&configmap.RuleConfig{Mode: configmap.ModeSkip}))
 	})
+	t.Run("Java extension image changes hash", func(t *testing.T) {
+		rule := &configmap.RuleConfig{Mode: configmap.ModeInstall}
+		first := PodConfigHash(&SDKInject{ImageVolumeRoot: "foo/sdks", ImageVersion: "3.12", JavaExtensionImages: []string{"example/ext:v1"}}, rule)
+		second := PodConfigHash(&SDKInject{ImageVolumeRoot: "foo/sdks", ImageVersion: "3.12", JavaExtensionImages: []string{"example/ext:v2"}}, rule)
+		assert.NotEqual(t, first, second)
+	})
 	t.Run("no collisions", func(t *testing.T) {
 		history := map[string]struct{}{
 			PodConfigHash(

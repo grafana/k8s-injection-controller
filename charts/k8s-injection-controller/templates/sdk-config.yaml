@@ -16,6 +16,8 @@ data:
     image_volume_root: {{ $sdk.imageVolumeRoot }}
     image_version: {{ $sdk.imageVersion | quote }}
     injection_mode: {{ $sdk.injectionMode }}
+    java_extension_images:
+      {{- toYaml $sdk.javaExtensionImages | nindent 6 }}
     propagators:
       {{- toYaml $sdk.propagators | nindent 6 }}
     export:

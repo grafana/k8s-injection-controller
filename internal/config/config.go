@@ -44,6 +44,11 @@ type SDKInject struct {
 	// the version info supplied by Beyla's config maps or as a direct
 	// controller configuration option. See InjectionMode for how it is used.
 	ImageVolumeRoot string `yaml:"image_volume_root"`
+	// JavaExtensionImages are OCI image references containing upstream
+	// OpenTelemetry Java agent extensions under /extensions. They are mounted
+	// read-only using Kubernetes ImageVolumeSource (Java extension POC; requires
+	// image-volume support and does not support init-container mode).
+	JavaExtensionImages []string `yaml:"java_extension_images"`
 	// Resource attributes related settings
 	Resources configmap.SDKResource `yaml:"resources"`
 	// List of enabled SDK auto-instrumentations. Can be used to disable specific
@@ -167,6 +172,10 @@ func PodConfigHash(cfg *SDKInject, match *configmap.RuleConfig) string {
 		panic(err)
 	}
 	accum.Write([]byte(cfg.ImageVolumePath()))
+	for _, image := range cfg.JavaExtensionImages {
+		accum.Write([]byte{0})
+		accum.Write([]byte(image))
+	}
 
 	return strconv.FormatUint(accum.Sum64(), 32)
 }

@@ -126,6 +126,9 @@ sdkConfig:
     - python
     - java
     - dotnet
+  # POC: OCI image references containing upstream Java agent extension JARs
+  # under /extensions. Requires injectionMode: image (Kubernetes 1.35+).
+  javaExtensionImages: []
 
 # -- Pod mutating webhook configuration.
 webhook:

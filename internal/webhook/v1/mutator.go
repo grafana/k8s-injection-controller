@@ -43,6 +43,8 @@ const (
 	injectVolumeName        = "otel-inject-instrumentation"
 	injectInitContainerName = "otel-sdk-inject"
 	internalMountPath       = "/__otel_sdk_auto_instrumentation__"
+	javaExtensionsMountRoot = internalMountPath + "/extensions"
+	javaAgentExtensionsEnv  = "OTEL_JAVAAGENT_EXTENSIONS"
 
 	envVarLdPreloadName               = "LD_PRELOAD"
 	envVarLdPreloadValue              = internalMountPath + "/dist/injector/libotelinject.so"
@@ -154,6 +156,29 @@ func (pm *PodMutator) mountVolume(spec *corev1.PodSpec) {
 	} else {
 		spec.Volumes[pos] = v
 	}
+	// Extension images are deliberately image-volume-only in this POC. They
+	// remain separate from the SDK payload image and are mounted read-only.
+	if pm.Cfg.InjectionMode == config.InjectionModeImage && pm.CanInstrument(svc.InstrumentableJava) {
+		for i, image := range pm.Cfg.JavaExtensionImages {
+			name := javaExtensionVolumeName(i)
+			extensionVolume := corev1.Volume{
+				Name: name,
+				VolumeSource: corev1.VolumeSource{Image: &corev1.ImageVolumeSource{
+					Reference: image, PullPolicy: corev1.PullIfNotPresent,
+				}},
+			}
+			idx := slices.IndexFunc(spec.Volumes, func(v corev1.Volume) bool { return v.Name == name })
+			if idx < 0 {
+				spec.Volumes = append(spec.Volumes, extensionVolume)
+			} else {
+				spec.Volumes[idx] = extensionVolume
+			}
+		}
+	}
+}
+
+func javaExtensionVolumeName(index int) string {
+	return fmt.Sprintf("otel-java-extension-%d", index)
 }
 
 // addCopyInitContainerIfNeeded adds (or replaces, by name) the init container that
@@ -212,6 +237,41 @@ func (pm *PodMutator) addMount(c *corev1.Container) {
 	} else {
 		c.VolumeMounts[idx] = *volume
 	}
+	if !pm.CanInstrument(svc.InstrumentableJava) || pm.Cfg.InjectionMode != config.InjectionModeImage {
+		return
+	}
+	paths := make([]string, 0, len(pm.Cfg.JavaExtensionImages))
+	for i := range pm.Cfg.JavaExtensionImages {
+		mountPath := fmt.Sprintf("%s/%d", javaExtensionsMountRoot, i)
+		paths = append(paths, mountPath+"/extensions")
+		name := javaExtensionVolumeName(i)
+		mount := corev1.VolumeMount{Name: name, MountPath: mountPath, ReadOnly: true}
+		mountIdx := slices.IndexFunc(c.VolumeMounts, func(vm corev1.VolumeMount) bool { return vm.Name == name })
+		if mountIdx < 0 {
+			c.VolumeMounts = append(c.VolumeMounts, mount)
+		} else {
+			c.VolumeMounts[mountIdx] = mount
+		}
+	}
+	if len(paths) == 0 {
+		return
+	}
+	// Keep any pod-supplied extension paths and avoid duplicates when the
+	// webhook processes an already-injected pod again.
+	var allPaths []string
+	if pos, ok := findEnvVar(c, javaAgentExtensionsEnv); ok {
+		for existing := range strings.SplitSeq(c.Env[pos].Value, ",") {
+			if existing != "" {
+				allPaths = append(allPaths, existing)
+			}
+		}
+	}
+	for _, path := range paths {
+		if !slices.Contains(allPaths, path) {
+			allPaths = append(allPaths, path)
+		}
+	}
+	setEnvVarEvenIfEmpty(c, javaAgentExtensionsEnv, strings.Join(allPaths, ","))
 }
 
 // isLDPreloadConflict returns true only when LD_PRELOAD is set to a non-empty

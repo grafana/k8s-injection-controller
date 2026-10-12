@@ -37,6 +37,14 @@ It's meant to be used with Grafana Beyla and/or Grafana Alloy.
              value: http/protobuf
    ```
 
+   The POC's extension list is configured on the controller (`java_extension_images`
+   in its `sdk-inject.yaml`, or `sdkConfig.javaExtensionImages` in Helm); it is
+   not yet transported through Beyla's `instrumentation.yaml`. Each configured
+   image is mounted read-only into instrumented containers at a
+   unique path, and `OTEL_JAVAAGENT_EXTENSIONS` is set to that mount's
+   `/extensions` directory. This POC requires `injectionMode: image` (Kubernetes
+   1.35+); it does not copy extension images in init-container mode.
+
    The per-rule `config.env` is Beyla's: it derives the OTLP destination,
    exporters, sampler, and propagators from its own configuration and writes
    them here, so a single injector can fan pods out to different collectors.
