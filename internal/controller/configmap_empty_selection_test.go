@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -29,13 +30,21 @@ func TestEmptySelectionRestartsInjectedWorkloadsAcrossNodes(t *testing.T) {
 	} {
 		for _, coldRegistry := range []bool{false, true} {
 			t.Run(name+fmt.Sprintf("/cold_registry=%v", coldRegistry), func(t *testing.T) {
-				testEmptySelectionRestartsInjectedWorkloadsAcrossNodes(t, payload, coldRegistry)
+				testSelectionRemovalRestartsInjectedWorkloadsAcrossNodes(t, payload, coldRegistry, false)
 			})
 		}
 	}
 }
 
-func testEmptySelectionRestartsInjectedWorkloadsAcrossNodes(t *testing.T, payload string, coldRegistry bool) {
+func TestDeletedSelectionRestartsInjectedWorkloadsAcrossNodes(t *testing.T) {
+	for _, coldRegistry := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cold_registry=%v", coldRegistry), func(t *testing.T) {
+			testSelectionRemovalRestartsInjectedWorkloadsAcrossNodes(t, "", coldRegistry, true)
+		})
+	}
+}
+
+func testSelectionRemovalRestartsInjectedWorkloadsAcrossNodes(t *testing.T, payload string, coldRegistry, deleted bool) {
 	t.Helper()
 	const lastNode = "node-2"
 	ctx := t.Context()
@@ -92,11 +101,11 @@ func testEmptySelectionRestartsInjectedWorkloadsAcrossNodes(t *testing.T, payloa
 	for _, node := range []string{"node-1", lastNode} {
 		reg.Set("monitoring/"+node, inst)
 		currentPayload := payload
-		if node == lastNode {
+		if node == lastNode || deleted {
 			currentPayload = oldRules
 		}
-		// Beyla publishes only the empty selection. There are no restart
-		// targets from its informers, which may be restricted to one node.
+		// Cleanup has no restart targets from Beyla's informers, which may
+		// be restricted to one node, or from a deleted ConfigMap's payload.
 		objects = append(objects, &corev1.ConfigMap{
 			ObjectMeta: metav1.ObjectMeta{
 				Namespace: "monitoring", Name: node,
@@ -116,11 +125,33 @@ func testEmptySelectionRestartsInjectedWorkloadsAcrossNodes(t *testing.T, payloa
 		Clientset: clientset, Registry: reg, DefaultSDKConfig: defaults,
 	}
 	for _, node := range []string{"node-1", lastNode} {
-		if node == lastNode {
+		if node == lastNode || deleted {
 			var cm corev1.ConfigMap
 			require.NoError(t, reconciler.Get(ctx, client.ObjectKey{Namespace: "monitoring", Name: node}, &cm))
-			cm.Data[configmap.KeyInstrumentation] = payload
-			require.NoError(t, reconciler.Update(ctx, &cm))
+			if deleted {
+				require.NoError(t, reconciler.Delete(ctx, &cm))
+			} else {
+				cm.Data[configmap.KeyInstrumentation] = payload
+				require.NoError(t, reconciler.Update(ctx, &cm))
+			}
+		}
+		if deleted {
+			ready := false
+			reconciler.WebhookReady = func(*http.Request) error {
+				if !ready {
+					return fmt.Errorf("webhook not ready")
+				}
+				return nil
+			}
+			result, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "monitoring", Name: node}})
+			require.NoError(t, err)
+			require.Positive(t, result.RequeueAfter, "deletion cleanup must retry when the webhook is not ready")
+			for _, workload := range workloads {
+				deployment, err := clientset.AppsV1().Deployments(workload.namespace).Get(ctx, workload.name, metav1.GetOptions{})
+				require.NoError(t, err)
+				require.Empty(t, deployment.Spec.Template.Annotations["beyla.grafana.com/restartedAt"])
+			}
+			ready = true
 		}
 		_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Namespace: "monitoring", Name: node}})
 		require.NoError(t, err)
@@ -135,5 +166,5 @@ func testEmptySelectionRestartsInjectedWorkloadsAcrossNodes(t *testing.T, payloa
 		}
 	}
 	_, _, matched := reg.Match(registry.PodInfo{Namespace: "apps"})
-	require.False(t, matched, "empty selection must stop future SDK injection")
+	require.False(t, matched, "removed selection must stop future SDK injection")
 }

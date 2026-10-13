@@ -183,7 +183,7 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if err := r.Get(ctx, req.NamespacedName, &cm); err != nil {
 		if apierrors.IsNotFound(err) {
 			r.Registry.Delete(cmKey)
-			return ctrl.Result{}, nil
+			return r.reconcileRollouts(ctx, nil, true)
 		}
 		return ctrl.Result{}, err
 	}
@@ -213,6 +213,14 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	if !cleanupOnly && len(restartTargets) == 0 {
 		return ctrl.Result{}, nil
 	}
+	return r.reconcileRollouts(ctx, restartTargets, cleanupOnly)
+}
+
+// reconcileRollouts shares readiness checks and cleanup between empty and
+// deleted ConfigMaps. Deletion retries remain safe after the registry entry
+// has already been removed.
+func (r *ConfigMapReconciler) reconcileRollouts(ctx context.Context, restartTargets []restartCriterion, cleanupOnly bool) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
 	if r.WebhookReady != nil {
 		if err := r.WebhookReady(nil); err != nil {
 			logger.Info("webhook server not yet ready; deferring eviction sweep", "reason", err.Error())
@@ -227,7 +235,7 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 	if cleanupOnly {
-		// An empty ConfigMap may reconcile before the other ConfigMaps on
+		// An empty or deleted ConfigMap may reconcile before other ConfigMaps on
 		// controller startup. Load their current rules before a global sweep
 		// so still-selected pods remain protected during re-admission.
 		if err := r.refreshRegistry(ctx); err != nil {
