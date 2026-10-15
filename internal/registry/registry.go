@@ -69,6 +69,19 @@ func (r *Registry) Set(cmKey string, inst Instrumentation) {
 	r.instruments[cmKey] = inst
 }
 
+// Replace atomically loads a complete ConfigMap snapshot. Empty rule lists
+// contribute nothing, just as in Set.
+func (r *Registry) Replace(instruments map[string]Instrumentation) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	clear(r.instruments)
+	for key, inst := range instruments {
+		if len(inst.InjectConfig.Rules) > 0 {
+			r.instruments[key] = inst
+		}
+	}
+}
+
 // Delete drops all of this CM's contribution.
 func (r *Registry) Delete(cmKey string) {
 	r.mu.Lock()
