@@ -45,7 +45,7 @@ certManager:
     # TODO: look for an official image or create our own
     image:
       repository: dtzar/helm-kubectl
-      tag: "3.16"
+      tag: "4.3@sha256:d5ecd564b636549b4f20012e713dcbac7af4dcac20665e2ca87663452d6654e6"
       pullPolicy: IfNotPresent
     resources:
       limits:
