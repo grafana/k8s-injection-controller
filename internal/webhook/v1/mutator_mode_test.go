@@ -58,6 +58,31 @@ func TestJavaExtensionImagesAreMountedInImageMode(t *testing.T) {
 	}
 }
 
+func TestJavaExtensionImagesHaveNoInitContainerFallback(t *testing.T) {
+	pm := newModeMutator(config.InjectionModeInitContainer)
+	java, err := bservices.ParseInstrumentableType("java")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pm.Cfg.EnabledSDKs = []bservices.InstrumentableType{{InstrumentableType: java}}
+	pm.Cfg.JavaExtensionImages = []string{"example.test/team/java-ext:v1"}
+	spec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "example.test/app"}}}
+
+	pm.mountVolume(spec)
+	pm.addCopyInitContainerIfNeeded(spec)
+	pm.instrumentContainer(&metav1.ObjectMeta{}, &spec.Containers[0], nil, false)
+
+	if len(spec.Volumes) != 1 || spec.Volumes[0].Name != injectVolumeName || spec.Volumes[0].Image != nil {
+		t.Fatalf("volumes = %+v, want only the SDK emptyDir volume", spec.Volumes)
+	}
+	if len(spec.InitContainers) != 1 || spec.InitContainers[0].Name != injectInitContainerName {
+		t.Fatalf("init containers = %+v, want only the SDK copy init container", spec.InitContainers)
+	}
+	if got := testEnvValue(spec.Containers[0].Env, javaAgentExtensionsEnv); got != "" {
+		t.Fatalf("%s = %q, want no extension image fallback", javaAgentExtensionsEnv, got)
+	}
+}
+
 func testEnvValue(envVars []corev1.EnvVar, name string) string {
 	for _, env := range envVars {
 		if env.Name == name {
