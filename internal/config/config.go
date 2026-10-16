@@ -14,6 +14,12 @@ import (
 	"k8s.io/apimachinery/pkg/version"
 )
 
+// JavaExtensionImagesEnv is an optional Beyla per-rule config.env entry. Its
+// comma-separated value contains OCI image references with extension JARs
+// under /extensions. The controller consumes it rather than passing it to the
+// application container.
+const JavaExtensionImagesEnv = "OTEL_INJECTOR_JAVA_EXTENSION_IMAGES"
+
 // InjectionMode selects how the SDK auto-instrumentation payload is delivered
 // into instrumented pods.
 type InjectionMode string
@@ -143,6 +149,26 @@ func (s SDKInject) WithConfigMapOverrides(cfg configmap.InjectConfig) SDKInject 
 	out := s
 	if cfg.ImageVersion != "" {
 		out.ImageVersion = cfg.ImageVersion
+	}
+	return out
+}
+
+// WithRuleOverrides applies Java extension image references supplied through
+// the matched Beyla rule's existing config.env path. An explicitly present,
+// empty value disables controller-wide extension images for that rule.
+func (s SDKInject) WithRuleOverrides(rule configmap.RuleConfig) SDKInject {
+	out := s
+	for _, env := range rule.Env {
+		if env.Name != JavaExtensionImagesEnv {
+			continue
+		}
+		out.JavaExtensionImages = nil
+		for image := range strings.SplitSeq(env.Value, ",") {
+			image = strings.TrimSpace(image)
+			if image != "" {
+				out.JavaExtensionImages = append(out.JavaExtensionImages, image)
+			}
+		}
 	}
 	return out
 }

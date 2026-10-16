@@ -15,6 +15,10 @@ or via cert-manager), and (optionally) the default SDK injection config. It does
 - Kubernetes **1.35+** (required for `image` injection mode via
   `ImageVolumeSource`; older clusters work with `sdkConfig.injectionMode:
   init_container`).
+- Java extension image volumes require Kubernetes **1.35+** and the
+  `ImageVolume` feature gate enabled on the API server and kubelets. It is beta
+  and enabled by default in 1.35, and stable in 1.36. The container runtime on
+  every eligible node must support pulling/mounting the referenced OCI images.
 - **No cert-manager required by default.** `webhook.certManager.mode` defaults to
   `auto`: the chart uses cert-manager if the `cert-manager.io/v1` API is present,
   otherwise the controller provisions and rotates its own self-signed serving
@@ -114,6 +118,32 @@ See [`values.yaml`](./values.yaml) for the full list. Common knobs:
 | `webhook.certManager.mode` | auto | How the webhook serving certificate is provisioned: auto, cert-manager, self-signed. |
 | `metrics.enabled` / `metrics.port` | `true` / `8080` | Plain-HTTP Prometheus metrics, advertised via pod annotations (no Prometheus Operator required). |
 | `certManager.installHook.image.*` | `dtzar/helm-kubectl:3.16` | Image (with `kubectl` + `helm`) used by the cert-manager install hook Pod (runs only when `webhook.certManager.mode=cert-manager` and cert-manager is absent). |
+
+### Java extension image volumes (POC)
+
+Configure Java extension images either as a controller-wide default in
+`sdkConfig.javaExtensionImages`, or per Beyla rule using the existing generic
+`config.env` list with the reserved entry
+`OTEL_INJECTOR_JAVA_EXTENSION_IMAGES=registry.example/ext-a@sha256:...,registry.example/ext-b@sha256:...`.
+The per-rule list overrides the controller default; an explicitly empty value
+disables extensions for that rule. Keep each OCI image's extension JARs under
+`/extensions`. The controller mounts each image read-only and appends its
+`/extensions` path to `OTEL_JAVAAGENT_EXTENSIONS` only when Java
+auto-instrumentation is enabled. This reserved `config.env` entry is a
+controller-side convention, not a typed Beyla schema field; a future upstream
+Beyla field could replace it without changing the mutation behavior.
+
+Image volumes use the same image-pull credentials as container images: node
+credentials, the workload ServiceAccount's `imagePullSecrets`, and Pod
+`imagePullSecrets`. Ensure the workload has permission to pull every private
+extension image. Pin production references by digest; mutable tags can change
+the mounted content between Pod recreations and weaken reproducibility.
+
+If a reference is empty or invalid, the controller skips that extension and
+logs an error. If a valid image cannot be resolved or pulled, Kubernetes
+retries volume resolution and the Pod's containers do not start until it
+succeeds; inspect Pod events/reason for pull or runtime errors. This POC does
+not fall back to an init container for extension images on older clusters.
 
 ## Uninstall
 

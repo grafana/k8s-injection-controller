@@ -16,6 +16,7 @@ import (
 
 	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
 	"github.com/stretchr/testify/assert"
+	corev1 "k8s.io/api/core/v1"
 )
 
 func TestWithConfigMapOverrides(t *testing.T) {
@@ -51,6 +52,25 @@ func TestWithConfigMapOverrides(t *testing.T) {
 	})
 }
 
+func TestWithRuleOverrides(t *testing.T) {
+	base := SDKInject{JavaExtensionImages: []string{"registry.example/default:v1"}}
+	t.Run("rule images replace defaults in order", func(t *testing.T) {
+		got := base.WithRuleOverrides(configmap.RuleConfig{Env: []corev1.EnvVar{{
+			Name: JavaExtensionImagesEnv, Value: " registry.example/first:v1, ,registry.example/second:v2 ",
+		}}})
+		assert.Equal(t, []string{"registry.example/first:v1", "registry.example/second:v2"}, got.JavaExtensionImages)
+		assert.Equal(t, []string{"registry.example/default:v1"}, base.JavaExtensionImages)
+	})
+	t.Run("explicit empty value disables defaults", func(t *testing.T) {
+		got := base.WithRuleOverrides(configmap.RuleConfig{Env: []corev1.EnvVar{{Name: JavaExtensionImagesEnv}}})
+		assert.Empty(t, got.JavaExtensionImages)
+	})
+	t.Run("unrelated env leaves defaults", func(t *testing.T) {
+		got := base.WithRuleOverrides(configmap.RuleConfig{Env: []corev1.EnvVar{{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "http://collector"}}})
+		assert.Equal(t, base.JavaExtensionImages, got.JavaExtensionImages)
+	})
+}
+
 func TestPodConfigHash(t *testing.T) {
 	t.Run("idempotency", func(t *testing.T) {
 		assert.Equal(t,
@@ -65,6 +85,12 @@ func TestPodConfigHash(t *testing.T) {
 		rule := &configmap.RuleConfig{Mode: configmap.ModeInstall}
 		first := PodConfigHash(&SDKInject{ImageVolumeRoot: "foo/sdks", ImageVersion: "3.12", JavaExtensionImages: []string{"example/ext:v1"}}, rule)
 		second := PodConfigHash(&SDKInject{ImageVolumeRoot: "foo/sdks", ImageVersion: "3.12", JavaExtensionImages: []string{"example/ext:v2"}}, rule)
+		assert.NotEqual(t, first, second)
+	})
+	t.Run("per-rule Java extension image changes hash", func(t *testing.T) {
+		cfg := &SDKInject{ImageVolumeRoot: "foo/sdks", ImageVersion: "3.12"}
+		first := PodConfigHash(cfg, &configmap.RuleConfig{Env: []corev1.EnvVar{{Name: JavaExtensionImagesEnv, Value: "example/ext:v1"}}})
+		second := PodConfigHash(cfg, &configmap.RuleConfig{Env: []corev1.EnvVar{{Name: JavaExtensionImagesEnv, Value: "example/ext:v2"}}})
 		assert.NotEqual(t, first, second)
 	})
 	t.Run("no collisions", func(t *testing.T) {

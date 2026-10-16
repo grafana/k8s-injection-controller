@@ -40,11 +40,12 @@ var (
 )
 
 const (
-	injectVolumeName        = "otel-inject-instrumentation"
-	injectInitContainerName = "otel-sdk-inject"
-	internalMountPath       = "/__otel_sdk_auto_instrumentation__"
-	javaExtensionsMountRoot = internalMountPath + "/extensions"
-	javaAgentExtensionsEnv  = "OTEL_JAVAAGENT_EXTENSIONS"
+	injectVolumeName          = "otel-inject-instrumentation"
+	injectInitContainerName   = "otel-sdk-inject"
+	internalMountPath         = "/__otel_sdk_auto_instrumentation__"
+	javaExtensionsMountRoot   = internalMountPath + "/extensions"
+	javaExtensionVolumePrefix = "otel-java-extension-"
+	javaAgentExtensionsEnv    = "OTEL_JAVAAGENT_EXTENSIONS"
 
 	envVarLdPreloadName               = "LD_PRELOAD"
 	envVarLdPreloadValue              = internalMountPath + "/dist/injector/libotelinject.so"
@@ -156,10 +157,13 @@ func (pm *PodMutator) mountVolume(spec *corev1.PodSpec) {
 	} else {
 		spec.Volumes[pos] = v
 	}
+	spec.Volumes = slices.DeleteFunc(spec.Volumes, func(v corev1.Volume) bool {
+		return strings.HasPrefix(v.Name, javaExtensionVolumePrefix)
+	})
 	// Extension images are deliberately image-volume-only in this POC. They
 	// remain separate from the SDK payload image and are mounted read-only.
 	if pm.Cfg.InjectionMode == config.InjectionModeImage && pm.CanInstrument(svc.InstrumentableJava) {
-		for i, image := range pm.Cfg.JavaExtensionImages {
+		for i, image := range pm.javaExtensionImages() {
 			name := javaExtensionVolumeName(i)
 			extensionVolume := corev1.Volume{
 				Name: name,
@@ -178,7 +182,23 @@ func (pm *PodMutator) mountVolume(spec *corev1.PodSpec) {
 }
 
 func javaExtensionVolumeName(index int) string {
-	return fmt.Sprintf("otel-java-extension-%d", index)
+	return fmt.Sprintf("%s%d", javaExtensionVolumePrefix, index)
+}
+
+func (pm *PodMutator) javaExtensionImages() []string {
+	images := make([]string, 0, len(pm.Cfg.JavaExtensionImages))
+	for _, image := range pm.Cfg.JavaExtensionImages {
+		image = strings.TrimSpace(image)
+		if image == "" {
+			continue
+		}
+		if _, err := reference.Parse(image); err != nil {
+			logger.Error(err, "skipping invalid Java extension image reference", "image", image)
+			continue
+		}
+		images = append(images, image)
+	}
+	return images
 }
 
 // addCopyInitContainerIfNeeded adds (or replaces, by name) the init container that
@@ -237,11 +257,16 @@ func (pm *PodMutator) addMount(c *corev1.Container) {
 	} else {
 		c.VolumeMounts[idx] = *volume
 	}
+	c.VolumeMounts = slices.DeleteFunc(c.VolumeMounts, func(mount corev1.VolumeMount) bool {
+		return strings.HasPrefix(mount.Name, javaExtensionVolumePrefix)
+	})
 	if !pm.CanInstrument(svc.InstrumentableJava) || pm.Cfg.InjectionMode != config.InjectionModeImage {
+		pm.clearJavaExtensionPaths(c)
 		return
 	}
-	paths := make([]string, 0, len(pm.Cfg.JavaExtensionImages))
-	for i := range pm.Cfg.JavaExtensionImages {
+	images := pm.javaExtensionImages()
+	paths := make([]string, 0, len(images))
+	for i := range images {
 		mountPath := fmt.Sprintf("%s/%d", javaExtensionsMountRoot, i)
 		paths = append(paths, mountPath+"/extensions")
 		name := javaExtensionVolumeName(i)
@@ -253,6 +278,7 @@ func (pm *PodMutator) addMount(c *corev1.Container) {
 			c.VolumeMounts[mountIdx] = mount
 		}
 	}
+	pm.clearJavaExtensionPaths(c)
 	if len(paths) == 0 {
 		return
 	}
@@ -272,6 +298,26 @@ func (pm *PodMutator) addMount(c *corev1.Container) {
 		}
 	}
 	setEnvVarEvenIfEmpty(c, javaAgentExtensionsEnv, strings.Join(allPaths, ","))
+}
+
+func (pm *PodMutator) clearJavaExtensionPaths(c *corev1.Container) {
+	pos, ok := findEnvVar(c, javaAgentExtensionsEnv)
+	if !ok {
+		return
+	}
+	paths := make([]string, 0)
+	for path := range strings.SplitSeq(c.Env[pos].Value, ",") {
+		path = strings.TrimSpace(path)
+		if path != "" && !strings.HasPrefix(path, javaExtensionsMountRoot+"/") {
+			paths = append(paths, path)
+		}
+	}
+	if len(paths) == 0 {
+		c.Env = slices.Delete(c.Env, pos, pos+1)
+		return
+	}
+	c.Env[pos].ValueFrom = nil
+	c.Env[pos].Value = strings.Join(paths, ",")
 }
 
 // isLDPreloadConflict returns true only when LD_PRELOAD is set to a non-empty
@@ -335,7 +381,9 @@ func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container, r
 
 	// Rule env vars are applied first (lowest precedence) so fixed injector
 	// vars below can always override them.
-	applyEnvVars(c, ruleEnv)
+	applyEnvVars(c, slices.DeleteFunc(slices.Clone(ruleEnv), func(env corev1.EnvVar) bool {
+		return env.Name == config.JavaExtensionImagesEnv
+	}))
 	setEnvVar(c, envVarLdPreloadName, envVarLdPreloadValue)
 	setEnvVar(c, envOtelInjectorConfigFileName, envOtelInjectorConfigFileValue)
 	setEnvVar(c, envOtelSemConvStabilityName, "http")
