@@ -23,7 +23,7 @@ image:
   repository: ghcr.io/grafana/k8s-injection-controller
   pullPolicy: IfNotPresent
   # Overrides the image tag. Leave empty to default to the chart appVersion.
-  tag: ""
+  tag: "@sha256:c5bad40655a33d683c88abdf2440ce320c4c51aceb4eb31b54a771ec2eecab45"
 
 imagePullSecrets: []
 nameOverride: ""
@@ -45,7 +45,7 @@ certManager:
     # TODO: look for an official image or create our own
     image:
       repository: dtzar/helm-kubectl
-      tag: "3.16"
+      tag: "3.19@sha256:d02d8d02a24d67e4851503cc443e7eb2358383c9c052f699c262409cd05dae55"
       pullPolicy: IfNotPresent
     resources:
       limits:
