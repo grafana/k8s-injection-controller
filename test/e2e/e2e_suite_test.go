@@ -68,6 +68,10 @@ const managerImage = "beyla-k8s-injector:dev"
 var (
 	// certMode is the cert strategy under test (CERT_MODE env, default cert-manager).
 	certMode string
+	// javaExtensionImageMode opts into the Kubernetes ImageVolume Java extension test.
+	javaExtensionImageMode bool
+	javaExtensionImage     string
+	javaExtensionMarker    string
 	// servingCertSecret is the webhook serving-cert Secret name for certMode.
 	// cert-manager issues into `webhook-server-cert`; the self-signed overlay's
 	// namePrefix produces a prefixed name. The cert assertion reads this
@@ -90,8 +94,9 @@ var (
 
 // TestE2E owns the Kind cluster lifecycle: build/load images, create the
 // cluster, install CertManager, run specs, destroy the cluster (unless
-// KIND_KEEP_CLUSTER=true). The controller runs in init_container injection
-// mode, so no ImageVolume feature gate is required.
+// KIND_KEEP_CLUSTER=true). By default, the controller runs in init_container
+// injection mode; the opt-in Java extension test uses ImageVolume on Kubernetes
+// 1.35+.
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "e2e suite")
@@ -99,6 +104,14 @@ func TestE2E(t *testing.T) {
 
 var _ = BeforeSuite(func() {
 	var err error
+
+	javaExtensionImageMode = os.Getenv("E2E_JAVA_EXTENSION_IMAGE") == "true"
+	if javaExtensionImageMode {
+		javaExtensionImage = os.Getenv("JAVA_EXTENSION_IMAGE")
+		Expect(javaExtensionImage).NotTo(BeEmpty(), "JAVA_EXTENSION_IMAGE is required in image-volume mode")
+		javaExtensionMarker = os.Getenv("JAVA_EXTENSION_MARKER")
+		Expect(javaExtensionMarker).NotTo(BeEmpty(), "JAVA_EXTENSION_MARKER is required in image-volume mode")
+	}
 
 	// Resolve the cert strategy. `make test-e2e` runs the suite twice
 	// (CERT_MODE=cert-manager, then CERT_MODE=self-signed).
@@ -122,6 +135,9 @@ var _ = BeforeSuite(func() {
 	Expect(err).NotTo(HaveOccurred(), "Failed to resolve project directory")
 	manifestsDir = filepath.Join(projectDir, "test", "e2e", "manifests")
 	kindConfig := filepath.Join(projectDir, "test", "e2e", "kind-config.yaml")
+	if javaExtensionImageMode {
+		kindConfig = filepath.Join(projectDir, "test", "e2e", "kind-config-image-volume.yaml")
+	}
 
 	By("building the manager image with the Docker Go SDK")
 	Expect(buildImage(suiteCtx, projectDir, managerImage, ".git", "bin", "dist")).
@@ -146,6 +162,11 @@ var _ = BeforeSuite(func() {
 	for _, app := range allAppDirs(projectDir) {
 		Expect(testCluster.LoadImage(suiteCtx, app.tag)).
 			To(Succeed(), "Failed to load %s into Kind", app.tag)
+	}
+	if javaExtensionImageMode {
+		By("loading the Java extension image into the Kind cluster")
+		Expect(testCluster.LoadImage(suiteCtx, javaExtensionImage)).
+			To(Succeed(), "Failed to load %s into Kind", javaExtensionImage)
 	}
 
 	By("pre-pulling grafana/otel-lgtm into the Kind cluster")
@@ -293,7 +314,7 @@ func pullAndLoadImage(ctx context.Context, clusterName, ref string) error {
 	execCreate, err := cli.ContainerExecCreate(ctx, kindNode, container.ExecOptions{
 		AttachStdout: true,
 		AttachStderr: true,
-		Cmd: []string{"ctr", "--namespace=k8s.io", "images", "pull", "--platform", platform, ctrRef},
+		Cmd:          []string{"ctr", "--namespace=k8s.io", "images", "pull", "--platform", platform, ctrRef},
 	})
 	if err != nil {
 		return fmt.Errorf("creating ctr pull exec in %s: %w", kindNode, err)
@@ -322,5 +343,14 @@ func pullAndLoadImage(ctx context.Context, clusterName, ref string) error {
 // allAppDirs returns every test app's source directory and image tag across
 // all per-suite app sets, in build order.
 func allAppDirs(projectDir string) []struct{ dir, tag string } {
-	return append(append(sdkAppDirs(projectDir), safetyAppDirs(projectDir)...), filterAppDirs(projectDir)...)
+	if javaExtensionImageMode {
+		// Image-volume mode is an opt-in focused scenario. Avoid building the
+		// unrelated safety and instrumentation images when running it.
+		return []struct{ dir, tag string }{{
+			dir: filepath.Join(projectDir, "test", "e2e", "apps", "java-extension"),
+			tag: javaExtensionAppImage,
+		}}
+	}
+	apps := append(append(sdkAppDirs(projectDir), safetyAppDirs(projectDir)...), filterAppDirs(projectDir)...)
+	return apps
 }

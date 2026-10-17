@@ -37,6 +37,17 @@ It's meant to be used with Grafana Beyla and/or Grafana Alloy.
              value: http/protobuf
    ```
 
+   The POC's extension images can be configured controller-wide
+   (`java_extension_images` in `sdk-inject.yaml`, or `sdkConfig.javaExtensionImages`
+   in Helm) or per Beyla rule through its generic `config.env` list using
+   `OTEL_INJECTOR_JAVA_EXTENSION_IMAGES` (comma-separated OCI references; an
+   explicit empty value disables the controller default for that rule). Each
+   image must contain extension JARs under `/extensions`; it is mounted
+   read-only at a unique path and added to `OTEL_JAVAAGENT_EXTENSIONS` only for
+   Java-enabled rules. The reserved env key is currently a controller-side
+   convention rather than a typed Beyla field. This requires Kubernetes 1.35+
+   with `ImageVolume` enabled and has no init-container fallback.
+
    The per-rule `config.env` is Beyla's: it derives the OTLP destination,
    exporters, sampler, and propagators from its own configuration and writes
    them here, so a single injector can fan pods out to different collectors.

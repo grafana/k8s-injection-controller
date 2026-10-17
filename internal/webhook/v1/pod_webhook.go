@@ -108,7 +108,7 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	// overridden) SDK config and the matched rule, and both the config-skew check
 	// and the annotation we stamp need it.
 	mutator := *d.Mutator
-	mutator.Cfg = mutator.Cfg.WithConfigMapOverrides(cmCfg)
+	mutator.Cfg = mutator.Cfg.WithConfigMapOverrides(cmCfg).WithRuleOverrides(rule.Config)
 
 	if mutator.Cfg.ImageVersion == "" {
 		podlog.Info("pod matches but no SDK config loaded; skipping injection",
