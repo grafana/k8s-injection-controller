@@ -33,7 +33,7 @@ func TestJavaExtensionImagesAreMountedInImageMode(t *testing.T) {
 	pm.instrumentContainer(meta, &spec.Containers[0], nil, false)
 
 	if len(spec.Volumes) != 3 {
-		t.Fatalf("volumes = %d, want SDK volume plus 2 extension image volumes", len(spec.Volumes))
+		t.Fatalf("volumes = %d, want SDK plus 2 extension image volumes", len(spec.Volumes))
 	}
 	for i, image := range pm.Cfg.JavaExtensionImages {
 		name := javaExtensionVolumeName(i)

@@ -40,10 +40,12 @@ var (
 )
 
 const (
-	injectVolumeName          = "otel-inject-instrumentation"
-	injectInitContainerName   = "otel-sdk-inject"
-	internalMountPath         = "/__otel_sdk_auto_instrumentation__"
-	javaExtensionsMountRoot   = internalMountPath + "/extensions"
+	injectVolumeName        = "otel-inject-instrumentation"
+	injectInitContainerName = "otel-sdk-inject"
+	internalMountPath       = "/__otel_sdk_auto_instrumentation__"
+	// Keep extension image volumes outside the SDK ImageVolume mount. The SDK
+	// image is read-only and runtimes cannot create nested mountpoint parents.
+	javaExtensionsMountRoot   = "/__otel_java_extensions__"
 	javaExtensionVolumePrefix = "otel-java-extension-"
 	javaAgentExtensionsEnv    = "OTEL_JAVAAGENT_EXTENSIONS"
 
