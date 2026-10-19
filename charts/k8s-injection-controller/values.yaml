@@ -104,6 +104,8 @@ affinity: {}
 # controller still selects matching workloads but performs no mutation.
 sdkConfig:
   enabled: true
+  # Disable controller-triggered workload rollouts; new pods are still injected.
+  disableAutoRestart: false
   debug: false
   # OCI image carrying the SDK auto-instrumentation payload.
   imageVolumeRoot: ghcr.io/grafana/beyla/inject-sdk-image
