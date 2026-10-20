@@ -9,8 +9,9 @@ It's meant to be used with Grafana Beyla and/or Grafana Alloy.
 ## How it works
 
 1. The **ConfigMap controller** watches every `ConfigMap` carrying the
-   annotation `beyla.grafana.com/node` (the value is ignored — presence is
-   what matters).
+   annotation `beyla.grafana.com/node`. A nonempty value identifies the source
+   node: state for an absent or terminating node is ignored. An empty value
+   supports manually managed selectors without a node association.
 2. Each selector ConfigMap carries two files in its `.data`:
 
    **`instrumentation.yaml`** — a Beyla
@@ -213,5 +214,48 @@ config/                                      # kustomize manifests
 - **Single replica** — the registry is in-memory. Running multiple replicas is
   safe (each one builds its own view from the informer cache) but adds no HA
   benefit; leader election is disabled by default.
-- **RBAC** — the generated role grants `get/list/watch` on configmaps and pods,
-  plus `delete` on pods and `create` on `pods/eviction`.
+- **RBAC** — the generated roles grant namespaced `get/list/watch` on ConfigMaps,
+  cluster-wide `get/list/watch` on Nodes, Pods and ReplicaSets, `delete` on Pods,
+  and `patch` on Deployments, StatefulSets and DaemonSets.
+
+## Node state and SDK upgrades
+
+Beyla writes one injector-state ConfigMap per node, owned by its DaemonSet.
+Deleting a node does not garbage-collect that ConfigMap while the DaemonSet
+exists. The controller ignores state for absent or terminating nodes and removes
+it from its in-memory registry on node deletion. Retained orphan maps may be
+removed after checking their `beyla.grafana.com/node` annotation against the
+cluster's nodes. Empty annotations intentionally designate node-independent
+selectors.
+
+SDK image versions from matching ConfigMaps override the controller's default
+`image_version`; `image_volume_root` comes from the controller. An old map can
+therefore select an old version or digest under a newly configured repository.
+This applies to both registry migrations and SDK upgrades. Filtering absent
+nodes does not resolve conflicting versions from nodes that still exist during
+a rolling Beyla upgrade, or state from a reused node name.
+
+For a controlled migration or upgrade:
+
+1. Verify the desired SDK image, including any pinned digest, is available and
+   pullable from the destination registry on all required architectures.
+2. On a controller containing the restart guard, set
+   `disable_auto_restart: true` in its SDK YAML (`--config`), or Helm
+   `sdkConfig.disableAutoRestart: true`, and restart the controller to load it.
+   On older controllers this setting is ineffective; pause the controller
+   during a maintenance window with workload creation and rollouts quiesced.
+3. Update the controller repository/default version and Beyla's
+   `injector.image_version`. Let all Beyla instances publish their new state;
+   remove confirmed orphan state and verify every remaining state map advertises
+   the intended version before creating or restarting workloads. Resume/restart
+   the controller with its new configuration.
+4. Create a canary pod and inspect its injected image reference and pull result,
+   then roll out workloads deliberately. Restore automatic restarts if desired.
+
+`disable_auto_restart` controls all workload rollouts initiated by this
+controller, including reinstrumentation after SDK/config changes and removal of
+instrumentation. It still updates admission rules and injects newly created
+pods. It does not suppress rollouts initiated by Kubernetes, Helm, another
+controller, or an operator. Configure it on the injection controller; the
+current Beyla `injector` configuration does not carry this field. Controllers
+without the restart guard ignore it even when it is present in their SDK YAML.
