@@ -111,7 +111,7 @@ var _ = AfterSuite(func() {
 })
 
 // envtestBinaryDir locates the envtest kube-apiserver/etcd binaries the same
-// way the webhook suite does, so `make setup-envtest` populates one place.
+// way the webhook suite does, so `mise run setup-envtest` populates one place.
 func envtestBinaryDir() string {
 	base := filepath.Join("..", "..", "bin", "k8s")
 	entries, err := os.ReadDir(base)

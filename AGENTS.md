@@ -9,7 +9,7 @@ auto-instrumentation** into application pods at admission time.
 *external* `core/Pod` resource with a defaulting webhook. Selection/configuration comes from
 Beyla-managed ConfigMaps (reusing `github.com/grafana/beyla/v3` and `go.opentelemetry.io/obi`
 types), not from custom resources. So the CRD-centric guidance further down (creating
-`api/<version>/*_types.go`, editing `config/crd/bases/*`, `make manifests` regenerating CRDs)
+`api/<version>/*_types.go`, editing `config/crd/bases/*`, `mise run manifests` regenerating CRDs)
 does **not** apply here — treat it as generic Kubebuilder reference only.
 
 Two components, both registered in `cmd/main.go`:
@@ -49,7 +49,7 @@ internal/webhook/*             Validation/defaulting (if present)
 config/crd/bases/*             Generated CRDs (DO NOT EDIT)
 config/rbac/role.yaml          Generated RBAC (DO NOT EDIT)
 config/samples/*               Example CRs (edit these)
-Makefile                       Build/test/deploy commands
+mise.toml                      Build/test/deploy tasks
 PROJECT                        Kubebuilder metadata Auto-generated (DO NOT EDIT)
 ```
 
@@ -74,10 +74,10 @@ Multi-group layout organizes APIs by group name (e.g., `batch`, `apps`). Check t
 ## Critical Rules
 
 ### Never Edit These (Auto-Generated)
-- `config/crd/bases/*.yaml` - from `make manifests`
-- `config/rbac/role.yaml` - from `make manifests`
-- `config/webhook/manifests.yaml` - from `make manifests`
-- `**/zz_generated.*.go` - from `make generate`
+- `config/crd/bases/*.yaml` - from `mise run manifests`
+- `config/rbac/role.yaml` - from `mise run manifests`
+- `config/webhook/manifests.yaml` - from `mise run manifests`
+- `**/zz_generated.*.go` - from `mise run generate`
 - `PROJECT` - from `kubebuilder [OPTIONS]`
 
 ### Never Remove Scaffold Markers
@@ -108,7 +108,7 @@ The single `test/e2e` suite (behind the `e2e` build tag) contains four specs sha
 Shared helpers and lifecycle live in `e2e_helpers_test.go` and `e2e_suite_test.go`.
 
 **Cert mode.** The suite supports both webhook cert strategies via the `CERT_MODE` env var
-(`cert-manager` or `self-signed`); `make test-e2e` runs the whole suite once per mode in its own cluster.
+(`cert-manager` or `self-signed`); `mise run test-e2e` runs the whole suite once per mode in its own cluster.
 The mode selects the kustomize overlay (`config/test` vs `config/test-selfsigned`) and gates whether
 CertManager is installed in `BeforeSuite`. Run a single mode with
 `CERT_MODE=cert-manager go test -tags=e2e ./test/e2e/...`. Set `KIND_KEEP_CLUSTER=true` to keep the
@@ -156,14 +156,14 @@ Set `KIND_KEEP_CLUSTER=true` to keep the cluster for debugging.
 
 **After editing `*_types.go` or markers:**
 ```
-make manifests  # Regenerate CRDs/RBAC from markers
-make generate   # Regenerate DeepCopy methods
+mise run manifests  # Regenerate CRDs/RBAC from markers
+mise run generate   # Regenerate DeepCopy methods
 ```
 
 **After editing `*.go` files:**
 ```
-make lint-fix   # Auto-fix code style
-make test       # Run unit tests
+mise run lint-fix   # Auto-fix code style
+mise run test       # Run unit tests
 ```
 
 ## CLI Commands Cheat Sheet
@@ -240,8 +240,8 @@ kubebuilder create webhook \
 ## Testing & Development
 
 ```bash
-make test              # Run unit tests (uses envtest: real K8s API + etcd)
-make run               # Run locally (uses current kubeconfig context)
+mise run test              # Run unit tests (uses envtest: real K8s API + etcd)
+mise run run               # Run locally (uses current kubeconfig context)
 ```
 
 Tests use **Ginkgo + Gomega** (BDD style). Check `suite_test.go` for setup.
@@ -250,12 +250,12 @@ Tests use **Ginkgo + Gomega** (BDD style). Check `suite_test.go` for setup.
 
 ```bash
 # 1. Regenerate manifests
-make manifests generate
+mise run manifests && mise run generate
 
 # 2. Build & deploy
 export IMG=<registry>/<project>:tag
-make docker-build docker-push IMG=$IMG  # Or: kind load docker-image $IMG --name <cluster>
-make deploy IMG=$IMG
+mise run docker-build && mise run docker-push  # Or: kind load docker-image $IMG --name <cluster>
+mise run deploy
 
 # 3. Test
 kubectl apply -k config/samples/
@@ -350,7 +350,7 @@ Generated code includes: status conditions (`metav1.Condition`), finalizers, own
 
 ```bash
 # Generate dist/install.yaml from Kustomize manifests
-make build-installer IMG=<registry>/<project>:tag
+IMG=<registry>/<project>:tag mise run build-installer
 ```
 
 **Key points:**
@@ -372,12 +372,11 @@ kubebuilder edit --plugins=helm/v2-alpha --output-dir=charts  # Generates charts
 
 **For development:**
 ```bash
-make helm-deploy IMG=<registry>/<project>:<tag>          # Deploy manager via Helm
-make helm-deploy IMG=$IMG HELM_EXTRA_ARGS="--set ..."    # Deploy with custom values
-make helm-status                                         # Show release status
-make helm-uninstall                                      # Remove release
-make helm-history                                        # View release history
-make helm-rollback                                       # Rollback to previous version
+helm upgrade --install my-release ./charts/k8s-injection-controller --namespace beyla-k8s-injector --create-namespace
+helm status my-release --namespace beyla-k8s-injector
+helm history my-release --namespace beyla-k8s-injector
+helm rollback my-release 1 --namespace beyla-k8s-injector
+helm uninstall my-release --namespace beyla-k8s-injector
 ```
 
 **For end users/production:**
@@ -394,7 +393,7 @@ helm install my-release ./<output-dir>/chart/ --namespace <ns> --create-namespac
 
 ```bash
 export IMG=<registry>/<project>:<version>
-make docker-build docker-push IMG=$IMG
+mise run docker-build && mise run docker-push
 ```
 
 ## References
