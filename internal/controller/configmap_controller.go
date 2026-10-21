@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -170,6 +171,7 @@ type ConfigMapReconciler struct {
 // Pods, ReplicaSets and workloads stay cluster-scoped: the eviction sweep
 // targets arbitrary namespaces and the pod-state collector scans the cluster.
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch;delete
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=replicasets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments;statefulsets;daemonsets,verbs=patch
 
@@ -194,6 +196,21 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		r.Registry.Delete(cmKey)
 		return ctrl.Result{}, nil
 	}
+	// Beyla's state maps are owned by its DaemonSet, which outlives individual
+	// nodes. Never let a departed node's configuration override live state.
+	// Empty annotations remain supported for manually managed selector maps.
+	if nodeName := cm.Annotations[configmap.SelectorAnnotation]; nodeName != "" {
+		var node corev1.Node
+		err := r.Get(ctx, client.ObjectKey{Name: nodeName}, &node)
+		if err != nil || node.DeletionTimestamp != nil {
+			r.Registry.Delete(cmKey)
+			if err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+			logger.Info("Ignoring injector state for absent or terminating Node", "node", nodeName, "cmKey", cmKey)
+			return ctrl.Result{}, nil
+		}
+	}
 
 	inst, restartTargets, err := parseConfigMap(cm.Data)
 	if err != nil {
@@ -203,6 +220,9 @@ func (r *ConfigMapReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	}
 
 	r.Registry.Set(cmKey, inst)
+	if r.DefaultSDKConfig.NoAutoRestart {
+		return ctrl.Result{}, nil
+	}
 	_, hasConfig := cm.Data[configmap.KeyInstrumentation]
 	// An explicit empty selection (including exclusion-only rules) requests
 	// cleanup. Discover injected pods here instead of relying on Beyla's
@@ -504,9 +524,36 @@ func (r *ConfigMapReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		Named("configmap-selector").
 		For(&corev1.ConfigMap{}, builder.WithPredicates(annotated)).
+		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(r.configMapsForNode),
+			builder.WithPredicates(predicate.Funcs{
+				CreateFunc: func(event.CreateEvent) bool { return true },
+				DeleteFunc: func(event.DeleteEvent) bool { return true },
+				UpdateFunc: func(e event.UpdateEvent) bool {
+					return !e.ObjectOld.GetDeletionTimestamp().Equal(e.ObjectNew.GetDeletionTimestamp())
+				},
+			})).
 		Watches(&appsv1.ReplicaSet{}, handler.EnqueueRequestsFromMapFunc(noEnqueue)).
 		WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
 		Complete(r)
+}
+
+// Node lifecycle events must invalidate already-loaded state even when its
+// ConfigMap never changes. This list reads the manager's local ConfigMap cache,
+// which is restricted to the trusted namespace in main.go.
+func (r *ConfigMapReconciler) configMapsForNode(ctx context.Context, node client.Object) []reconcile.Request {
+	var cms corev1.ConfigMapList
+	if err := r.List(ctx, &cms); err != nil {
+		log.FromContext(ctx).Error(err, "Could not list injector state ConfigMaps for Node", "node", node.GetName())
+		return nil
+	}
+	var requests []reconcile.Request
+	for i := range cms.Items {
+		cm := &cms.Items[i]
+		if cm.Annotations[configmap.SelectorAnnotation] == node.GetName() {
+			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cm)})
+		}
+	}
+	return requests
 }
 
 func noEnqueue(_ context.Context, _ client.Object) []reconcile.Request {

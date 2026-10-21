@@ -150,3 +150,14 @@ The command above will auto-detect if you have `cert-manager` running and
 if not it will use self-signed certificate. If you want to test the helm
 install process with `cert-manager` install cert manager before step 4, 
 and wait until it's up and running.
+
+## Disable automatic workload restarts
+
+Set `sdkConfig.disableAutoRestart: true` to prevent controller-triggered
+workload rollouts. Newly created pods are still injected. This renders
+`disable_auto_restart: true` into the controller's SDK configuration; it is
+not a Beyla setting. Restart the controller after changing its mounted SDK
+configuration so the process loads the new value.
+
+See [Node state and SDK upgrades](../../../README.md#node-state-and-sdk-upgrades)
+for registry migration and upgrade precautions.
