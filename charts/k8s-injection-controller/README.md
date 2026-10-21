@@ -55,7 +55,8 @@ of the chart is applied. It:
    (`--set crds.enabled=true`) and waits for its webhook to become Ready.
 
 The hook Pod runs from an image containing both `kubectl` and `helm`
-(`dtzar/helm-kubectl` by default) under a **temporary** ServiceAccount +
+(`ghcr.io/grafana/k8s-injection-controller-helm-kubectl`, built from
+[`images/helm-kubectl`](../../images/helm-kubectl/Dockerfile), by default) under a **temporary** ServiceAccount +
 ClusterRole/ClusterRoleBinding. Installing cert-manager touches cluster-scoped
 objects (CRDs, ClusterRoles, webhook configs, a Namespace), so that role is
 cluster-admin–equivalent — but it lives only for the duration of the hook and
@@ -113,7 +114,7 @@ See [`values.yaml`](./values.yaml) for the full list. Common knobs:
 | `webhook.excludedNamespaces` | system/infra namespaces | Namespaces the mutating webhook never touches (install namespace is always added). |
 | `webhook.certManager.mode` | auto | How the webhook serving certificate is provisioned: auto, cert-manager, self-signed. |
 | `metrics.enabled` / `metrics.port` | `true` / `8080` | Plain-HTTP Prometheus metrics, advertised via pod annotations (no Prometheus Operator required). |
-| `certManager.installHook.image.*` | `dtzar/helm-kubectl:3.16` | Image (with `kubectl` + `helm`) used by the cert-manager install hook Pod (runs only when `webhook.certManager.mode=cert-manager` and cert-manager is absent). |
+| `certManager.installHook.image.*` | `ghcr.io/grafana/k8s-injection-controller-helm-kubectl:<appVersion>` | Image (with `kubectl` + `helm`) used by the cert-manager install hook Pod (runs only when `webhook.certManager.mode=cert-manager` and cert-manager is absent). |
 
 ## Uninstall
 
