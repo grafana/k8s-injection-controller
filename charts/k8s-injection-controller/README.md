@@ -128,7 +128,7 @@ separately if nothing else uses it.
 
 1. Build the controller image as `beyla-k8s-injector:dev`
 ```sh
-IMG=beyla-k8s-injector:dev make docker-build
+IMG=beyla-k8s-injector:dev mise run docker-build
 ```
 2. Create your cluster (if you don't already have one)
 ```sh
