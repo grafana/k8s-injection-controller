@@ -1,5 +1,7 @@
 # Image URL to use all building/pushing image targets
 IMG ?= ghcr.io/grafana/k8s-injection-controller:main
+# Dockerfile built by docker-build; images/helm-kubectl/Dockerfile builds the cert-manager install hook image.
+DOCKERFILE ?= Dockerfile
 # Beyla image used by the demo targets. Override to point at a local
 # development build (e.g. BEYLA_IMG=ghcr.io/me/beyla:dev).
 BEYLA_IMG ?= grafana/beyla:main
@@ -170,7 +172,7 @@ docker-build: ## Build the manager image with buildx. Builds locally WITHOUT pus
 		--provenance=false \
 		$(foreach o,$(DOCKER_BUILDX_OUTPUT),--output=$(o)) \
 		$(if $(DOCKER_METADATA_FILE),--metadata-file=$(DOCKER_METADATA_FILE),) \
-		-f Dockerfile .
+		-f $(DOCKERFILE) .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.
