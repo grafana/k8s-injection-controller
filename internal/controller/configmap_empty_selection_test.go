@@ -67,7 +67,7 @@ func testSelectionRemovalRestartsInjectedWorkloadsAcrossNodes(t *testing.T, payl
 		{"active", "keep-instrumented", true},
 		{"kube-system", "protected", true},
 	}
-	objects := make([]runtime.Object, 0, len(workloads)*3+3)
+	objects := make([]runtime.Object, 0, len(workloads)*3+5)
 	for _, workload := range workloads {
 		name, namespace := workload.name, workload.namespace
 		deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Namespace: namespace, Name: name}}
@@ -99,6 +99,8 @@ func testSelectionRemovalRestartsInjectedWorkloadsAcrossNodes(t *testing.T, payl
 		Data:       map[string]string{configmap.KeyInstrumentation: "rules:\n- k8s_selector:\n    namespaces: [active]\n"},
 	})
 	for _, node := range []string{"node-1", lastNode} {
+		// Node-scoped selector ConfigMaps are only reconciled for live Nodes.
+		objects = append(objects, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: node}})
 		reg.Set("monitoring/"+node, inst)
 		currentPayload := payload
 		if node == lastNode || deleted {
