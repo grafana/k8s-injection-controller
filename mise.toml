@@ -4,7 +4,7 @@
 [tools]
 go = "1.26.10"
 kustomize = "5.8.1"
-golangci-lint = "2.15.0"
+golangci-lint = "2.11"
 "go:sigs.k8s.io/controller-tools/cmd/controller-gen" = "v0.20.1"
 "go:sigs.k8s.io/controller-runtime/tools/setup-envtest" = "v0.24.1"
 "go:sigs.k8s.io/logtools/logcheck"= "v0.11.0"
