@@ -4,7 +4,7 @@ COPY NativeHttpServer.java .
 RUN javac NativeHttpServer.java && \
     native-image --no-fallback -o nativehttpserver NativeHttpServer
 
-FROM debian:13.5-slim@sha256:4e401d95de7083948053197a9c3913343cd06b706bf15eb6a0c3ccd26f436a0e
+FROM debian:13.7-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad
 WORKDIR /app
 COPY --from=build /app/nativehttpserver .
 CMD ["./nativehttpserver"]
