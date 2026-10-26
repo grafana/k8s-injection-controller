@@ -22,7 +22,7 @@ RUN v="${KUBECTL_VERSION#v}"; major="${v%%.*}"; minor="${v#*.}"; minor="${minor%
     done; \
     go build -trimpath -ldflags="${ldflags}" -o /out/kubectl ./cmd/kubectl
 
-FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
 # 20261020 is the first bundle without emSign ECC Root CA - G3 (CVE-2026-111943).
 RUN apk add --no-cache 'ca-certificates-bundle>=20261020-r0'
 COPY --from=builder /out/helm /out/kubectl /usr/local/bin/
