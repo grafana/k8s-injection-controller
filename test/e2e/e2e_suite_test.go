@@ -55,7 +55,7 @@ import (
 const allowedConfigMapWriter = "system:serviceaccount:beyla-k8s-injector:beyla"
 
 // Webhook cert strategies the suite can run under, selected via the CERT_MODE
-// env var. `make test-e2e` invokes the suite once per mode (each in its own
+// env var. `mise run test-e2e` invokes the suite once per mode (each in its own
 // Kind cluster) so both injection and instrumentation specs are exercised
 // under both strategies.
 const (
@@ -100,7 +100,7 @@ func TestE2E(t *testing.T) {
 var _ = BeforeSuite(func() {
 	var err error
 
-	// Resolve the cert strategy. `make test-e2e` runs the suite twice
+	// Resolve the cert strategy. `mise run test-e2e` runs the suite twice
 	// (CERT_MODE=cert-manager, then CERT_MODE=self-signed).
 	certMode = os.Getenv("CERT_MODE")
 	if certMode == "" {

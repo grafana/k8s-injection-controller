@@ -96,16 +96,21 @@ or setup the self-signed certificates.
 
 ## Build
 
+Install [mise](https://mise.jdx.dev/getting-started.html) and run `mise tasks` to see all project commands. Set overrides as environment variables before `mise run`, for example `IMG=example/controller:dev mise run docker-build`.
+
 ```sh
 # Compile the manager binary into ./bin/manager
-make build
+mise run build
 
 # Run unit tests (downloads envtest binaries on first run)
-make test
+mise run test
 
 # Build the container image (override IMG to publish elsewhere)
-make docker-build IMG=<registry>/beyla-k8s-injector:<tag>
-make docker-push  IMG=<registry>/beyla-k8s-injector:<tag>
+IMG=<registry>/beyla-k8s-injector:<tag> mise run docker-build
+IMG=<registry>/beyla-k8s-injector:<tag> mise run docker-push
+
+# Build another Dockerfile (defaults to Dockerfile)
+mise run docker-build images/helm-kubectl/Dockerfile
 ```
 
 ## Deploy
@@ -116,26 +121,25 @@ can't deadlock its own restart).
 
 ```sh
 # Deploy with the image you just pushed
-make deploy IMG=<registry>/beyla-k8s-injector:<tag>
+IMG=<registry>/beyla-k8s-injector:<tag> mise run deploy
 
 # Tear it down
-make undeploy
+mise run undeploy
 ```
 
-For a quick end-to-end smoke test there's `make deploy-test`, which uses the
+For a quick test deployment there's `mise run deploy-test`, which uses the
 overlay in `config/test/`: same as `deploy`, plus a sample SDK config
 (`config/test/sdk-inject.yaml`) mounted as a ConfigMap at
-`/etc/beyla-injector/sdk-inject.yaml` with `--config` wired in, plus the
-example selector ConfigMap from `examples/test_config_map.yaml`. Tear down
-with `make undeploy-test`. Production users provide their own SDK config —
-`make deploy` stays generic (the webhook still selects pods but doesn't
+`/etc/beyla-injector/sdk-inject.yaml` with `--config` wired in. Tear down
+with `mise run undeploy-test`. Production users provide their own SDK config —
+`mise run deploy` stays generic (the webhook still selects pods but doesn't
 mutate them when no `--config` is given).
 
-`make deploy` runs `kustomize build config/default | kubectl apply -f -`. If
+`mise run deploy` renders `config/cert-manager` and applies it with `kubectl`. If
 you prefer to inspect the manifests first:
 
 ```sh
-make build-installer IMG=<registry>/beyla-k8s-injector:<tag>
+IMG=<registry>/beyla-k8s-injector:<tag> mise run build-installer
 # -> dist/install.yaml
 ```
 
@@ -145,7 +149,7 @@ For development you can run the manager outside the cluster (the webhook still
 needs to be reachable, so this mode skips it):
 
 ```sh
-ENABLE_WEBHOOKS=false make run
+ENABLE_WEBHOOKS=false mise run run
 ```
 
 ## Try it
