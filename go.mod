@@ -1,6 +1,6 @@
 module github.com/grafana/beyla-k8s-injector
 
-go 1.26.3
+go 1.26.10
 
 require (
 	github.com/distribution/reference v0.6.0
