@@ -250,7 +250,7 @@ Tests use **Ginkgo + Gomega** (BDD style). Check `suite_test.go` for setup.
 
 ```bash
 # 1. Regenerate manifests
-mise run manifests && mise run generate
+mise run manifests ::: generate  # generate waits for manifests
 
 # 2. Build & deploy
 export IMG=<registry>/<project>:tag
@@ -350,7 +350,7 @@ Generated code includes: status conditions (`metav1.Condition`), finalizers, own
 
 ```bash
 # Generate dist/install.yaml from Kustomize manifests
-IMG=<registry>/<project>:tag mise run build-installer
+mise run build-installer <registry>/<project>:tag
 ```
 
 **Key points:**

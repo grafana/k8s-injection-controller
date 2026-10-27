@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -eo pipefail
+kubectl="${KUBECTL:-kubectl}"
+"$kubectl" -n beyla-k8s-injector rollout status deployment/beyla-k8s-injector-controller-manager --timeout=120s
+"$kubectl" apply -f examples/demo/beyla.yaml
+"$kubectl" -n beyla-k8s-injector set image daemonset/beyla "beyla=${BEYLA_IMG:-grafana/beyla:main}"
+"$kubectl" apply -f examples/demo/sample-app.yaml
+echo 'Demo deployed. Useful checks:'
+echo '  kubectl -n beyla-k8s-injector get pods'
+echo '  kubectl -n beyla-k8s-injector get configmaps'
+echo '  kubectl -n beyla-k8s-injector logs deploy/beyla-k8s-injector-controller-manager'
+echo '  kubectl -n demo get pods'

@@ -100,8 +100,6 @@ jobs:
 
       - name: Setup mise
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
-        with:
-          install: false
 
       - name: Log in to GHCR
         if: inputs.push-ghcr
@@ -129,12 +127,11 @@ jobs:
           set -euo pipefail
           outputs="$(jq -r '[.[] | "type=image,name=\(.image),push-by-digest=true,name-canonical=true,push=true"] | join(" ")' <<< "$REGISTRIES")"
           IMAGE_PLATFORMS="${PLATFORM}" \
-          DOCKERFILE="${DOCKERFILE}" \
           VERSION="${VERSION}" \
           REVISION="${REVISION}" \
           DOCKER_METADATA_FILE=metadata.json \
           DOCKER_BUILDX_OUTPUT="${outputs}" \
-          mise run docker-build
+          mise run docker-build "$DOCKERFILE"
           echo "digest=$(jq -r '.["containerimage.digest"]' metadata.json)" >> "$GITHUB_OUTPUT"
 
       - name: Export digest

@@ -108,6 +108,9 @@ mise run test
 # Build the container image (override IMG to publish elsewhere)
 IMG=<registry>/beyla-k8s-injector:<tag> mise run docker-build
 IMG=<registry>/beyla-k8s-injector:<tag> mise run docker-push
+
+# Build another Dockerfile (defaults to Dockerfile)
+mise run docker-build images/helm-kubectl/Dockerfile
 ```
 
 ## Deploy
