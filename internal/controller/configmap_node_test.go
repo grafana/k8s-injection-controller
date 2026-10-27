@@ -20,6 +20,7 @@ import (
 	. "github.com/onsi/gomega"
 
 	"github.com/grafana/beyla/v3/pkg/webhook/configmap"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -158,6 +159,55 @@ func TestNoAutoRestartStillRegistersRules(t *testing.T) {
 	}
 	if _, cfg, ok := r.Registry.Match(registry.PodInfo{Namespace: "app"}); !ok || cfg.ImageVersion != "new" {
 		t.Fatalf("admission rules not registered: %+v, %v", cfg, ok)
+	}
+}
+
+func TestRefreshRegistryRejectsDepartedNodes(t *testing.T) {
+	for _, terminating := range []bool{false, true} {
+		name := "absent"
+		if terminating {
+			name = "terminating"
+		}
+		t.Run(name, func(t *testing.T) {
+			ctx := t.Context()
+			scheme := runtime.NewScheme()
+			require.NoError(t, corev1.AddToScheme(scheme))
+			makeState := func(name, node, namespace, version string) *corev1.ConfigMap {
+				return &corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "beyla", Annotations: map[string]string{configmap.SelectorAnnotation: node}},
+					Data:       map[string]string{configmap.KeyInstrumentation: "image_version: " + version + "\nrules:\n- k8s_selector:\n    namespaces: [" + namespace + "]\n"},
+				}
+			}
+			stale := makeState("a-stale", "departed-node", "app", "old")
+			live := makeState("z-live", "live-node", "app", "wanted")
+			manual := makeState("manual", "", "manual-app", "manual")
+			unannotated := makeState("unrelated", "", "unrelated-app", "unrelated")
+			unannotated.Annotations = nil
+			objects := []client.Object{stale, live, manual, unannotated, &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "live-node"}}}
+			if terminating {
+				objects = append(objects, &corev1.Node{ObjectMeta: metav1.ObjectMeta{
+					Name: "departed-node", DeletionTimestamp: &metav1.Time{Time: time.Now()}, Finalizers: []string{"test.example/hold"},
+				}})
+			}
+			r := &ConfigMapReconciler{
+				Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build(), Registry: registry.New(),
+			}
+			// Reject stale state through normal reconciliation, then verify that
+			// the cleanup snapshot cannot restore its old image version.
+			for _, cm := range []*corev1.ConfigMap{stale, live, manual} {
+				_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cm)})
+				require.NoError(t, err)
+			}
+			require.NoError(t, r.refreshRegistry(ctx))
+			_, cfg, matched := r.Registry.Match(registry.PodInfo{Namespace: "app"})
+			require.True(t, matched)
+			require.Equal(t, "wanted", cfg.ImageVersion)
+			_, cfg, matched = r.Registry.Match(registry.PodInfo{Namespace: "manual-app"})
+			require.True(t, matched)
+			require.Equal(t, "manual", cfg.ImageVersion)
+			_, _, matched = r.Registry.Match(registry.PodInfo{Namespace: "unrelated-app"})
+			require.False(t, matched)
+		})
 	}
 }
 
