@@ -2,11 +2,11 @@
 # in the task scripts (for example: IMG=example/controller:dev mise run docker-build).
 
 [tools]
-go = "1.26.10"
-kustomize = "5.8.1"
-golangci-lint = "2.11"
-"github:kubernetes-sigs/controller-tools" = "0.20.1"
-"github:kubernetes-sigs/controller-runtime" = "0.24.1"
+go = "1.27.3"
+kustomize = "5.8.3"
+golangci-lint = "2.15.0"
+"github:kubernetes-sigs/controller-tools" = "0.23.0"
+"github:kubernetes-sigs/controller-runtime" = "0.25.2"
 "go:sigs.k8s.io/logtools/logcheck"= "v0.11.0"
 
 [task_config]
