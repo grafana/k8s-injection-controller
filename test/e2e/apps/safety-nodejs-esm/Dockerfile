@@ -1,4 +1,4 @@
-FROM node:24.17.0-slim@sha256:862263c612aa437e3037674b85419622a9d93bff80aa1eee5398dfe686375532
+FROM node:24.22.1-slim@sha256:be8204d4bd327363357f532187b752ff62759c31bedf98e9e18fc08c9cbd605c
 WORKDIR /app
 COPY package.json app.js ./
 CMD ["node", "app.js"]
