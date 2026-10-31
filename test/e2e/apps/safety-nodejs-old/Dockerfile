@@ -1,4 +1,4 @@
-FROM node:16.20.2-slim@sha256:3ebf2875c188d22939c6ab080cfb1a4a6248cc86bae600ea8e2326aa03acdb8f
+FROM node:26.12.1-slim@sha256:94816674c62774da0d099a947bf4613b9e1972a2733abd0d0cd80e795f8411d0
 WORKDIR /app
 COPY package.json .
 RUN npm install
