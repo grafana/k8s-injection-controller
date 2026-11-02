@@ -100,6 +100,13 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
+# -- Deployment update strategy. Empty keeps the Kubernetes default
+# (RollingUpdate), except with hostNetwork where the chart uses Recreate: a
+# surging replacement pod needs another node with the host port free, so a
+# rolling update stalls on a single eligible node. Set it explicitly to
+# override, for example {type: RollingUpdate} when enough nodes exist.
+strategy: {}
+
 # -- Run the controller pod on the node network. Needed on clusters whose pod
 # network the API server cannot reach, for example EKS with Cilium in overlay
 # (tunnel) mode or any other non-VPC CNI: the admission webhooks are then

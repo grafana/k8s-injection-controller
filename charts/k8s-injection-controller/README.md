@@ -116,6 +116,7 @@ See [`values.yaml`](./values.yaml) for the full list. Common knobs:
 | `webhook.port` | `9443` | Port the webhook server listens on; the webhook Service maps 443 to it. Non-default values need controller image 0.4.0 or newer. |
 | `hostNetwork` | `false` | Run the controller on the node network so the API server can reach the webhooks on clusters with a non-VPC CNI (see below). |
 | `dnsPolicy` | `""` | Pod DNS policy; empty picks `ClusterFirstWithHostNet` when `hostNetwork` is true. |
+| `strategy` | `{}` | Deployment update strategy; empty means RollingUpdate, or Recreate when `hostNetwork` is true. |
 | `metrics.enabled` / `metrics.port` | `true` / `8080` | Plain-HTTP Prometheus metrics, advertised via pod annotations (no Prometheus Operator required). |
 | `certManager.installHook.image.*` | `ghcr.io/grafana/k8s-injection-controller-helm-kubectl:<appVersion>` | Image (with `kubectl` + `helm`) used by the cert-manager install hook Pod (runs only when `webhook.certManager.mode=cert-manager` and cert-manager is absent). |
 
@@ -147,6 +148,11 @@ can only take the port. Before enabling it:
   the nodes, for example by another host-network webhook.
 - Set a hostname `podAntiAffinity` when `replicaCount` is greater than one;
   two controller pods on one node collide on the port.
+- Rollouts use `Recreate` unless `strategy` is set: a surging replacement pod
+  needs another node with the port free, so a rolling update stalls when only
+  one eligible node exists. The webhooks are down for the restart; pods
+  admitted then start without injection and ConfigMap writes covered by the
+  validating webhook are rejected until the controller is back.
 - Allow the pod in the namespace's Pod Security or policy-engine rules;
   `hostNetwork` is rejected by the Pod Security "baseline" profile and by the
   usual Gatekeeper and Kyverno baseline policies.

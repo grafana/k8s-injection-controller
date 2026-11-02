@@ -18,10 +18,12 @@ out=$(helm template t "$chart" --set hostNetwork=true)
 echo "$out" | grep -q 'hostNetwork: true' || { echo 'FAIL: expected hostNetwork: true'; exit 1; }
 echo "$out" | grep -q 'dnsPolicy: ClusterFirstWithHostNet' || { echo 'FAIL: expected dnsPolicy ClusterFirstWithHostNet'; exit 1; }
 echo "$out" | grep -q -- '--webhook-port' && { echo 'FAIL: unexpected --webhook-port flag for the default port'; exit 1; } || true
+echo "$out" | grep -q 'type: Recreate' || { echo 'FAIL: expected Recreate strategy with hostNetwork'; exit 1; }
 echo '[webhook.port=19443] -> flag, containerPort and Service targetPort follow'
 out=$(helm template t "$chart" --set webhook.port=19443)
 echo "$out" | grep -q -- '--webhook-port=19443' || { echo 'FAIL: expected --webhook-port=19443'; exit 1; }
 echo "$out" | grep -q 'containerPort: 19443' || { echo 'FAIL: expected containerPort 19443'; exit 1; }
 echo "$out" | grep -q 'targetPort: 19443' || { echo 'FAIL: expected targetPort 19443'; exit 1; }
 echo "$out" | grep -q 'hostNetwork: true' && { echo 'FAIL: unexpected hostNetwork'; exit 1; } || true
+echo "$out" | grep -q 'type: Recreate' && { echo 'FAIL: unexpected Recreate strategy by default'; exit 1; } || true
 echo 'helm-template-check OK'

@@ -7,6 +7,15 @@ metadata:
     {{- include "k8s-injection-controller.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  {{- if .Values.strategy }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  {{- else if .Values.hostNetwork }}
+  # A surging replacement pod needs another node with the host port free, so a
+  # rolling update stalls on a single eligible node. Set .strategy to override.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "k8s-injection-controller.selectorLabels" . | nindent 6 }}
