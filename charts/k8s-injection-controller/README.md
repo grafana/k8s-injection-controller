@@ -137,6 +137,13 @@ cannot block unrelated releases in that namespace. This needs Kubernetes 1.28
 or newer; on older clusters the webhook covers every ConfigMap in the
 namespace.
 
+Security wise this narrows the call set, not the enforcement: the controller
+only consumes ConfigMaps with that same annotation key (pinned by a unit
+test), so every write it could act on still goes through the allowlist, and a
+ConfigMap can only gain or lose the annotation through an admitted write. If
+an API server ignores `matchConditions` the webhook falls back to every
+ConfigMap in the namespace, which is the previous behaviour, not a weaker one.
+
 ## Recovering when upgrades are blocked by the ConfigMap webhook
 
 Symptom: any ConfigMap create or update in the watched namespace fails with
@@ -162,6 +169,18 @@ kubectl -n "$NS" get configmaps -o json \
 
 Every listed ConfigMap must name a node of the cluster and be owned by the
 allowlisted writer; delete anything else before the controller comes back.
+
+While the webhook configuration is gone, anyone with ConfigMap write access in
+the watched namespace can plant an annotated ConfigMap. The controller at zero
+replicas does not consume it, but on restart it lists everything in the
+namespace, so the check above is the control, not a formality. A ConfigMap
+carries no author field; `managedFields[].manager` is a hint, the audit log is
+the proof. Pods created while the controller is down start without injection
+(the pod webhook is `failurePolicy: Ignore`) and need a restart afterwards.
+Patching `failurePolicy` to `Ignore` or pointing `namespaceSelector` elsewhere
+has the same exposure; deleting is preferred because Helm recreates the exact
+object on the next upgrade. The webhook configuration is cluster scoped, so
+this needs cluster-admin and should stay a break-glass step.
 
 ## Local development mode deployment with kind
 
