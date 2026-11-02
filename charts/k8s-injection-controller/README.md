@@ -155,16 +155,18 @@ clusters every ConfigMap is.
 
 Deleting the ValidatingWebhookConfiguration removes the allowlist check while
 the controller keeps injecting from whatever ConfigMaps it sees, so stop the
-controller first and verify afterwards:
+controller first and keep it stopped until the audit below is done:
 
 ```bash
 NS=<namespace>; REL=<release>
 kubectl -n "$NS" scale deployment "$REL-k8s-injection-controller" --replicas=0
 kubectl delete validatingwebhookconfiguration "$REL-k8s-injection-controller-validating-webhook"
-# run the helm upgrade that fixes the cause; Helm recreates the webhook
-# configuration and scales the controller back up.
+# run the helm upgrade that fixes the cause with --set replicaCount=0:
+# Helm recreates the webhook configuration, the controller stays down.
+kubectl get validatingwebhookconfiguration "$REL-k8s-injection-controller-validating-webhook"
 kubectl -n "$NS" get configmaps -o json \
   | jq -r '.items[] | select(.metadata.annotations["beyla.grafana.com/node"] != null) | "\(.metadata.name) node=\(.metadata.annotations["beyla.grafana.com/node"])"'
+# then run the upgrade again with the normal replicaCount.
 ```
 
 Every listed ConfigMap must name a node of the cluster and be owned by the
