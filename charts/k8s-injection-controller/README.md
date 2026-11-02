@@ -174,7 +174,11 @@ kubectl -n "$WATCH_NS" get configmaps -o json \
 ```
 
 Every listed ConfigMap must name a node of the cluster and be owned by the
-allowlisted writer; delete anything else before the controller comes back.
+allowlisted writer; delete anything else before the controller comes back. The
+list does not show tampered content inside a legitimate ConfigMap, so unless the
+audit log shows no ConfigMap writes by other principals during the window,
+delete all listed ConfigMaps and restart the Beyla DaemonSet; Beyla republishes
+its state ConfigMaps on startup.
 
 While the webhook configuration is gone, anyone with ConfigMap write access in
 the watched namespace can plant an annotated ConfigMap. The controller at zero
