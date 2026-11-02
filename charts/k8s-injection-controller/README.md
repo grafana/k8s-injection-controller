@@ -125,6 +125,44 @@ helm uninstall kic
 cert-manager (a shared cluster prerequisite) is left untouched; remove it
 separately if nothing else uses it.
 
+## Validating webhook scope
+
+The ConfigMap validating webhook is fail-closed on purpose: it is the control
+that keeps anyone but the allowlisted writers from steering injection. Its
+`matchConditions` limit it to ConfigMaps that carry the Beyla selector
+annotation `beyla.grafana.com/node` (on the new object, or on the old object
+when an update removes it). Any other ConfigMap write in the watched namespace
+is admitted without a webhook call, so an unreachable or restarting controller
+cannot block unrelated releases in that namespace. This needs Kubernetes 1.28
+or newer; on older clusters the webhook covers every ConfigMap in the
+namespace.
+
+## Recovering when upgrades are blocked by the ConfigMap webhook
+
+Symptom: any ConfigMap create or update in the watched namespace fails with
+`failed calling webhook "vconfigmap-v1.beyla.grafana.com"`, for example with
+`Address is not allowed` when the API server cannot reach the controller pod,
+or with a timeout while the controller is down. On Kubernetes 1.28+ with this
+chart version only injection ConfigMaps are affected; on older charts or
+clusters every ConfigMap is.
+
+Deleting the ValidatingWebhookConfiguration removes the allowlist check while
+the controller keeps injecting from whatever ConfigMaps it sees, so stop the
+controller first and verify afterwards:
+
+```bash
+NS=<namespace>; REL=<release>
+kubectl -n "$NS" scale deployment "$REL-k8s-injection-controller" --replicas=0
+kubectl delete validatingwebhookconfiguration "$REL-k8s-injection-controller-validating-webhook"
+# run the helm upgrade that fixes the cause; Helm recreates the webhook
+# configuration and scales the controller back up.
+kubectl -n "$NS" get configmaps -o json \
+  | jq -r '.items[] | select(.metadata.annotations["beyla.grafana.com/node"] != null) | "\(.metadata.name) node=\(.metadata.annotations["beyla.grafana.com/node"])"'
+```
+
+Every listed ConfigMap must name a node of the cluster and be owned by the
+allowlisted writer; delete anything else before the controller comes back.
+
 ## Local development mode deployment with kind
 
 1. Build the controller image as `beyla-k8s-injector:dev`

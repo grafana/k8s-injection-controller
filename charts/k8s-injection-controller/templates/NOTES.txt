@@ -9,6 +9,10 @@ Check the controller is running:
   kubectl -n {{ include "k8s-injection-controller.namespace" . }} rollout status deployment/{{ include "k8s-injection-controller.fullname" . }}
   kubectl -n {{ include "k8s-injection-controller.namespace" . }} logs deployment/{{ include "k8s-injection-controller.fullname" . }} -c manager -f
 
+If ConfigMap writes in the watched namespace fail with 'failed calling webhook
+"vconfigmap-v1.beyla.grafana.com"', see the chart README, "Recovering when upgrades
+are blocked by the ConfigMap webhook".
+
 {{- $certMode := include "k8s-injection-controller.certMode" . -}}
 {{- $installCM := eq (include "k8s-injection-controller.installCertManager" .) "true" -}}
 Webhook serving certificate ({{ $certMode }} mode):
