@@ -128,7 +128,8 @@ separately if nothing else uses it.
 ## Validating webhook scope
 
 The ConfigMap validating webhook is fail-closed on purpose: it is the control
-that keeps anyone but the allowlisted writers from steering injection. Its
+that keeps anyone but the allowlisted writers from creating injection ConfigMaps or
+changing what they inject. Its
 `matchConditions` limit it to ConfigMaps that carry the Beyla selector
 annotation `beyla.grafana.com/node` (on the new object, or on the old object
 when an update removes it). Any other ConfigMap write in the watched namespace
@@ -155,16 +156,19 @@ clusters every ConfigMap is.
 
 Deleting the ValidatingWebhookConfiguration removes the allowlist check while
 the controller keeps injecting from whatever ConfigMaps it sees, so stop the
-controller first and keep it stopped until the audit below is done:
+controller first, wait until its pods are gone, and keep it stopped until the
+audit below is done. The audit runs in the watched namespace (`watchNamespace`,
+by default the release namespace), which is where Beyla writes the ConfigMaps:
 
 ```bash
-NS=<namespace>; REL=<release>
+NS=<release namespace>; REL=<release>; WATCH_NS=<watchNamespace, default $NS>
 kubectl -n "$NS" scale deployment "$REL-k8s-injection-controller" --replicas=0
+kubectl -n "$NS" wait --for=delete pod -l "app.kubernetes.io/instance=$REL,app.kubernetes.io/name=k8s-injection-controller" --timeout=120s
 kubectl delete validatingwebhookconfiguration "$REL-k8s-injection-controller-validating-webhook"
 # run the helm upgrade that fixes the cause with --set replicaCount=0:
 # Helm recreates the webhook configuration, the controller stays down.
 kubectl get validatingwebhookconfiguration "$REL-k8s-injection-controller-validating-webhook"
-kubectl -n "$NS" get configmaps -o json \
+kubectl -n "$WATCH_NS" get configmaps -o json \
   | jq -r '.items[] | select(.metadata.annotations["beyla.grafana.com/node"] != null) | "\(.metadata.name) node=\(.metadata.annotations["beyla.grafana.com/node"])"'
 # then run the upgrade again with the normal replicaCount.
 ```
