@@ -26,7 +26,7 @@ func TestJavaExtensionImagesAreMountedInImageMode(t *testing.T) {
 	}
 	pm.Cfg.EnabledSDKs = []bservices.InstrumentableType{{InstrumentableType: java}}
 	pm.Cfg.JavaExtensionImages = []string{"example.test/team/java-ext:v1", "example.test/team/another:v2"}
-	spec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "example.test/app", Env: []corev1.EnvVar{{Name: javaAgentExtensionsEnv, Value: "/custom/ext"}}}}}
+	spec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "example.test/app", Env: []corev1.EnvVar{{Name: "OTEL_JAVAAGENT_EXTENSIONS", Value: "/custom/ext"}}}}}
 
 	pm.mountVolume(spec)
 	meta := &metav1.ObjectMeta{}
@@ -46,15 +46,21 @@ func TestJavaExtensionImagesAreMountedInImageMode(t *testing.T) {
 			t.Fatalf("extension volume %q not mounted read-only: %+v", name, spec.Containers[0].VolumeMounts)
 		}
 	}
-	if got := testEnvValue(spec.Containers[0].Env); got != "/custom/ext,"+javaExtensionsMountRoot+"/0/extensions,"+javaExtensionsMountRoot+"/1/extensions" {
-		t.Fatalf("%s = %q", javaAgentExtensionsEnv, got)
+	if got := testEnvValue(spec.Containers[0].Env); got != javaExtensionsMountRoot+"/0/extensions,"+javaExtensionsMountRoot+"/1/extensions" {
+		t.Fatalf("%s = %q", javaExtensionPathsEnv, got)
+	}
+	if got := testEnvValueByName(spec.Containers[0].Env, "OTEL_JAVAAGENT_EXTENSIONS"); got != "/custom/ext" {
+		t.Fatalf("user %s = %q, want unchanged", "OTEL_JAVAAGENT_EXTENSIONS", got)
 	}
 
 	// Mutation should be idempotent and retain an extension path configured by
 	// the pod author.
 	pm.instrumentContainer(meta, &spec.Containers[0], nil, false)
-	if got := testEnvValue(spec.Containers[0].Env); got != "/custom/ext,"+javaExtensionsMountRoot+"/0/extensions,"+javaExtensionsMountRoot+"/1/extensions" {
-		t.Fatalf("%s after reinstrumentation = %q", javaAgentExtensionsEnv, got)
+	if got := testEnvValue(spec.Containers[0].Env); got != javaExtensionsMountRoot+"/0/extensions,"+javaExtensionsMountRoot+"/1/extensions" {
+		t.Fatalf("%s after reinstrumentation = %q", javaExtensionPathsEnv, got)
+	}
+	if got := testEnvValueByName(spec.Containers[0].Env, "OTEL_JAVAAGENT_EXTENSIONS"); got != "/custom/ext" {
+		t.Fatalf("user OTEL_JAVAAGENT_EXTENSIONS after reinstrumentation = %q", got)
 	}
 }
 
@@ -79,7 +85,7 @@ func TestJavaExtensionImagesHaveNoInitContainerFallback(t *testing.T) {
 		t.Fatalf("init containers = %+v, want only the SDK copy init container", spec.InitContainers)
 	}
 	if got := testEnvValue(spec.Containers[0].Env); got != "" {
-		t.Fatalf("%s = %q, want no extension image fallback", javaAgentExtensionsEnv, got)
+		t.Fatalf("%s = %q, want no extension image fallback", javaExtensionPathsEnv, got)
 	}
 }
 
@@ -107,7 +113,7 @@ func TestJavaExtensionImagesRequireEnabledJavaInstrumentation(t *testing.T) {
 				t.Fatalf("unexpected extension image volume for %s: %+v", tc.name, spec.Volumes)
 			}
 			if got := testEnvValue(spec.Containers[0].Env); got != "" {
-				t.Fatalf("%s = %q, want empty for %s", javaAgentExtensionsEnv, got, tc.name)
+				t.Fatalf("%s = %q, want empty for %s", javaExtensionPathsEnv, got, tc.name)
 			}
 		})
 	}
@@ -129,7 +135,7 @@ func TestJavaExtensionImagesIgnoreEmptyAndInvalidReferences(t *testing.T) {
 		t.Fatalf("volumes = %+v, want SDK image and only the valid extension image", spec.Volumes)
 	}
 	if got, want := testEnvValue(spec.Containers[0].Env), javaExtensionsMountRoot+"/0/extensions"; got != want {
-		t.Fatalf("%s = %q, want %q", javaAgentExtensionsEnv, got, want)
+		t.Fatalf("%s = %q, want %q", javaExtensionPathsEnv, got, want)
 	}
 }
 
@@ -154,7 +160,7 @@ func TestJavaExtensionImageListChangeReplacesPriorMutation(t *testing.T) {
 		t.Fatalf("volumes after reinjection = %+v, want replaced extension image", spec.Volumes)
 	}
 	if got, want := testEnvValue(spec.Containers[0].Env), javaExtensionsMountRoot+"/0/extensions"; got != want {
-		t.Fatalf("%s after reinjection = %q, want %q", javaAgentExtensionsEnv, got, want)
+		t.Fatalf("%s after reinjection = %q, want %q", javaExtensionPathsEnv, got, want)
 	}
 	if len(spec.Containers[0].VolumeMounts) != 2 {
 		t.Fatalf("volume mounts after reinjection = %+v, want SDK and one extension mount", spec.Containers[0].VolumeMounts)
@@ -162,8 +168,12 @@ func TestJavaExtensionImageListChangeReplacesPriorMutation(t *testing.T) {
 }
 
 func testEnvValue(envVars []corev1.EnvVar) string {
+	return testEnvValueByName(envVars, javaExtensionPathsEnv)
+}
+
+func testEnvValueByName(envVars []corev1.EnvVar, name string) string {
 	for _, env := range envVars {
-		if env.Name == javaAgentExtensionsEnv {
+		if env.Name == name {
 			return env.Value
 		}
 	}

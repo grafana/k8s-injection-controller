@@ -47,7 +47,7 @@ const (
 	// image is read-only and runtimes cannot create nested mountpoint parents.
 	javaExtensionsMountRoot   = "/__otel_java_extensions__"
 	javaExtensionVolumePrefix = "otel-java-extension-"
-	javaAgentExtensionsEnv    = "OTEL_JAVAAGENT_EXTENSIONS"
+	javaExtensionPathsEnv     = "OTEL_INJECTOR_JAVA_EXTENSION_PATHS"
 
 	envVarLdPreloadName               = "LD_PRELOAD"
 	envVarLdPreloadValue              = internalMountPath + "/dist/injector/libotelinject.so"
@@ -284,26 +284,11 @@ func (pm *PodMutator) addMount(c *corev1.Container) {
 	if len(paths) == 0 {
 		return
 	}
-	// Keep any pod-supplied extension paths and avoid duplicates when the
-	// webhook processes an already-injected pod again.
-	var allPaths []string
-	if pos, ok := findEnvVar(c, javaAgentExtensionsEnv); ok {
-		for existing := range strings.SplitSeq(c.Env[pos].Value, ",") {
-			if existing != "" {
-				allPaths = append(allPaths, existing)
-			}
-		}
-	}
-	for _, path := range paths {
-		if !slices.Contains(allPaths, path) {
-			allPaths = append(allPaths, path)
-		}
-	}
-	setEnvVarEvenIfEmpty(c, javaAgentExtensionsEnv, strings.Join(allPaths, ","))
+	setEnvVarEvenIfEmpty(c, javaExtensionPathsEnv, strings.Join(paths, ","))
 }
 
 func (pm *PodMutator) clearJavaExtensionPaths(c *corev1.Container) {
-	pos, ok := findEnvVar(c, javaAgentExtensionsEnv)
+	pos, ok := findEnvVar(c, javaExtensionPathsEnv)
 	if !ok {
 		return
 	}

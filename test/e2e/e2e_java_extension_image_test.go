@@ -57,7 +57,11 @@ var _ = Describe("Java extension image volume", Ordered, func() {
 			ObjectMeta: metav1.ObjectMeta{Name: javaExtensionApp, Namespace: javaExtensionTestNS},
 			Spec: corev1.PodSpec{
 				RestartPolicy: corev1.RestartPolicyNever,
-				Containers:    []corev1.Container{{Name: "app", Image: javaExtensionAppImage}},
+				Containers: []corev1.Container{{
+					Name:  "app",
+					Image: javaExtensionAppImage,
+					Env:   []corev1.EnvVar{{Name: "OTEL_JAVAAGENT_EXTENSIONS", Value: "/custom/extensions"}},
+				}},
 			},
 		}
 		By("creating the Java workload after Beyla publishes the namespace selector")
@@ -82,12 +86,19 @@ var _ = Describe("Java extension image volume", Ordered, func() {
 
 		var extensionsPath string
 		for _, env := range admitted.Spec.Containers[0].Env {
-			if env.Name == "OTEL_JAVAAGENT_EXTENSIONS" {
+			if env.Name == "OTEL_INJECTOR_JAVA_EXTENSION_PATHS" {
 				extensionsPath = env.Value
 				break
 			}
 		}
 		Expect(extensionsPath).To(ContainSubstring("/__otel_java_extensions__/0/extensions"))
+		var userExtensions string
+		for _, env := range admitted.Spec.Containers[0].Env {
+			if env.Name == "OTEL_JAVAAGENT_EXTENSIONS" {
+				userExtensions = env.Value
+			}
+		}
+		Expect(userExtensions).To(Equal("/custom/extensions"))
 
 		By("waiting for the Java workload to start")
 		Eventually(func(g Gomega) {

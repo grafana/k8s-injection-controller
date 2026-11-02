@@ -17,3 +17,9 @@ self-contained. This test verifies that admission adds the configured `ImageVolu
 and Java extension path, that an instrumented Java HTTP workload starts, and
 that the extension's `AutoConfigurationCustomizerProvider` runs inside the
 upstream Java agent.
+
+The runtime assertion also requires the SDK image referenced by
+`sdkImageVersion` to include OTel Injector support for
+`OTEL_INJECTOR_JAVA_EXTENSION_PATHS` (proposed in [upstream PR #452](https://github.com/open-telemetry/opentelemetry-injector/pull/452)).
+The currently pinned SDK image predates that support; update it after a
+compatible injector build is available before running this test.
