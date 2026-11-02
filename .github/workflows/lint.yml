@@ -24,7 +24,10 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Setup mise
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+
       - name: Check linter configuration
-        run: make lint-config
+        run: mise run lint-config
       - name: Run linter
-        run: make lint
+        run: mise run lint

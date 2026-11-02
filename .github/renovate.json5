@@ -51,6 +51,30 @@
     },
     {
       customType: 'regex',
+      description: 'Update helm version built into the helm-kubectl image',
+      datasourceTemplate: 'github-releases',
+      depNameTemplate: 'helm/helm',
+      managerFilePatterns: [
+        '(^|/)images/helm-kubectl/Dockerfile$',
+      ],
+      matchStrings: [
+        'ARG HELM_VERSION=(?<currentValue>v[^\\s]+)',
+      ],
+    },
+    {
+      customType: 'regex',
+      description: 'Update kubectl version built into the helm-kubectl image',
+      datasourceTemplate: 'github-releases',
+      depNameTemplate: 'kubernetes/kubernetes',
+      managerFilePatterns: [
+        '(^|/)images/helm-kubectl/Dockerfile$',
+      ],
+      matchStrings: [
+        'ARG KUBECTL_VERSION=(?<currentValue>v[^\\s]+)',
+      ],
+    },
+    {
+      customType: 'regex',
       description: 'Update kustomize version in Makefile',
       datasourceTemplate: 'github-releases',
       depNameTemplate: 'kubernetes-sigs/kustomize',

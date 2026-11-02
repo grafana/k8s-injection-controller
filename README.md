@@ -9,8 +9,9 @@ It's meant to be used with Grafana Beyla and/or Grafana Alloy.
 ## How it works
 
 1. The **ConfigMap controller** watches every `ConfigMap` carrying the
-   annotation `beyla.grafana.com/node` (the value is ignored — presence is
-   what matters).
+   annotation `beyla.grafana.com/node`. A nonempty value identifies the source
+   node: state for an absent or terminating node is ignored. An empty value
+   supports manually managed selectors without a node association.
 2. Each selector ConfigMap carries two files in its `.data`:
 
    **`instrumentation.yaml`** — a Beyla
@@ -106,16 +107,21 @@ or setup the self-signed certificates.
 
 ## Build
 
+Install [mise](https://mise.jdx.dev/getting-started.html) and run `mise tasks` to see all project commands. Set overrides as environment variables before `mise run`, for example `IMG=example/controller:dev mise run docker-build`.
+
 ```sh
 # Compile the manager binary into ./bin/manager
-make build
+mise run build
 
 # Run unit tests (downloads envtest binaries on first run)
-make test
+mise run test
 
 # Build the container image (override IMG to publish elsewhere)
-make docker-build IMG=<registry>/beyla-k8s-injector:<tag>
-make docker-push  IMG=<registry>/beyla-k8s-injector:<tag>
+IMG=<registry>/beyla-k8s-injector:<tag> mise run docker-build
+IMG=<registry>/beyla-k8s-injector:<tag> mise run docker-push
+
+# Build another Dockerfile (defaults to Dockerfile)
+mise run docker-build images/helm-kubectl/Dockerfile
 ```
 
 ## Deploy
@@ -126,26 +132,25 @@ can't deadlock its own restart).
 
 ```sh
 # Deploy with the image you just pushed
-make deploy IMG=<registry>/beyla-k8s-injector:<tag>
+IMG=<registry>/beyla-k8s-injector:<tag> mise run deploy
 
 # Tear it down
-make undeploy
+mise run undeploy
 ```
 
-For a quick end-to-end smoke test there's `make deploy-test`, which uses the
+For a quick test deployment there's `mise run deploy-test`, which uses the
 overlay in `config/test/`: same as `deploy`, plus a sample SDK config
 (`config/test/sdk-inject.yaml`) mounted as a ConfigMap at
-`/etc/beyla-injector/sdk-inject.yaml` with `--config` wired in, plus the
-example selector ConfigMap from `examples/test_config_map.yaml`. Tear down
-with `make undeploy-test`. Production users provide their own SDK config —
-`make deploy` stays generic (the webhook still selects pods but doesn't
+`/etc/beyla-injector/sdk-inject.yaml` with `--config` wired in. Tear down
+with `mise run undeploy-test`. Production users provide their own SDK config —
+`mise run deploy` stays generic (the webhook still selects pods but doesn't
 mutate them when no `--config` is given).
 
-`make deploy` runs `kustomize build config/default | kubectl apply -f -`. If
+`mise run deploy` renders `config/cert-manager` and applies it with `kubectl`. If
 you prefer to inspect the manifests first:
 
 ```sh
-make build-installer IMG=<registry>/beyla-k8s-injector:<tag>
+IMG=<registry>/beyla-k8s-injector:<tag> mise run build-installer
 # -> dist/install.yaml
 ```
 
@@ -155,7 +160,7 @@ For development you can run the manager outside the cluster (the webhook still
 needs to be reachable, so this mode skips it):
 
 ```sh
-ENABLE_WEBHOOKS=false make run
+ENABLE_WEBHOOKS=false mise run run
 ```
 
 ## Try it
@@ -224,5 +229,48 @@ config/                                      # kustomize manifests
 - **Single replica** — the registry is in-memory. Running multiple replicas is
   safe (each one builds its own view from the informer cache) but adds no HA
   benefit; leader election is disabled by default.
-- **RBAC** — the generated role grants `get/list/watch` on configmaps and pods,
-  plus `delete` on pods and `create` on `pods/eviction`.
+- **RBAC** — the generated roles grant namespaced `get/list/watch` on ConfigMaps,
+  cluster-wide `get/list/watch` on Nodes, Pods and ReplicaSets, `delete` on Pods,
+  and `patch` on Deployments, StatefulSets and DaemonSets.
+
+## Node state and SDK upgrades
+
+Beyla writes one injector-state ConfigMap per node, owned by its DaemonSet.
+Deleting a node does not garbage-collect that ConfigMap while the DaemonSet
+exists. The controller ignores state for absent or terminating nodes and removes
+it from its in-memory registry on node deletion. Retained orphan maps may be
+removed after checking their `beyla.grafana.com/node` annotation against the
+cluster's nodes. Empty annotations intentionally designate node-independent
+selectors.
+
+SDK image versions from matching ConfigMaps override the controller's default
+`image_version`; `image_volume_root` comes from the controller. An old map can
+therefore select an old version or digest under a newly configured repository.
+This applies to both registry migrations and SDK upgrades. Filtering absent
+nodes does not resolve conflicting versions from nodes that still exist during
+a rolling Beyla upgrade, or state from a reused node name.
+
+For a controlled migration or upgrade:
+
+1. Verify the desired SDK image, including any pinned digest, is available and
+   pullable from the destination registry on all required architectures.
+2. On a controller containing the restart guard, set
+   `disable_auto_restart: true` in its SDK YAML (`--config`), or Helm
+   `sdkConfig.disableAutoRestart: true`, and restart the controller to load it.
+   On older controllers this setting is ineffective; pause the controller
+   during a maintenance window with workload creation and rollouts quiesced.
+3. Update the controller repository/default version and Beyla's
+   `injector.image_version`. Let all Beyla instances publish their new state;
+   remove confirmed orphan state and verify every remaining state map advertises
+   the intended version before creating or restarting workloads. Resume/restart
+   the controller with its new configuration.
+4. Create a canary pod and inspect its injected image reference and pull result,
+   then roll out workloads deliberately. Restore automatic restarts if desired.
+
+`disable_auto_restart` controls all workload rollouts initiated by this
+controller, including reinstrumentation after SDK/config changes and removal of
+instrumentation. It still updates admission rules and injects newly created
+pods. It does not suppress rollouts initiated by Kubernetes, Helm, another
+controller, or an operator. Configure it on the injection controller; the
+current Beyla `injector` configuration does not carry this field. Controllers
+without the restart guard ignore it even when it is present in their SDK YAML.

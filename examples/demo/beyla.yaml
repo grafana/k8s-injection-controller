@@ -3,12 +3,12 @@
 # local processes and writes a per-node ConfigMap that the controller consumes.
 #
 # The controller-manager Deployment that Beyla delegates to is identified by
-# its <namespace>/<name>. `make deploy-test` places it at
+# its <namespace>/<name>. `mise run deploy-test` places it at
 # beyla-k8s-injector/controller-manager, which is the value we set in
 # BEYLA_EXTERNAL_WEBHOOK_DEPLOYMENT_NAME below.
 #
 # Beyla runs in the same namespace as the controller (beyla-k8s-injector),
-# which is created by `make deploy-test`; this file does not create it.
+# which is created by `mise run deploy-test`; this file does not create it.
 ---
 apiVersion: v1
 kind: ServiceAccount

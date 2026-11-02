@@ -30,12 +30,24 @@ jobs:
       # Registries default to GHCR (push-ghcr: true). Once the GAR mirror is
       # provisioned and wired into release-base, enable it here with push-gar: true.
 
+  helm-kubectl-image:
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: ./.github/workflows/release-base.yml
+    with:
+      version: ${{ github.ref_name }}
+      image-name: k8s-injection-controller-helm-kubectl
+      dockerfile: images/helm-kubectl/Dockerfile
+
   # Record the release on GitHub with auto-generated notes (no assets — the
   # artifacts are the published container images). Runs after the images are
   # published so the release only appears once they exist.
   github-release:
     name: Create GitHub Release
-    needs: images
+    needs: [images, helm-kubectl-image]
     runs-on: ubuntu-latest
     permissions:
       contents: write # create the release

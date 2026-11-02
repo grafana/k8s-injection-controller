@@ -1,7 +1,7 @@
 # cert-manager cert strategy: the agnostic base + a cert-manager Issuer +
 # serving/metrics Certificates, with the CA bundle injected into the webhook
-# configurations. This is the standalone production assembly that `make deploy`,
-# `make build-installer` and `make undeploy` build, and the base config/test
+# configurations. This is the standalone production assembly that `mise run deploy`,
+# `mise run build-installer` and `mise run undeploy` build, and the base config/test
 # layers on. cert-manager (CRDs + webhook) must already be installed.
 #
 # namespace + namePrefix live HERE (not in ../default) so they apply uniformly

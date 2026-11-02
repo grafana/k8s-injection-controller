@@ -1,8 +1,9 @@
 FROM mcr.microsoft.com/dotnet/sdk:9.0.315@sha256:1f2cb07e7ced57c4ea61163d485a2ee1cffd63763c6b17a4447ce734ff236475 AS nop-build
 WORKDIR /nop
+# The runtime requires the hook type to be named StartupHook in the global namespace.
 RUN printf '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><TargetFramework>net9.0</TargetFramework></PropertyGroup></Project>' \
         > NopHook.csproj && \
-    printf 'public class NopHook { public static void Initialize() { } }' \
+    printf 'internal class StartupHook { public static void Initialize() { } }' \
         > NopHook.cs && \
     dotnet publish -c Release -o /nop-out
 

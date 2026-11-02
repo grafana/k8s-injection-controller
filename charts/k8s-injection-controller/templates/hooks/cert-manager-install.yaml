@@ -104,7 +104,7 @@ spec:
     runAsNonRoot: false
   containers:
     - name: install-cert-manager
-      image: "{{ .Values.certManager.installHook.image.repository }}:{{ .Values.certManager.installHook.image.tag }}"
+      image: "{{ .Values.certManager.installHook.image.repository }}:{{ .Values.certManager.installHook.image.tag | default .Chart.AppVersion }}"
       imagePullPolicy: {{ .Values.certManager.installHook.image.pullPolicy }}
       command: ["/bin/sh", "/scripts/install-cert-manager.sh"]
       env:

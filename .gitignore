@@ -6,7 +6,7 @@
 *.dylib
 bin/*
 
-# Generated build output (e.g. make build-installer)
+# Generated build output (e.g. mise run build-installer)
 dist/
 
 # Test binary, built with `go test -c`

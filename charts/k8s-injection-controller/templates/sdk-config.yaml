@@ -13,6 +13,7 @@ data:
   # absent (image_volume_root empty).
   sdk-inject.yaml: |
     debug: {{ $sdk.debug }}
+    disable_auto_restart: {{ $sdk.disableAutoRestart | default false }}
     image_volume_root: {{ $sdk.imageVolumeRoot }}
     image_version: {{ $sdk.imageVersion | quote }}
     injection_mode: {{ $sdk.injectionMode }}

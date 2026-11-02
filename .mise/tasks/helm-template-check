@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -eo pipefail
+set +o pipefail
+chart=charts/k8s-injection-controller
+echo '[auto, no cert-manager API] -> self-signed'
+helm template t "$chart" | grep -q 'enable-cert-rotation' || { echo 'FAIL: expected self-signed rotation'; exit 1; }
+helm template t "$chart" | grep -q 'kind: Certificate' && { echo 'FAIL: unexpected Certificate'; exit 1; } || true
+echo '[auto, cert-manager API present] -> cert-manager'
+helm template t "$chart" --api-versions cert-manager.io/v1 | grep -q 'kind: Certificate' || { echo 'FAIL: expected Certificate'; exit 1; }
+helm template t "$chart" --api-versions cert-manager.io/v1 | grep -q 'enable-cert-rotation' && { echo 'FAIL: unexpected rotation flag'; exit 1; } || true
+echo '[mode=cert-manager without API] -> install cert-manager via pre-install hook'
+helm template t "$chart" --set webhook.certManager.mode=cert-manager | grep -q 'cert-manager-install' || { echo 'FAIL: expected the cert-manager install hook'; exit 1; }
+helm template t "$chart" --set webhook.certManager.mode=cert-manager | grep -q 'kind: Certificate' || { echo 'FAIL: expected Certificate (post-install hook)'; exit 1; }
+echo '[mode=cert-manager with API] -> use existing cert-manager, no install hook'
+helm template t "$chart" --set webhook.certManager.mode=cert-manager --api-versions cert-manager.io/v1 | grep -q 'cert-manager-install' && { echo 'FAIL: unexpected install hook when cert-manager present'; exit 1; } || true
+echo 'helm-template-check OK'

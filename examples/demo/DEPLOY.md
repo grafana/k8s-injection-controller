@@ -32,15 +32,16 @@ From the repo root (`k8s-injection-controller/`):
 ```sh
 #installs a dev certificate manager
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
-make demo-deploy
+mise run demo-deploy
 ```
 
 If you need different images, override them explicitly:
 
 ```sh
-make docker-build docker-push IMG=your-repo/k8s-injection-controller:dev
+IMG=your-repo/k8s-injection-controller:dev mise run docker-build
+IMG=your-repo/k8s-injection-controller:dev mise run docker-push
 kubectl apply -f https://github.com/cert-manager/cert-manager/releases/latest/download/cert-manager.yaml
-make demo-deploy BEYLA_IMG=your-repo/beyla:dev IMG=your-repo/k8s-injection-controller:dev
+BEYLA_IMG=your-repo/beyla:dev IMG=your-repo/k8s-injection-controller:dev mise run demo-deploy
 ```
 
 The target runs three steps:
@@ -122,7 +123,7 @@ env:
 ## Tear down
 
 ```sh
-make demo-undeploy
+mise run demo-undeploy
 ```
 
 This removes the sample workload, the Beyla DaemonSet (and the per-node

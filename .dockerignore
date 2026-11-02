@@ -5,6 +5,7 @@
 # Re-include Go source files (but not *_test.go)
 !**/*.go
 **/*_test.go
+vendor/**
 
 # Re-include Go module files
 !go.mod

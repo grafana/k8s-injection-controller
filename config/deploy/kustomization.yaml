@@ -1,4 +1,4 @@
-# Artifact overlay built by `make yaml`: the production deploy (config/default)
+# Artifact overlay built by `mise run yaml`: the production deploy (config/default)
 # plus a default, mounted SDK config so the controller starts with a valid
 # config out of the box. Unlike config/test, this overlay does not downgrade
 # metrics security or change ports — it's meant to be a publishable manifest.

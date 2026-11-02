@@ -1,15 +1,13 @@
 # Test overlay: the cert-manager production assembly + a sample SDK config and
-# the manager patch that mounts it. `make deploy-test` applies this and then
-# applies the example selector ConfigMap from examples/test_config_map.yaml
-# separately (it lives in the user-workload namespace, not the controller
-# namespace). Uses the cert-manager cert strategy (watch ns == install ns here,
+# the manager patch that mounts it. `mise run deploy-test` applies this.
+# Uses the cert-manager cert strategy (watch ns == install ns here,
 # so the default config/webhook namespaceSelector is correct as-is).
 
 resources:
   # cert-manager cert strategy; namespace + namePrefix come from here.
   - ../cert-manager
 
-# The ConfigMap is regenerated on every `make deploy-test`; the suffix hash
+# The ConfigMap is regenerated on every `mise run deploy-test`; the suffix hash
 # changes whenever sdk-inject.yaml does, which kustomize threads through into
 # the volume reference, triggering a rollout of the manager pod.
 configMapGenerator:

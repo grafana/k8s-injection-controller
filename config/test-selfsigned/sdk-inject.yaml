@@ -1,4 +1,4 @@
-# Sample config.SDKInject loaded by `make deploy-test`.
+# Sample config.SDKInject loaded by `mise run deploy-test`.
 # Signal exporters, propagators, sampler, debug, and static resource attributes
 # are now owned by Beyla and written to the ConfigMap as env vars.
 

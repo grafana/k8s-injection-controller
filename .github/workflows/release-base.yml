@@ -18,6 +18,14 @@ on:
         description: Version to stamp into the binary and derive image tags from ("main" or a "vX.Y.Z" tag).
         required: true
         type: string
+      image-name:
+        description: Image name under ghcr.io/grafana/.
+        type: string
+        default: k8s-injection-controller
+      dockerfile:
+        description: Dockerfile to build, relative to the repository root.
+        type: string
+        default: Dockerfile
       push-ghcr:
         description: Publish the image to GHCR.
         type: boolean
@@ -26,7 +34,7 @@ on:
 permissions: {}
 
 env:
-  GHCR_IMAGE: ghcr.io/grafana/k8s-injection-controller
+  GHCR_IMAGE: ghcr.io/grafana/${{ inputs.image-name }}
 
 jobs:
   # A multi-arch image is one manifest list pointing at a per-architecture image,
@@ -90,6 +98,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Setup mise
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+
       - name: Log in to GHCR
         if: inputs.push-ghcr
         uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
@@ -101,25 +112,26 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
-      # Same `make docker-build` used locally, pushing this architecture by digest
+      # Same `mise run docker-build` used locally, pushing this architecture by digest
       # to every enabled registry (one buildx output per entry in the registries
       # list). The content digest is identical across them.
       - name: Build and push by digest
         id: build
         env:
           PLATFORM: ${{ matrix.platform }}
+          DOCKERFILE: ${{ inputs.dockerfile }}
           VERSION: ${{ inputs.version }}
           REVISION: ${{ github.sha }}
           REGISTRIES: ${{ steps.registries.outputs.registries }}
         run: |
           set -euo pipefail
           outputs="$(jq -r '[.[] | "type=image,name=\(.image),push-by-digest=true,name-canonical=true,push=true"] | join(" ")' <<< "$REGISTRIES")"
-          make docker-build \
-            IMAGE_PLATFORMS="${PLATFORM}" \
-            VERSION="${VERSION}" \
-            REVISION="${REVISION}" \
-            DOCKER_METADATA_FILE=metadata.json \
-            DOCKER_BUILDX_OUTPUT="${outputs}"
+          IMAGE_PLATFORMS="${PLATFORM}" \
+          VERSION="${VERSION}" \
+          REVISION="${REVISION}" \
+          DOCKER_METADATA_FILE=metadata.json \
+          DOCKER_BUILDX_OUTPUT="${outputs}" \
+          mise run docker-build "$DOCKERFILE"
           echo "digest=$(jq -r '.["containerimage.digest"]' metadata.json)" >> "$GITHUB_OUTPUT"
 
       - name: Export digest
@@ -132,7 +144,7 @@ jobs:
       - name: Upload digest
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: digests-${{ matrix.arch }}
+          name: digests-${{ matrix.arch }}-${{ inputs.image-name }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
@@ -159,7 +171,7 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: /tmp/digests
-          pattern: digests-*
+          pattern: digests-*-${{ inputs.image-name }}
           merge-multiple: true
 
       - name: Log in to GHCR

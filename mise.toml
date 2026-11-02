@@ -1,0 +1,198 @@
+# Run `mise tasks` to list commands. Environment variables override the defaults
+# in the task scripts (for example: IMG=example/controller:dev mise run docker-build).
+
+[tools]
+go = "1.26.10"
+kustomize = "5.8.1"
+golangci-lint = "2.11"
+"github:kubernetes-sigs/controller-tools" = "0.20.1"
+"github:kubernetes-sigs/controller-runtime" = "0.24.1"
+"go:sigs.k8s.io/logtools/logcheck"= "v0.11.0"
+
+[task_config]
+shell = "bash -eo pipefail -c"
+
+[tasks.default]
+alias = "all"
+description = "Build the manager binary"
+depends = ["build"]
+
+[tasks.manifests]
+description = "Generate RBAC, webhook, and CRD manifests"
+run = 'controller-gen rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases'
+
+[tasks.generate]
+description = "Generate DeepCopy methods"
+wait_for = ["manifests"]
+run = '''
+year="${YEAR:-$(date +%Y)}"
+controller-gen object:headerFile=hack/boilerplate.go.txt,year="$year" paths="./..."
+'''
+
+[tasks.fmt]
+description = "Format Go code"
+wait_for = ["generate"]
+run = "go fmt ./..."
+
+[tasks.vet]
+description = "Vet Go code"
+wait_for = ["generate", "fmt"]
+run = "go vet ./..."
+
+[tasks.test]
+description = "Generate code and run unit tests with envtest"
+depends = ["manifests", "generate", "vet", "setup-envtest"]
+run = '''
+assets="$(setup-envtest use "${ENVTEST_K8S_VERSION:-$(go list -m -f '{% raw %}{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}{% endraw %}' k8s.io/api | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')}" --bin-dir "${LOCALBIN:-$PWD/bin}" -p path)"
+KUBEBUILDER_ASSETS="$assets" go test $(go list ./... | grep -v /e2e) -coverprofile cover.out
+'''
+
+[tasks.test-e2e]
+description = "Run the Kind e2e suite for both certificate modes"
+depends = ["manifests", "generate", "fmt", "vet"]
+run = ["CERT_MODE=cert-manager go test -tags=e2e ./test/e2e/... -v -ginkgo.v -timeout 30m", 'CERT_MODE=self-signed go test -tags=e2e ./test/e2e/... -v -ginkgo.v -ginkgo.focus-file="e2e_injection_test.go" -timeout 15m']
+
+[tasks.test-e2e-smoke]
+description = "Run the k8s-monitoring Helm integration smoke test"
+run = "go test -tags=e2esmoke ./test/smoke/... -v -ginkgo.v -timeout 40m"
+
+[tasks.helm-template-check]
+description = "Check Helm templates in both certificate modes"
+file = ".mise/tasks/helm-template-check"
+
+[tasks.lint]
+description = "Run golangci-lint and logcheck"
+depends = ["lint-golangci", "lint-logcheck"]
+
+[tasks.lint-fix]
+description = "Run golangci-lint with fixes, then logcheck"
+depends = ["lint-fix-golangci", "lint-logcheck"]
+
+[tasks.lint-golangci]
+hide = true
+run = "golangci-lint run"
+
+[tasks.lint-fix-golangci]
+hide = true
+wait_for = ["lint-golangci"]
+run = "golangci-lint run --fix"
+
+[tasks.lint-config]
+description = "Verify golangci-lint configuration"
+run = 'golangci-lint config verify'
+
+[tasks.lint-logcheck]
+description = "Check structured logging calls"
+wait_for = ["lint-golangci", "lint-fix-golangci"]
+run = 'logcheck ./...'
+
+[tasks.build]
+description = "Build the manager binary"
+depends = ["manifests", "generate", "fmt", "vet"]
+file = ".mise/tasks/build"
+
+[tasks.run]
+description = "Run the controller locally"
+depends = ["manifests", "generate", "fmt", "vet"]
+run = "go run ./cmd"
+
+[tasks.docker-build]
+description = "Build the manager image with buildx; load locally by default"
+file = ".mise/tasks/docker-build"
+
+[tasks.docker-push]
+description = "Push the manager image"
+run = '"${CONTAINER_TOOL:-docker}" push "${IMG:-ghcr.io/grafana/k8s-injection-controller:main}"'
+
+[tasks.build-installer]
+description = "Generate a consolidated installation manifest"
+depends = ["manifests", "generate"]
+usage = 'arg "[image]" env="IMG" help="Controller image" default="ghcr.io/grafana/k8s-injection-controller:main"'
+run = '''
+mkdir -p dist
+(cd config/manager && kustomize edit set image "controller=${usage_image?}")
+kustomize build config/cert-manager > dist/install.yaml
+'''
+
+[tasks.install]
+description = "Install project CRDs into the current cluster"
+depends = ["manifests"]
+run = '''
+out="$(kustomize build config/crd 2>/dev/null || true)"
+if [[ -n "$out" ]]; then printf '%s\n' "$out" | "${KUBECTL:-kubectl}" apply -f -; else echo 'No CRDs to install; skipping.'; fi
+'''
+
+[tasks.uninstall]
+description = "Uninstall project CRDs from the current cluster"
+depends = ["manifests"]
+run = '''
+out="$(kustomize build config/crd 2>/dev/null || true)"
+if [[ -n "$out" ]]; then printf '%s\n' "$out" | "${KUBECTL:-kubectl}" delete --ignore-not-found="${IGNORE_NOT_FOUND:-false}" -f -; else echo 'No CRDs to delete; skipping.'; fi
+'''
+
+[tasks.deploy]
+description = "Deploy the controller to the current cluster"
+depends = ["manifests"]
+run = '''
+(cd config/manager && kustomize edit set image "controller=${IMG:-ghcr.io/grafana/k8s-injection-controller:main}")
+kustomize build "${DEPLOY_CONFIG:-config/cert-manager}" | "${KUBECTL:-kubectl}" apply -f -
+'''
+
+[tasks.yaml]
+description = "Render a self-signed controller manifest with sample SDK config"
+depends = ["manifests"]
+run = '''
+(cd config/manager && kustomize edit set image "controller=${IMG:-ghcr.io/grafana/k8s-injection-controller:main}")
+mkdir -p yaml
+kustomize build config/deploy > yaml/controller.yaml
+echo 'The controller yaml has been written to yaml/controller.yaml'
+'''
+
+[tasks.yaml-cert]
+description = "Render a cert-manager controller manifest with sample SDK config"
+depends = ["manifests"]
+run = '''
+(cd config/manager && kustomize edit set image "controller=${IMG:-ghcr.io/grafana/k8s-injection-controller:main}")
+mkdir -p yaml
+kustomize build config/deploy-manager > yaml/controller.yaml
+echo 'The controller yaml with cert-manager has been written to yaml/controller.yaml'
+'''
+
+[tasks.undeploy]
+description = "Undeploy the controller from the current cluster"
+run = 'kustomize build "${DEPLOY_CONFIG:-config/cert-manager}" | "${KUBECTL:-kubectl}" delete --ignore-not-found="${IGNORE_NOT_FOUND:-false}" -f -'
+
+[tasks.deploy-test]
+description = "Deploy the controller with sample SDK config"
+depends = ["manifests"]
+run = '''
+(cd config/manager && kustomize edit set image "controller=${IMG:-ghcr.io/grafana/k8s-injection-controller:main}")
+kustomize build config/test | "${KUBECTL:-kubectl}" apply -f -
+'''
+
+[tasks.undeploy-test]
+description = "Undeploy the controller with sample SDK config"
+run = 'kustomize build config/test | "${KUBECTL:-kubectl}" delete --ignore-not-found="${IGNORE_NOT_FOUND:-false}" -f -'
+
+[tasks.demo-deploy]
+description = "Deploy the demo controller, Beyla, and sample workload"
+depends = ["deploy-test"]
+file = ".mise/tasks/demo-deploy"
+
+[tasks.demo-undeploy]
+description = "Remove the demo workload, Beyla, and controller"
+run = '''
+kubectl="${KUBECTL:-kubectl}"
+"$kubectl" delete --ignore-not-found="${IGNORE_NOT_FOUND:-false}" -f examples/demo/sample-app.yaml || true
+"$kubectl" delete --ignore-not-found="${IGNORE_NOT_FOUND:-false}" -f examples/demo/beyla.yaml || true
+kustomize build config/test | "$kubectl" delete --ignore-not-found="${IGNORE_NOT_FOUND:-false}" -f - || true
+'''
+
+[tasks.setup-envtest]
+description = "Install local envtest Kubernetes binaries"
+wait_for = ["vet"]
+run = '''
+version="${ENVTEST_K8S_VERSION:-$(go list -m -f '{% raw %}{{if .Replace}}{{.Replace.Version}}{{else}}{{.Version}}{{end}}{% endraw %}' k8s.io/api | sed -E 's/^v?[0-9]+\.([0-9]+).*/1.\1/')}"
+echo "Setting up envtest binaries for Kubernetes version $version..."
+setup-envtest use "$version" --bin-dir "${LOCALBIN:-$PWD/bin}" -p path
+'''
