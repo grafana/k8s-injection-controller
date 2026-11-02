@@ -42,3 +42,11 @@ controller pod stays un-ready:
 NOTE: sdkConfig.enabled=false — the controller will select matching workloads
 but perform no instrumentation until an SDK config is provided.
 {{- end }}
+{{- if .Values.hostNetwork }}
+
+hostNetwork is enabled: the webhook listens on <node IP>:{{ .Values.webhook.port }}, health on 8081
+and metrics on {{ .Values.metrics.port }}. Allow the control plane to reach the nodes on
+{{ .Values.webhook.port }}, keep one replica per node (podAntiAffinity), and restrict 8081 and
+{{ .Values.metrics.port }} at the network layer. See the chart README, "Clusters where the API
+server cannot reach pod IPs".
+{{- end }}

@@ -13,4 +13,15 @@ helm template t "$chart" --set webhook.certManager.mode=cert-manager | grep -q '
 helm template t "$chart" --set webhook.certManager.mode=cert-manager | grep -q 'kind: Certificate' || { echo 'FAIL: expected Certificate (post-install hook)'; exit 1; }
 echo '[mode=cert-manager with API] -> use existing cert-manager, no install hook'
 helm template t "$chart" --set webhook.certManager.mode=cert-manager --api-versions cert-manager.io/v1 | grep -q 'cert-manager-install' && { echo 'FAIL: unexpected install hook when cert-manager present'; exit 1; } || true
+echo '[hostNetwork=true] -> hostNetwork + ClusterFirstWithHostNet, default port keeps 9443 and no --webhook-port flag'
+out=$(helm template t "$chart" --set hostNetwork=true)
+echo "$out" | grep -q 'hostNetwork: true' || { echo 'FAIL: expected hostNetwork: true'; exit 1; }
+echo "$out" | grep -q 'dnsPolicy: ClusterFirstWithHostNet' || { echo 'FAIL: expected dnsPolicy ClusterFirstWithHostNet'; exit 1; }
+echo "$out" | grep -q -- '--webhook-port' && { echo 'FAIL: unexpected --webhook-port flag for the default port'; exit 1; } || true
+echo '[webhook.port=19443] -> flag, containerPort and Service targetPort follow'
+out=$(helm template t "$chart" --set webhook.port=19443)
+echo "$out" | grep -q -- '--webhook-port=19443' || { echo 'FAIL: expected --webhook-port=19443'; exit 1; }
+echo "$out" | grep -q 'containerPort: 19443' || { echo 'FAIL: expected containerPort 19443'; exit 1; }
+echo "$out" | grep -q 'targetPort: 19443' || { echo 'FAIL: expected targetPort 19443'; exit 1; }
+echo "$out" | grep -q 'hostNetwork: true' && { echo 'FAIL: unexpected hostNetwork'; exit 1; } || true
 echo 'helm-template-check OK'

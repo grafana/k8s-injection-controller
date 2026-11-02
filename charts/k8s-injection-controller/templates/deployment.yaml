@@ -33,6 +33,13 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      {{- if .Values.hostNetwork }}
+      hostNetwork: true
+      {{- end }}
+      {{- $dnsPolicy := .Values.dnsPolicy | default (ternary "ClusterFirstWithHostNet" "" .Values.hostNetwork) }}
+      {{- with $dnsPolicy }}
+      dnsPolicy: {{ . }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -49,6 +56,9 @@ spec:
             - /manager
           args:
             - --health-probe-bind-address=:8081
+            {{- if ne (int .Values.webhook.port) 9443 }}
+            - --webhook-port={{ .Values.webhook.port }}
+            {{- end }}
             {{- if .Values.leaderElection }}
             - --leader-elect
             {{- end }}
@@ -86,7 +96,7 @@ spec:
               containerPort: 8081
               protocol: TCP
             - name: webhook-server
-              containerPort: 9443
+              containerPort: {{ .Values.webhook.port }}
               protocol: TCP
             {{- if .Values.metrics.enabled }}
             - name: metrics
