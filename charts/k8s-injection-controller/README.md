@@ -158,8 +158,13 @@ can only take the port. Before enabling it:
   usual Gatekeeper and Kyverno baseline policies.
 - The health endpoint on 8081 and the metrics endpoint on `metrics.port` are
   plain HTTP without authentication. On the host network they are reachable
-  from anything that reaches the node IP and NetworkPolicy no longer applies,
-  so restrict them with security groups or disable `metrics.enabled`.
+  from anything that reaches the node IP, and standard NetworkPolicy does not
+  cover host-network pods on most CNIs, so restrict them with security groups
+  or disable `metrics.enabled`.
+- The pod reaches the cloud metadata service the same way the node does, so a
+  compromised controller could read the node's instance credentials; the IMDS
+  hop limit that keeps pod-network pods out does not help here. Keep IMDSv2
+  required and the node role minimal. The controller needs no cloud credentials.
 
 Where the CNI can be switched to a mode with routable pod IPs, such as Cilium
 ENI mode on EKS, prefer that over `hostNetwork`.

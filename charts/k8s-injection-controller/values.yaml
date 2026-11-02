@@ -116,7 +116,8 @@ strategy: {}
 # set a hostname podAntiAffinity when replicaCount > 1, allow the pod in
 # namespaces that enforce Pod Security "baseline" or stricter (hostNetwork is
 # not permitted there), and restrict 8081 and metrics.port at the network
-# layer because NetworkPolicy does not apply to host-network pods. Prefer a
+# layer because standard NetworkPolicy does not cover host-network pods on
+# most CNIs. Prefer a
 # CNI mode with routable pod IPs (for example Cilium ENI mode on EKS) when
 # that is an option.
 hostNetwork: false
