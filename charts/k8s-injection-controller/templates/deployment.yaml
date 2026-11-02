@@ -1,3 +1,6 @@
+{{- if and (ne (int .Values.webhook.port) 9443) (not .Values.image.tag) (semverCompare "<0.4.0" .Chart.AppVersion) }}
+{{- fail "webhook.port other than 9443 needs controller image 0.4.0 or newer (the --webhook-port flag); set image.tag" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

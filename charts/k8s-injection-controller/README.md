@@ -113,7 +113,7 @@ See [`values.yaml`](./values.yaml) for the full list. Common knobs:
 | `sdkConfig.*` | see values | Default SDK auto-instrumentation config; `sdkConfig.enabled=false` selects but does not mutate. |
 | `webhook.excludedNamespaces` | system/infra namespaces | Namespaces the mutating webhook never touches (install namespace is always added). |
 | `webhook.certManager.mode` | auto | How the webhook serving certificate is provisioned: auto, cert-manager, self-signed. |
-| `webhook.port` | `9443` | Port the webhook server listens on; the webhook Service maps 443 to it. Non-default values need controller image 0.4.0 or newer. |
+| `webhook.port` | `9443` | Port the webhook server listens on; the webhook Service maps 443 to it. Non-default values need controller image 0.4.0 or newer; the chart refuses to render otherwise unless `image.tag` is set. |
 | `hostNetwork` | `false` | Run the controller on the node network so the API server can reach the webhooks on clusters with a non-VPC CNI (see below). |
 | `dnsPolicy` | `""` | Pod DNS policy; empty picks `ClusterFirstWithHostNet` when `hostNetwork` is true. |
 | `strategy` | `{}` | Deployment update strategy; empty means RollingUpdate, or Recreate when `hostNetwork` is true. |
@@ -141,7 +141,10 @@ The chart then sets `dnsPolicy: ClusterFirstWithHostNet` so Service names keep
 resolving, and the webhook Service forwards 443 to `<node IP>:9443`. The
 serving certificate is still verified by the API server against the webhook
 `caBundle`, so another process on the node cannot impersonate the webhook; it
-can only take the port. Before enabling it:
+can only take the port. That is enough for an outage: a process that binds the
+port first keeps the controller from starting, and the fail-closed ConfigMap
+webhook then rejects the writes it covers until the port is free again. Before
+enabling it:
 
 - Allow TCP 9443 from the control plane to the nodes if your node security
   group is restricted. Pick another `webhook.port` if 9443 is already taken on
