@@ -181,6 +181,73 @@ helm uninstall kic
 cert-manager (a shared cluster prerequisite) is left untouched; remove it
 separately if nothing else uses it.
 
+## Validating webhook scope
+
+The ConfigMap validating webhook is fail-closed on purpose: it is the control
+that keeps anyone but the allowlisted writers from creating injection ConfigMaps or
+changing what they inject. Its
+`matchConditions` limit it to ConfigMaps that carry the Beyla selector
+annotation `beyla.grafana.com/node` (on the new object, or on the old object
+when an update removes it). Any other ConfigMap write in the watched namespace
+is admitted without a webhook call, so an unreachable or restarting controller
+cannot block unrelated releases in that namespace. This needs Kubernetes 1.28
+or newer; on older clusters the webhook covers every ConfigMap in the
+namespace.
+
+Security wise this narrows the call set, not the enforcement: the controller
+only consumes ConfigMaps with that same annotation key (pinned by a unit
+test), so every write it could act on still goes through the allowlist, and a
+ConfigMap can only gain or lose the annotation through an admitted write. If
+an API server ignores `matchConditions` the webhook falls back to every
+ConfigMap in the namespace, which is the previous behaviour, not a weaker one.
+
+## Recovering when upgrades are blocked by the ConfigMap webhook
+
+Symptom: any ConfigMap create or update in the watched namespace fails with
+`failed calling webhook "vconfigmap-v1.beyla.grafana.com"`, for example with
+`Address is not allowed` when the API server cannot reach the controller pod,
+or with a timeout while the controller is down. On Kubernetes 1.28+ with this
+chart version only injection ConfigMaps are affected; on older charts or
+clusters every ConfigMap is.
+
+Deleting the ValidatingWebhookConfiguration removes the allowlist check while
+the controller keeps injecting from whatever ConfigMaps it sees, so stop the
+controller first, wait until its pods are gone, and keep it stopped until the
+audit below is done. The audit runs in the watched namespace (`watchNamespace`,
+by default the release namespace), which is where Beyla writes the ConfigMaps:
+
+```bash
+NS=<release namespace>; REL=<release>; WATCH_NS=<watchNamespace, default $NS>
+kubectl -n "$NS" scale deployment "$REL-k8s-injection-controller" --replicas=0
+kubectl -n "$NS" wait --for=delete pod -l "app.kubernetes.io/instance=$REL,app.kubernetes.io/name=k8s-injection-controller" --timeout=120s
+kubectl delete validatingwebhookconfiguration "$REL-k8s-injection-controller-validating-webhook"
+# run the helm upgrade that fixes the cause with --set replicaCount=0:
+# Helm recreates the webhook configuration, the controller stays down.
+kubectl get validatingwebhookconfiguration "$REL-k8s-injection-controller-validating-webhook"
+kubectl -n "$WATCH_NS" get configmaps -o json \
+  | jq -r '.items[] | select(.metadata.annotations["beyla.grafana.com/node"] != null) | "\(.metadata.name) node=\(.metadata.annotations["beyla.grafana.com/node"])"'
+# then run the upgrade again with the normal replicaCount.
+```
+
+Every listed ConfigMap must name a node of the cluster and be owned by the
+allowlisted writer; delete anything else before the controller comes back. The
+list does not show tampered content inside a legitimate ConfigMap, so unless the
+audit log shows no ConfigMap writes by other principals during the window,
+delete all listed ConfigMaps and restart the Beyla DaemonSet; Beyla republishes
+its state ConfigMaps on startup.
+
+While the webhook configuration is gone, anyone with ConfigMap write access in
+the watched namespace can plant an annotated ConfigMap. The controller at zero
+replicas does not consume it, but on restart it lists everything in the
+namespace, so the check above is the control, not a formality. A ConfigMap
+carries no author field; `managedFields[].manager` is a hint, the audit log is
+the proof. Pods created while the controller is down start without injection
+(the pod webhook is `failurePolicy: Ignore`) and need a restart afterwards.
+Patching `failurePolicy` to `Ignore` or pointing `namespaceSelector` elsewhere
+has the same exposure; deleting is preferred because Helm recreates the exact
+object on the next upgrade. The webhook configuration is cluster scoped, so
+this needs cluster-admin and should stay a break-glass step.
+
 ## Local development mode deployment with kind
 
 1. Build the controller image as `beyla-k8s-injector:dev`

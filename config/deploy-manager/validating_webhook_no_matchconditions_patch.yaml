@@ -6,6 +6,9 @@
 # config/webhook adds (to make the co-located overlays safe) is therefore
 # unnecessary in this overlay, and removing it lets this manifest deploy on
 # Kubernetes < 1.28, where CEL matchConditions are unavailable (the apiserver
-# silently drops them on 1.27 / may reject them below).
+# silently drops them on 1.27 / may reject them below). This also drops the
+# only-injection-configmaps condition, so in this overlay the webhook is called
+# for every ConfigMap in the watched namespace and the handler alone decides
+# (it admits unannotated ConfigMaps).
 - op: remove
   path: /webhooks/0/matchConditions

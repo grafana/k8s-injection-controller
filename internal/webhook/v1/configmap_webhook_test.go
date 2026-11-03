@@ -129,3 +129,15 @@ func TestConfigMapValidator_Handle(t *testing.T) {
 		})
 	}
 }
+
+// TestSelectorAnnotationMatchesChart pins the annotation key the chart's
+// ValidatingWebhookConfiguration matchConditions use to scope the validator
+// (charts/k8s-injection-controller/templates/webhook/webhook-configuration.yaml).
+// If the key changes here, the chart must change too, or the validator stops
+// seeing injection ConfigMaps.
+func TestSelectorAnnotationMatchesChart(t *testing.T) {
+	const chartKey = "beyla.grafana.com/node"
+	if configmap.SelectorAnnotation != chartKey {
+		t.Fatalf("configmap.SelectorAnnotation = %q, chart matchConditions use %q", configmap.SelectorAnnotation, chartKey)
+	}
+}

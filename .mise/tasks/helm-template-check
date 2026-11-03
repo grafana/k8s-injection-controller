@@ -2,6 +2,8 @@
 set -eo pipefail
 set +o pipefail
 chart=charts/k8s-injection-controller
+echo '[validating webhook] -> scoped to Beyla injection ConfigMaps via matchConditions'
+helm template t "$chart" | grep -q "'beyla.grafana.com/node' in object.metadata.annotations" || { echo 'FAIL: expected matchCondition on beyla.grafana.com/node'; exit 1; }
 echo '[auto, no cert-manager API] -> self-signed'
 helm template t "$chart" | grep -q 'enable-cert-rotation' || { echo 'FAIL: expected self-signed rotation'; exit 1; }
 helm template t "$chart" | grep -q 'kind: Certificate' && { echo 'FAIL: unexpected Certificate'; exit 1; } || true
