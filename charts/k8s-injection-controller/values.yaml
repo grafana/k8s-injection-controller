@@ -100,6 +100,33 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
+# -- Deployment update strategy. Empty keeps the Kubernetes default
+# (RollingUpdate), except with hostNetwork where the chart uses Recreate: a
+# surging replacement pod needs another node with the host port free, so a
+# rolling update stalls on a single eligible node. Set it explicitly to
+# override, for example {type: RollingUpdate} when enough nodes exist.
+strategy: {}
+
+# -- Run the controller pod on the node network. Needed on clusters whose pod
+# network the API server cannot reach, for example EKS with Cilium in overlay
+# (tunnel) mode or any other non-VPC CNI: the admission webhooks are then
+# served on <node IP>:<webhook.port> instead of a pod IP, and the API server's
+# call to the webhook Service lands on an address it can route to. Make sure
+# nothing else on the nodes binds webhook.port, 8081 (health) and metrics.port,
+# set a hostname podAntiAffinity when replicaCount > 1, allow the pod in
+# namespaces that enforce Pod Security "baseline" or stricter (hostNetwork is
+# not permitted there), and restrict 8081 and metrics.port at the network
+# layer because standard NetworkPolicy does not cover host-network pods on
+# most CNIs. Prefer a
+# CNI mode with routable pod IPs (for example Cilium ENI mode on EKS) when
+# that is an option.
+hostNetwork: false
+
+# -- Pod DNS policy. Leave empty to let the chart pick: ClusterFirstWithHostNet
+# when hostNetwork is true (so in-cluster Service names still resolve), the
+# Kubernetes default otherwise.
+dnsPolicy: ""
+
 # -- SDK auto-instrumentation defaults mounted into the controller (the
 # `config.SDKInject` document passed via --config). When disabled the
 # controller still selects matching workloads but performs no mutation.
@@ -132,6 +159,11 @@ sdkConfig:
 
 # -- Pod mutating webhook configuration.
 webhook:
+  # -- Port the webhook server listens on inside the pod; the webhook Service
+  # maps 443 to it. Change it only when another host-network process already
+  # uses 9443 (needs controller image 0.4.0 or newer, which accepts
+  # --webhook-port; the flag is only rendered for a non-default value).
+  port: 9443
   # Namespaces excluded from the mutating webhook via namespaceSelector. The
   # install namespace is always appended automatically (deadlock prevention).
   excludedNamespaces:

@@ -1,3 +1,6 @@
+{{- if and (ne (int .Values.webhook.port) 9443) (not .Values.image.tag) (semverCompare "<0.4.0" .Chart.AppVersion) }}
+{{- fail "webhook.port other than 9443 needs controller image 0.4.0 or newer (the --webhook-port flag); set image.tag" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -7,6 +10,15 @@ metadata:
     {{- include "k8s-injection-controller.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
+  {{- if .Values.strategy }}
+  strategy:
+    {{- toYaml .Values.strategy | nindent 4 }}
+  {{- else if .Values.hostNetwork }}
+  # A surging replacement pod needs another node with the host port free, so a
+  # rolling update stalls on a single eligible node. Set .strategy to override.
+  strategy:
+    type: Recreate
+  {{- end }}
   selector:
     matchLabels:
       {{- include "k8s-injection-controller.selectorLabels" . | nindent 6 }}
@@ -33,6 +45,13 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
+      {{- if .Values.hostNetwork }}
+      hostNetwork: true
+      {{- end }}
+      {{- $dnsPolicy := .Values.dnsPolicy | default (ternary "ClusterFirstWithHostNet" "" .Values.hostNetwork) }}
+      {{- with $dnsPolicy }}
+      dnsPolicy: {{ . }}
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -49,6 +68,9 @@ spec:
             - /manager
           args:
             - --health-probe-bind-address=:8081
+            {{- if ne (int .Values.webhook.port) 9443 }}
+            - --webhook-port={{ .Values.webhook.port }}
+            {{- end }}
             {{- if .Values.leaderElection }}
             - --leader-elect
             {{- end }}
@@ -86,7 +108,7 @@ spec:
               containerPort: 8081
               protocol: TCP
             - name: webhook-server
-              containerPort: 9443
+              containerPort: {{ .Values.webhook.port }}
               protocol: TCP
             {{- if .Values.metrics.enabled }}
             - name: metrics
