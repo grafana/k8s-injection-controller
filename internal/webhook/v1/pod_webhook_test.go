@@ -18,6 +18,7 @@ package v1
 
 import (
 	"context"
+	"slices"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -172,6 +173,33 @@ var _ = Describe("Pod Webhook", func() {
 			Expect(envValue(env, "OTEL_EXPORTER_OTLP_ENDPOINT")).To(Equal("http://my-collector:4318"),
 				"non-conflicting rule env var must be applied")
 		})
+	})
+
+	It("defines Downward API variables before the combined resource attributes", func() {
+		container := &obj.Spec.Containers[0]
+		container.Env = []corev1.EnvVar{
+			{Name: "REGION", Value: "east"},
+			{Name: envInjectorOtelExtraResourceAttrs, Value: "old=value"},
+			{Name: "COPY", Value: "$(OTEL_INJECTOR_RESOURCE_ATTRIBUTES)"},
+			{Name: envInjectorOtelK8sPodName, Value: "stale"},
+		}
+		setRule(nsRule("", corev1.EnvVar{Name: envInjectorOtelExtraResourceAttrs, Value: "region=$(REGION)"}))
+
+		Expect(defaulter.Default(context.Background(), obj)).To(Succeed())
+
+		env := obj.Spec.Containers[0].Env
+		names := envNames(env)
+		attrPos := slices.Index(names, envInjectorOtelExtraResourceAttrs)
+		Expect(names).To(ContainElements("REGION", "COPY"))
+		Expect(attrPos).To(BeNumerically(">", slices.Index(names, "REGION")))
+		Expect(attrPos).To(BeNumerically("<", slices.Index(names, "COPY")))
+		for _, source := range []string{envInjectorOtelK8sNamespaceName, envInjectorOtelK8sPodName, envOtelK8sNodeName} {
+			Expect(names[:attrPos]).To(ContainElement(source))
+		}
+		Expect(names[attrPos:]).NotTo(ContainElement(envInjectorOtelK8sPodName))
+		podName := env[slices.Index(names, envInjectorOtelK8sPodName)]
+		Expect(podName.ValueFrom.FieldRef.FieldPath).To(Equal("metadata.name"))
+		Expect(env[attrPos].Value).To(Equal("region=$(REGION),k8s.node.name=$(OTEL_RESOURCE_ATTRIBUTES_NODE_NAME),service.instance.id=$(OTEL_INJECTOR_K8S_NAMESPACE_NAME).$(OTEL_INJECTOR_K8S_POD_NAME).app"))
 	})
 
 	Context("When the ConfigMap overrides the image version", func() {
