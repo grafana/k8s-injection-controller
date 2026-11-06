@@ -86,6 +86,19 @@ webhooks:
   matchConditions:
   - name: exclude-kube-root-ca
     expression: "object.metadata.name != 'kube-root-ca.crt'"
+  # Only ConfigMaps the controller consumes reach the validator: those carrying
+  # the Beyla selector annotation on the new object, or on the old object for
+  # an UPDATE that removes it. Every other ConfigMap write in the namespace is
+  # admitted by the API server without a webhook call, so an unreachable or
+  # down controller cannot block unrelated releases (the handler allows
+  # unannotated ConfigMaps anyway). A CEL evaluation error follows
+  # failurePolicy and is therefore rejected. The key must equal
+  # configmap.SelectorAnnotation in github.com/grafana/beyla/v3/pkg/webhook/configmap;
+  # TestSelectorAnnotationMatchesChart pins it.
+  - name: only-injection-configmaps
+    expression: >-
+      (has(object.metadata.annotations) && 'beyla.grafana.com/node' in object.metadata.annotations) ||
+      (oldObject != null && has(oldObject.metadata.annotations) && 'beyla.grafana.com/node' in oldObject.metadata.annotations)
   {{- end }}
   rules:
   - apiGroups:

@@ -79,6 +79,7 @@ func main() {
 	var enableCertRotation bool
 	var webhookCertSecret string
 	var mutatingWebhookName, validatingWebhookName string
+	var webhookPort int
 	var tlsOpts []func(*tls.Config)
 	flag.StringVar(&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
 		"Use :8443 for HTTPS or :8080 for HTTP, or leave as 0 to disable the metrics service.")
@@ -88,6 +89,8 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
+	flag.IntVar(&webhookPort, "webhook-port", 9443, "The port the webhook server listens on. "+
+		"Change it together with the webhook Service targetPort, for example when the pod runs with hostNetwork.")
 	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
 	flag.StringVar(&webhookCertName, "webhook-cert-name", "tls.crt", "The name of the webhook certificate file.")
 	flag.StringVar(&webhookCertKey, "webhook-cert-key", "tls.key", "The name of the webhook key file.")
@@ -152,6 +155,7 @@ func main() {
 	// Initial webhook TLS options
 	webhookTLSOpts := tlsOpts
 	webhookServerOptions := webhook.Options{
+		Port:    webhookPort,
 		TLSOpts: webhookTLSOpts,
 	}
 

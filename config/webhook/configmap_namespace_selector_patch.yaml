@@ -3,10 +3,11 @@
 # makes failurePolicy: Fail safe: an outage of the validator can only block
 # ConfigMap writes in this one namespace, never cluster-wide.
 #
-# The annotation that actually marks a ConfigMap as injection config cannot be
-# used as an admission selector (annotations are not selectable), so the
-# webhook fires for every ConfigMap in this namespace and the handler inspects
-# the annotation in-code.
+# The annotation that marks a ConfigMap as injection config is not selectable
+# by namespaceSelector/objectSelector, so a CEL matchCondition below narrows
+# the webhook to ConfigMaps that carry it. The handler still inspects the
+# annotation in-code, which is what keeps clusters without matchConditions
+# support safe (there the webhook fires for every ConfigMap in the namespace).
 #
 # NOTE: the namespace name below must match the install namespace (the
 # `namespace:` value in config/default/kustomization.yaml) and the controller's
@@ -31,3 +32,14 @@ webhooks:
     matchConditions:
       - name: exclude-kube-root-ca
         expression: "object.metadata.name != 'kube-root-ca.crt'"
+      # Only ConfigMaps the controller consumes reach the validator: those with
+      # the Beyla selector annotation on the new object, or on the old object
+      # when an UPDATE removes it. Everything else in the namespace is admitted
+      # without a webhook call, so an unreachable controller cannot block
+      # unrelated ConfigMap writes. A CEL error follows failurePolicy (Fail).
+      # Keep the key equal to configmap.SelectorAnnotation and to the Helm
+      # chart (charts/k8s-injection-controller/templates/webhook/webhook-configuration.yaml).
+      - name: only-injection-configmaps
+        expression: >-
+          (has(object.metadata.annotations) && 'beyla.grafana.com/node' in object.metadata.annotations) ||
+          (oldObject != null && has(oldObject.metadata.annotations) && 'beyla.grafana.com/node' in oldObject.metadata.annotations)

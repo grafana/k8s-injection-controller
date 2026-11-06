@@ -578,7 +578,17 @@ func createServiceInstanceId(meta *metav1.ObjectMeta, namespaceName, podName, co
 
 // setEnvVarFromFieldPath is a helper function that sets an environment variable from a Kubernetes downwards API field path
 func setEnvVarFromFieldPath(container *corev1.Container, envVarName, fieldPath string) string {
-	container.Env = append(container.Env, corev1.EnvVar{
+	// Kubelet expands $(VAR) in declaration order. Keep the combined attributes
+	// in place so both their static inputs and their existing consumers still resolve.
+	pos := len(container.Env)
+	if existing, ok := findEnvVar(container, envVarName); ok {
+		pos = existing
+		container.Env = slices.Delete(container.Env, existing, existing+1)
+	}
+	if attrs, ok := findEnvVar(container, envInjectorOtelExtraResourceAttrs); ok {
+		pos = min(pos, attrs)
+	}
+	container.Env = slices.Insert(container.Env, pos, corev1.EnvVar{
 		Name: envVarName,
 		ValueFrom: &corev1.EnvVarSource{
 			FieldRef: &corev1.ObjectFieldSelector{

@@ -117,6 +117,10 @@ See [`values.yaml`](./values.yaml) for the full list. Common knobs:
 | `sdkConfig.*` | see values | Default SDK auto-instrumentation config; `sdkConfig.enabled=false` selects but does not mutate. |
 | `webhook.excludedNamespaces` | system/infra namespaces | Namespaces the mutating webhook never touches (install namespace is always added). |
 | `webhook.certManager.mode` | auto | How the webhook serving certificate is provisioned: auto, cert-manager, self-signed. |
+| `webhook.port` | `9443` | Port the webhook server listens on; the webhook Service maps 443 to it. Non-default values need controller image 0.4.0 or newer; the chart refuses to render otherwise unless `image.tag` is set. |
+| `hostNetwork` | `false` | Run the controller on the node network so the API server can reach the webhooks on clusters with a non-VPC CNI (see below). |
+| `dnsPolicy` | `""` | Pod DNS policy; empty picks `ClusterFirstWithHostNet` when `hostNetwork` is true. |
+| `strategy` | `{}` | Deployment update strategy; empty means RollingUpdate, or Recreate when `hostNetwork` is true. |
 | `metrics.enabled` / `metrics.port` | `true` / `8080` | Plain-HTTP Prometheus metrics, advertised via pod annotations (no Prometheus Operator required). |
 | `certManager.installHook.image.*` | `ghcr.io/grafana/k8s-injection-controller-helm-kubectl:<appVersion>` | Image (with `kubectl` + `helm`) used by the cert-manager install hook Pod (runs only when `webhook.certManager.mode=cert-manager` and cert-manager is absent). |
 
@@ -148,6 +152,58 @@ retries volume resolution and the Pod's containers do not start until it
 succeeds; inspect Pod events/reason for pull or runtime errors. This POC does
 not fall back to an init container for extension images on older clusters.
 
+## Clusters where the API server cannot reach pod IPs
+
+On managed clusters whose control plane runs outside the pod network, the API
+server dials admission webhooks through the webhook Service and needs a route
+to the backing pod IP. With the default CNI that works. With an overlay CNI it
+does not: on EKS with Cilium in tunnel mode (or Calico overlay) every call to
+the webhooks fails with `Address is not allowed`, and because the ConfigMap
+validating webhook is fail-closed, every ConfigMap create or update in the
+watched namespace is rejected, including Helm upgrades of other releases there.
+
+Run the controller on the node network instead:
+
+```bash
+helm upgrade --install kic ./k8s-injection-controller \
+  --set hostNetwork=true
+```
+
+The chart then sets `dnsPolicy: ClusterFirstWithHostNet` so Service names keep
+resolving, and the webhook Service forwards 443 to `<node IP>:9443`. The
+serving certificate is still verified by the API server against the webhook
+`caBundle`, so another process on the node cannot impersonate the webhook; it
+can only take the port. That is enough for an outage: a process that binds the
+port first keeps the controller from starting, and the fail-closed ConfigMap
+webhook then rejects the writes it covers until the port is free again. Before
+enabling it:
+
+- Allow TCP 9443 from the control plane to the nodes if your node security
+  group is restricted. Pick another `webhook.port` if 9443 is already taken on
+  the nodes, for example by another host-network webhook.
+- Set a hostname `podAntiAffinity` when `replicaCount` is greater than one;
+  two controller pods on one node collide on the port.
+- Rollouts use `Recreate` unless `strategy` is set: a surging replacement pod
+  needs another node with the port free, so a rolling update stalls when only
+  one eligible node exists. The webhooks are down for the restart; pods
+  admitted then start without injection and ConfigMap writes covered by the
+  validating webhook are rejected until the controller is back.
+- Allow the pod in the namespace's Pod Security or policy-engine rules;
+  `hostNetwork` is rejected by the Pod Security "baseline" profile and by the
+  usual Gatekeeper and Kyverno baseline policies.
+- The health endpoint on 8081 and the metrics endpoint on `metrics.port` are
+  plain HTTP without authentication. On the host network they are reachable
+  from anything that reaches the node IP, and standard NetworkPolicy does not
+  cover host-network pods on most CNIs, so restrict them with security groups
+  or disable `metrics.enabled`.
+- The pod reaches the cloud metadata service the same way the node does, so a
+  compromised controller could read the node's instance credentials; the IMDS
+  hop limit that keeps pod-network pods out does not help here. Keep IMDSv2
+  required and the node role minimal. The controller needs no cloud credentials.
+
+Where the CNI can be switched to a mode with routable pod IPs, such as Cilium
+ENI mode on EKS, prefer that over `hostNetwork`.
+
 ## Uninstall
 
 ```bash
@@ -156,6 +212,73 @@ helm uninstall kic
 
 cert-manager (a shared cluster prerequisite) is left untouched; remove it
 separately if nothing else uses it.
+
+## Validating webhook scope
+
+The ConfigMap validating webhook is fail-closed on purpose: it is the control
+that keeps anyone but the allowlisted writers from creating injection ConfigMaps or
+changing what they inject. Its
+`matchConditions` limit it to ConfigMaps that carry the Beyla selector
+annotation `beyla.grafana.com/node` (on the new object, or on the old object
+when an update removes it). Any other ConfigMap write in the watched namespace
+is admitted without a webhook call, so an unreachable or restarting controller
+cannot block unrelated releases in that namespace. This needs Kubernetes 1.28
+or newer; on older clusters the webhook covers every ConfigMap in the
+namespace.
+
+Security wise this narrows the call set, not the enforcement: the controller
+only consumes ConfigMaps with that same annotation key (pinned by a unit
+test), so every write it could act on still goes through the allowlist, and a
+ConfigMap can only gain or lose the annotation through an admitted write. If
+an API server ignores `matchConditions` the webhook falls back to every
+ConfigMap in the namespace, which is the previous behaviour, not a weaker one.
+
+## Recovering when upgrades are blocked by the ConfigMap webhook
+
+Symptom: any ConfigMap create or update in the watched namespace fails with
+`failed calling webhook "vconfigmap-v1.beyla.grafana.com"`, for example with
+`Address is not allowed` when the API server cannot reach the controller pod,
+or with a timeout while the controller is down. On Kubernetes 1.28+ with this
+chart version only injection ConfigMaps are affected; on older charts or
+clusters every ConfigMap is.
+
+Deleting the ValidatingWebhookConfiguration removes the allowlist check while
+the controller keeps injecting from whatever ConfigMaps it sees, so stop the
+controller first, wait until its pods are gone, and keep it stopped until the
+audit below is done. The audit runs in the watched namespace (`watchNamespace`,
+by default the release namespace), which is where Beyla writes the ConfigMaps:
+
+```bash
+NS=<release namespace>; REL=<release>; WATCH_NS=<watchNamespace, default $NS>
+kubectl -n "$NS" scale deployment "$REL-k8s-injection-controller" --replicas=0
+kubectl -n "$NS" wait --for=delete pod -l "app.kubernetes.io/instance=$REL,app.kubernetes.io/name=k8s-injection-controller" --timeout=120s
+kubectl delete validatingwebhookconfiguration "$REL-k8s-injection-controller-validating-webhook"
+# run the helm upgrade that fixes the cause with --set replicaCount=0:
+# Helm recreates the webhook configuration, the controller stays down.
+kubectl get validatingwebhookconfiguration "$REL-k8s-injection-controller-validating-webhook"
+kubectl -n "$WATCH_NS" get configmaps -o json \
+  | jq -r '.items[] | select(.metadata.annotations["beyla.grafana.com/node"] != null) | "\(.metadata.name) node=\(.metadata.annotations["beyla.grafana.com/node"])"'
+# then run the upgrade again with the normal replicaCount.
+```
+
+Every listed ConfigMap must name a node of the cluster and be owned by the
+allowlisted writer; delete anything else before the controller comes back. The
+list does not show tampered content inside a legitimate ConfigMap, so unless the
+audit log shows no ConfigMap writes by other principals during the window,
+delete all listed ConfigMaps and restart the Beyla DaemonSet; Beyla republishes
+its state ConfigMaps on startup.
+
+While the webhook configuration is gone, anyone with ConfigMap write access in
+the watched namespace can plant an annotated ConfigMap. The controller at zero
+replicas does not consume it, but on restart it lists everything in the
+namespace, so the check above is the control, not a formality. A ConfigMap
+carries no author field; `managedFields[].manager` is a hint, the audit log is
+the proof. Pods created while the controller is down start without injection
+(the pod webhook is `failurePolicy: Ignore`) and need a restart afterwards.
+Patching `failurePolicy` to `Ignore` or pointing `namespaceSelector` elsewhere
+has the same exposure; deleting is preferred because Helm recreates the exact
+object on the next upgrade. The webhook configuration is cluster scoped, so
+this needs cluster-admin and should stay a break-glass step.
 
 ## Local development mode deployment with kind
 

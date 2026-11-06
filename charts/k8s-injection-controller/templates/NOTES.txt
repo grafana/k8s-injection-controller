@@ -9,6 +9,10 @@ Check the controller is running:
   kubectl -n {{ include "k8s-injection-controller.namespace" . }} rollout status deployment/{{ include "k8s-injection-controller.fullname" . }}
   kubectl -n {{ include "k8s-injection-controller.namespace" . }} logs deployment/{{ include "k8s-injection-controller.fullname" . }} -c manager -f
 
+If ConfigMap writes in the watched namespace fail with 'failed calling webhook
+"vconfigmap-v1.beyla.grafana.com"', see the chart README, "Recovering when upgrades
+are blocked by the ConfigMap webhook".
+
 {{- $certMode := include "k8s-injection-controller.certMode" . -}}
 {{- $installCM := eq (include "k8s-injection-controller.installCertManager" .) "true" -}}
 Webhook serving certificate ({{ $certMode }} mode):
@@ -41,4 +45,12 @@ controller pod stays un-ready:
 
 NOTE: sdkConfig.enabled=false — the controller will select matching workloads
 but perform no instrumentation until an SDK config is provided.
+{{- end }}
+{{- if .Values.hostNetwork }}
+
+hostNetwork is enabled: the webhook listens on <node IP>:{{ .Values.webhook.port }}, health on 8081
+and metrics on {{ .Values.metrics.port }}. Allow the control plane to reach the nodes on
+{{ .Values.webhook.port }}, keep one replica per node (podAntiAffinity), and restrict 8081 and
+{{ .Values.metrics.port }} at the network layer. See the chart README, "Clusters where the API
+server cannot reach pod IPs".
 {{- end }}

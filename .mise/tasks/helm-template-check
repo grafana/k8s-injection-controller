@@ -2,6 +2,8 @@
 set -eo pipefail
 set +o pipefail
 chart=charts/k8s-injection-controller
+echo '[validating webhook] -> scoped to Beyla injection ConfigMaps via matchConditions'
+helm template t "$chart" | grep -q "'beyla.grafana.com/node' in object.metadata.annotations" || { echo 'FAIL: expected matchCondition on beyla.grafana.com/node'; exit 1; }
 echo '[auto, no cert-manager API] -> self-signed'
 helm template t "$chart" | grep -q 'enable-cert-rotation' || { echo 'FAIL: expected self-signed rotation'; exit 1; }
 helm template t "$chart" | grep -q 'kind: Certificate' && { echo 'FAIL: unexpected Certificate'; exit 1; } || true
@@ -13,4 +15,19 @@ helm template t "$chart" --set webhook.certManager.mode=cert-manager | grep -q '
 helm template t "$chart" --set webhook.certManager.mode=cert-manager | grep -q 'kind: Certificate' || { echo 'FAIL: expected Certificate (post-install hook)'; exit 1; }
 echo '[mode=cert-manager with API] -> use existing cert-manager, no install hook'
 helm template t "$chart" --set webhook.certManager.mode=cert-manager --api-versions cert-manager.io/v1 | grep -q 'cert-manager-install' && { echo 'FAIL: unexpected install hook when cert-manager present'; exit 1; } || true
+echo '[hostNetwork=true] -> hostNetwork + ClusterFirstWithHostNet, default port keeps 9443 and no --webhook-port flag'
+out=$(helm template t "$chart" --set hostNetwork=true)
+echo "$out" | grep -q 'hostNetwork: true' || { echo 'FAIL: expected hostNetwork: true'; exit 1; }
+echo "$out" | grep -q 'dnsPolicy: ClusterFirstWithHostNet' || { echo 'FAIL: expected dnsPolicy ClusterFirstWithHostNet'; exit 1; }
+echo "$out" | grep -q -- '--webhook-port' && { echo 'FAIL: unexpected --webhook-port flag for the default port'; exit 1; } || true
+echo "$out" | grep -q 'type: Recreate' || { echo 'FAIL: expected Recreate strategy with hostNetwork'; exit 1; }
+echo '[webhook.port=19443 with appVersion < 0.4.0 image] -> refused'
+helm template t "$chart" --set webhook.port=19443 >/dev/null 2>&1 && { echo 'FAIL: expected render failure for webhook.port with an image without --webhook-port'; exit 1; } || true
+echo '[webhook.port=19443, image.tag=0.4.0] -> flag, containerPort and Service targetPort follow'
+out=$(helm template t "$chart" --set webhook.port=19443 --set image.tag=0.4.0)
+echo "$out" | grep -q -- '--webhook-port=19443' || { echo 'FAIL: expected --webhook-port=19443'; exit 1; }
+echo "$out" | grep -q 'containerPort: 19443' || { echo 'FAIL: expected containerPort 19443'; exit 1; }
+echo "$out" | grep -q 'targetPort: 19443' || { echo 'FAIL: expected targetPort 19443'; exit 1; }
+echo "$out" | grep -q 'hostNetwork: true' && { echo 'FAIL: unexpected hostNetwork'; exit 1; } || true
+echo "$out" | grep -q 'type: Recreate' && { echo 'FAIL: unexpected Recreate strategy by default'; exit 1; } || true
 echo 'helm-template-check OK'
