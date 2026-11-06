@@ -47,7 +47,8 @@ const (
 	// image is read-only and runtimes cannot create nested mountpoint parents.
 	javaExtensionsMountRoot   = "/__otel_java_extensions__"
 	javaExtensionVolumePrefix = "otel-java-extension-"
-	javaExtensionPathsEnv     = "OTEL_INJECTOR_JAVA_EXTENSION_PATHS"
+	javaAgentExtensionsEnv    = "OTEL_JAVAAGENT_EXTENSIONS"
+	injectorJavaExtensionsEnv = "OTEL_INJECTOR_JAVAAGENT_EXTENSIONS"
 
 	envVarLdPreloadName               = "LD_PRELOAD"
 	envVarLdPreloadValue              = internalMountPath + "/dist/injector/libotelinject.so"
@@ -284,27 +285,15 @@ func (pm *PodMutator) addMount(c *corev1.Container) {
 	if len(paths) == 0 {
 		return
 	}
-	setEnvVarEvenIfEmpty(c, javaExtensionPathsEnv, strings.Join(paths, ","))
+	setEnvVarEvenIfEmpty(c, injectorJavaExtensionsEnv, strings.Join(paths, ","))
 }
 
 func (pm *PodMutator) clearJavaExtensionPaths(c *corev1.Container) {
-	pos, ok := findEnvVar(c, javaExtensionPathsEnv)
+	pos, ok := findEnvVar(c, injectorJavaExtensionsEnv)
 	if !ok {
 		return
 	}
-	paths := make([]string, 0)
-	for path := range strings.SplitSeq(c.Env[pos].Value, ",") {
-		path = strings.TrimSpace(path)
-		if path != "" && !strings.HasPrefix(path, javaExtensionsMountRoot+"/") {
-			paths = append(paths, path)
-		}
-	}
-	if len(paths) == 0 {
-		c.Env = slices.Delete(c.Env, pos, pos+1)
-		return
-	}
-	c.Env[pos].ValueFrom = nil
-	c.Env[pos].Value = strings.Join(paths, ",")
+	c.Env = slices.Delete(c.Env, pos, pos+1)
 }
 
 // isLDPreloadConflict returns true only when LD_PRELOAD is set to a non-empty

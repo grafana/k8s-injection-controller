@@ -59,8 +59,7 @@ of the chart is applied. It:
    (`--set crds.enabled=true`) and waits for its webhook to become Ready.
 
 The hook Pod runs from an image containing both `kubectl` and `helm`
-(`ghcr.io/grafana/k8s-injection-controller-helm-kubectl`, built from
-[`images/helm-kubectl`](../../images/helm-kubectl/Dockerfile), by default) under a **temporary** ServiceAccount +
+(`dtzar/helm-kubectl` by default) under a **temporary** ServiceAccount +
 ClusterRole/ClusterRoleBinding. Installing cert-manager touches cluster-scoped
 objects (CRDs, ClusterRoles, webhook configs, a Namespace), so that role is
 cluster-admin–equivalent — but it lives only for the duration of the hook and
@@ -118,7 +117,7 @@ See [`values.yaml`](./values.yaml) for the full list. Common knobs:
 | `webhook.excludedNamespaces` | system/infra namespaces | Namespaces the mutating webhook never touches (install namespace is always added). |
 | `webhook.certManager.mode` | auto | How the webhook serving certificate is provisioned: auto, cert-manager, self-signed. |
 | `metrics.enabled` / `metrics.port` | `true` / `8080` | Plain-HTTP Prometheus metrics, advertised via pod annotations (no Prometheus Operator required). |
-| `certManager.installHook.image.*` | `ghcr.io/grafana/k8s-injection-controller-helm-kubectl:<appVersion>` | Image (with `kubectl` + `helm`) used by the cert-manager install hook Pod (runs only when `webhook.certManager.mode=cert-manager` and cert-manager is absent). |
+| `certManager.installHook.image.*` | `dtzar/helm-kubectl:3.16` | Image (with `kubectl` + `helm`) used by the cert-manager install hook Pod (runs only when `webhook.certManager.mode=cert-manager` and cert-manager is absent). |
 
 ### Java extension image volumes (POC)
 
@@ -128,11 +127,10 @@ Configure Java extension images either as a controller-wide default in
 `OTEL_INJECTOR_JAVA_EXTENSION_IMAGES=registry.example/ext-a@sha256:...,registry.example/ext-b@sha256:...`.
 The per-rule list overrides the controller default; an explicitly empty value
 disables extensions for that rule. Keep each OCI image's extension JARs under
-`/extensions`. The controller mounts each image read-only and sets the
-`OTEL_INJECTOR_JAVA_EXTENSION_PATHS` input variable only when Java
-auto-instrumentation is enabled. The OTel Injector appends those paths to
-`OTEL_JAVAAGENT_EXTENSIONS` at process startup, preserving any value supplied
-directly by the workload. This reserved `config.env` entry is a
+`/extensions`. The controller mounts each image read-only and appends its
+`/extensions` path in `OTEL_INJECTOR_JAVAAGENT_EXTENSIONS` only when Java
+auto-instrumentation is enabled. The injector appends these paths to the
+process's `OTEL_JAVAAGENT_EXTENSIONS` value. This reserved `config.env` entry is a
 controller-side convention, not a typed Beyla schema field; a future upstream
 Beyla field could replace it without changing the mutation behavior.
 
@@ -161,7 +159,7 @@ separately if nothing else uses it.
 
 1. Build the controller image as `beyla-k8s-injector:dev`
 ```sh
-IMG=beyla-k8s-injector:dev mise run docker-build
+IMG=beyla-k8s-injector:dev make docker-build
 ```
 2. Create your cluster (if you don't already have one)
 ```sh
@@ -183,14 +181,3 @@ The command above will auto-detect if you have `cert-manager` running and
 if not it will use self-signed certificate. If you want to test the helm
 install process with `cert-manager` install cert manager before step 4, 
 and wait until it's up and running.
-
-## Disable automatic workload restarts
-
-Set `sdkConfig.disableAutoRestart: true` to prevent controller-triggered
-workload rollouts. Newly created pods are still injected. This renders
-`disable_auto_restart: true` into the controller's SDK configuration; it is
-not a Beyla setting. Restart the controller after changing its mounted SDK
-configuration so the process loads the new value.
-
-See [Node state and SDK upgrades](../../../README.md#node-state-and-sdk-upgrades)
-for registry migration and upgrade precautions.

@@ -86,7 +86,7 @@ var _ = Describe("Java extension image volume", Ordered, func() {
 
 		var extensionsPath string
 		for _, env := range admitted.Spec.Containers[0].Env {
-			if env.Name == "OTEL_INJECTOR_JAVA_EXTENSION_PATHS" {
+			if env.Name == "OTEL_INJECTOR_JAVAAGENT_EXTENSIONS" {
 				extensionsPath = env.Value
 				break
 			}
