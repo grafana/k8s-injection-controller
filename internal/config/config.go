@@ -14,6 +14,12 @@ import (
 	"k8s.io/apimachinery/pkg/version"
 )
 
+// JavaExtensionImagesEnv is an optional Beyla per-rule config.env entry. Its
+// comma-separated value contains OCI image references with extension JARs
+// under /extensions. The controller consumes it rather than passing it to the
+// application container.
+const JavaExtensionImagesEnv = "OTEL_INJECTOR_JAVA_EXTENSION_IMAGES"
+
 // InjectionMode selects how the SDK auto-instrumentation payload is delivered
 // into instrumented pods.
 type InjectionMode string
@@ -44,6 +50,11 @@ type SDKInject struct {
 	// the version info supplied by Beyla's config maps or as a direct
 	// controller configuration option. See InjectionMode for how it is used.
 	ImageVolumeRoot string `yaml:"image_volume_root"`
+	// JavaExtensionImages are OCI image references containing upstream
+	// OpenTelemetry Java agent extensions under /extensions. They are mounted
+	// read-only using Kubernetes ImageVolumeSource (Java extension POC; requires
+	// image-volume support and does not support init-container mode).
+	JavaExtensionImages []string `yaml:"java_extension_images"`
 	// Resource attributes related settings
 	Resources configmap.SDKResource `yaml:"resources"`
 	// List of enabled SDK auto-instrumentations. Can be used to disable specific
@@ -142,6 +153,26 @@ func (s SDKInject) WithConfigMapOverrides(cfg configmap.InjectConfig) SDKInject 
 	return out
 }
 
+// WithRuleOverrides applies Java extension image references supplied through
+// the matched Beyla rule's existing config.env path. An explicitly present,
+// empty value disables controller-wide extension images for that rule.
+func (s SDKInject) WithRuleOverrides(rule configmap.RuleConfig) SDKInject {
+	out := s
+	for _, env := range rule.Env {
+		if env.Name != JavaExtensionImagesEnv {
+			continue
+		}
+		out.JavaExtensionImages = nil
+		for image := range strings.SplitSeq(env.Value, ",") {
+			image = strings.TrimSpace(image)
+			if image != "" {
+				out.JavaExtensionImages = append(out.JavaExtensionImages, image)
+			}
+		}
+	}
+	return out
+}
+
 // PodConfigHash uses FNV to hash the configuration that is going to be applied to a given Pod.
 // Returns a base32 string that is used to detect configuration changes and decide whether a Pod needs to
 // be restarted.
@@ -167,6 +198,10 @@ func PodConfigHash(cfg *SDKInject, match *configmap.RuleConfig) string {
 		panic(err)
 	}
 	accum.Write([]byte(cfg.ImageVolumePath()))
+	for _, image := range cfg.JavaExtensionImages {
+		accum.Write([]byte{0})
+		accum.Write([]byte(image))
+	}
 
 	return strconv.FormatUint(accum.Sum64(), 32)
 }

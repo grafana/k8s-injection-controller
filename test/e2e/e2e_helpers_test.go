@@ -95,14 +95,14 @@ func applyKustomization(dir string) error {
 	if err != nil {
 		return fmt.Errorf("rendering kustomize output: %w", err)
 	}
-	// Two mutations on the rendered objects pre-create:
-	//   - forceInitContainerMode: the e2e cluster has no ImageVolume feature
-	//     gate, so override the SDK config's injection_mode to init_container.
+	// Mutations on the rendered objects pre-create:
+	//   - forceSDKInjectionConfig: keep the default suite on init_container, or
+	//     opt into ImageVolumeSource for the Java extension test.
 	//   - forceManagerImage: point the manager container at the image this
 	//     suite built and loaded into kind, so the first pod has the right
 	//     image (no ErrImagePull, no extra rollout).
 	objs, err := decoder.DecodeAll(suiteCtx, bytes.NewReader(rendered),
-		decoder.MutateOption(forceInitContainerMode),
+		decoder.MutateOption(forceSDKInjectionConfig),
 		decoder.MutateOption(forceManagerImage))
 	if err != nil {
 		return fmt.Errorf("decoding kustomize output: %w", err)
@@ -131,10 +131,9 @@ func applyKustomization(dir string) error {
 // so commented mentions are ignored).
 var injectionModeLine = regexp.MustCompile(`(?m)^injection_mode:.*$`)
 
-// forceInitContainerMode rewrites the SDK config ConfigMap's injection_mode to
-// init_container. We change only the data so kustomize's content hash on the
-// ConfigMap name still matches the manager Deployment's mount.
-func forceInitContainerMode(obj k8s.Object) error {
+// forceSDKInjectionConfig applies the suite's injection mode and Java extension
+// image to the SDK config ConfigMap before it is created.
+func forceSDKInjectionConfig(obj k8s.Object) error {
 	cm, ok := obj.(*corev1.ConfigMap)
 	if !ok || !strings.Contains(cm.Name, "beyla-sdk-config") {
 		return nil
@@ -143,10 +142,17 @@ func forceInitContainerMode(obj k8s.Object) error {
 	if !ok {
 		return fmt.Errorf("SDK config ConfigMap %s has no sdk-inject.yaml key", cm.Name)
 	}
+	mode := "init_container"
+	if javaExtensionImageMode {
+		mode = "image"
+	}
 	if injectionModeLine.MatchString(body) {
-		body = injectionModeLine.ReplaceAllString(body, "injection_mode: init_container")
+		body = injectionModeLine.ReplaceAllString(body, "injection_mode: "+mode)
 	} else {
-		body += "\ninjection_mode: init_container\n"
+		body += "\ninjection_mode: " + mode + "\n"
+	}
+	if javaExtensionImageMode {
+		body += fmt.Sprintf("\njava_extension_images:\n  - %q\n", javaExtensionImage)
 	}
 	cm.Data["sdk-inject.yaml"] = body
 	return nil
@@ -172,6 +178,16 @@ func waitNamespaceDeleted(name string) {
 		g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
 			"namespace %s still exists or unreachable: %v", name, err)
 	}, 2*time.Minute, 2*time.Second).Should(Succeed())
+}
+
+// deleteNamespace removes a namespace left behind by an interrupted test run.
+func deleteNamespace(name string) error {
+	err := k8sClient.Resources().Delete(suiteCtx,
+		&corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	return err
 }
 
 // ensureNamespace creates the namespace if it does not already exist.
