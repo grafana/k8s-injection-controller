@@ -60,7 +60,7 @@ const (
 
 	// sdkImageVersion must match config/test/sdk-inject.yaml. Used when
 	// crafting manual injection ConfigMaps in the lifecycle and safety tests.
-	sdkImageVersion = "0.0.13"
+	sdkImageVersion = "2026.11.11.0"
 
 	// Use 127.0.0.1, not localhost: kind binds the host port on IPv4 only.
 	tempoBaseURL = "http://127.0.0.1:30320"

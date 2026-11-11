@@ -28,6 +28,10 @@ jobs:
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
 
       - name: Running Test e2e
+        env:
+          E2E_JAVA_EXTENSION_IMAGE: "true"
+          JAVA_EXTENSION_IMAGE: java-extension-app:dev
+          JAVA_EXTENSION_MARKER: JAVA_EXTENSION_CUSTOMIZER_APPLIED
         run: |
           mise run test-e2e
 

@@ -21,8 +21,6 @@ by the workload. It also verifies that an instrumented Java HTTP workload
 starts and that the extension's `AutoConfigurationCustomizerProvider` runs
 inside the upstream Java agent.
 
-The runtime assertion also requires the SDK image referenced by
-`sdkImageVersion` to include OTel Injector support for
-`OTEL_INJECTOR_JAVAAGENT_EXTENSIONS` (proposed in [upstream PR #452](https://github.com/open-telemetry/opentelemetry-injector/pull/452)).
-The currently pinned SDK image predates that support; update it after a
-compatible injector build is available before running this test.
+The runtime assertion uses SDK image `ghcr.io/grafana/beyla/inject-sdk-image:2026.11.11.0`,
+which bundles OTel Injector v0.12.0 and supports
+`OTEL_INJECTOR_JAVAAGENT_EXTENSIONS` ([released in v0.12.0](https://github.com/open-telemetry/opentelemetry-injector/releases/tag/v0.12.0)).

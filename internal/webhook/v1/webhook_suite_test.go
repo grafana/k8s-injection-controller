@@ -69,7 +69,7 @@ var (
 	webhookRegistry  *registry.Registry
 	webhookSDKConfig = config.SDKInject{
 		ImageVolumeRoot: "ghcr.io/grafana/beyla/inject-sdk-image",
-		ImageVersion:    "0.0.13",
+		ImageVersion:    "2026.11.11.0",
 		InjectionMode:   config.InjectionModeInitContainer,
 	}
 )
