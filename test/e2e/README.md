@@ -1,7 +1,9 @@
 # End-to-end tests
 
 The Java extension ImageVolume test is opt-in because it requires a Kubernetes
-1.35 Kind node. Build an extension image locally, then run:
+1.35 Kind node. It uses Kind v0.31.0, which the suite installs only when no Kind
+binary is available on `PATH`; upgrade any preinstalled Kind binary to v0.31.0
+or newer. Build an extension image locally, then run:
 
 ```sh
 E2E_JAVA_EXTENSION_IMAGE=true \

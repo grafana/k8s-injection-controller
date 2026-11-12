@@ -151,6 +151,10 @@ var _ = BeforeSuite(func() {
 
 	By("creating the Kind cluster")
 	testCluster = kind.NewCluster(clusterName)
+	if javaExtensionImageMode {
+		// Match Kind to the pinned Kubernetes 1.35 node image.
+		testCluster.WithVersion("v0.31.0")
+	}
 	_, err = testCluster.CreateWithConfig(suiteCtx, kindConfig)
 	Expect(err).NotTo(HaveOccurred(), "Failed to create the Kind cluster")
 
