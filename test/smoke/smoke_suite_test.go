@@ -98,7 +98,7 @@ const (
 	lgtmNS = "e2e-lgtm"
 
 	managerImage    = "beyla-k8s-injector:dev"
-	sdkImageVersion = "2026.11.11.0"
+	sdkImageVersion = "2026.11.12.0"
 
 	injectAnno   = "beyla.grafana.com/inject"
 	tempoBaseURL = "http://127.0.0.1:30320"

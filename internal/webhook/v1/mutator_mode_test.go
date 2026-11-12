@@ -13,7 +13,7 @@ import (
 func newModeMutator(mode config.InjectionMode) *PodMutator {
 	return &PodMutator{Cfg: config.SDKInject{
 		ImageVolumeRoot: "ghcr.io/grafana/beyla/inject-sdk-image",
-		ImageVersion:    "2026.11.11.0",
+		ImageVersion:    "2026.11.12.0",
 		InjectionMode:   mode,
 	}}
 }
@@ -190,7 +190,7 @@ func TestMountVolumeImageMode(t *testing.T) {
 	if v.Image == nil {
 		t.Fatalf("expected ImageVolumeSource in image mode")
 	}
-	if v.Image.Reference != "ghcr.io/grafana/beyla/inject-sdk-image:2026.11.11.0" {
+	if v.Image.Reference != "ghcr.io/grafana/beyla/inject-sdk-image:2026.11.12.0" {
 		t.Fatalf("image reference = %q", v.Image.Reference)
 	}
 	if v.EmptyDir != nil {
@@ -231,7 +231,7 @@ func TestMountVolumeInitContainerMode(t *testing.T) {
 	if ic.Name != injectInitContainerName {
 		t.Fatalf("init container name = %q, want %q", ic.Name, injectInitContainerName)
 	}
-	if ic.Image != "ghcr.io/grafana/beyla/inject-sdk-image:2026.11.11.0" {
+	if ic.Image != "ghcr.io/grafana/beyla/inject-sdk-image:2026.11.12.0" {
 		t.Fatalf("init container image = %q", ic.Image)
 	}
 	if len(ic.VolumeMounts) != 1 || ic.VolumeMounts[0].Name != injectVolumeName {
