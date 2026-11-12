@@ -38,7 +38,7 @@ It's meant to be used with Grafana Beyla and/or Grafana Alloy.
              value: http/protobuf
    ```
 
-   The POC's extension images can be configured controller-wide
+   Java extension images can be configured controller-wide
    (`java_extension_images` in `sdk-inject.yaml`, or `sdkConfig.javaExtensionImages`
    in Helm) or per Beyla rule through its generic `config.env` list using
    `OTEL_INJECTOR_JAVA_EXTENSION_IMAGES` (comma-separated OCI references; an

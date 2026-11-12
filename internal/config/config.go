@@ -52,8 +52,8 @@ type SDKInject struct {
 	ImageVolumeRoot string `yaml:"image_volume_root"`
 	// JavaExtensionImages are OCI image references containing upstream
 	// OpenTelemetry Java agent extensions under /extensions. They are mounted
-	// read-only using Kubernetes ImageVolumeSource (Java extension POC; requires
-	// image-volume support and does not support init-container mode).
+	// read-only using Kubernetes ImageVolumeSource and require image-volume
+	// support; init-container mode is not supported.
 	JavaExtensionImages []string `yaml:"java_extension_images"`
 	// Resource attributes related settings
 	Resources configmap.SDKResource `yaml:"resources"`

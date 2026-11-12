@@ -163,8 +163,8 @@ func (pm *PodMutator) mountVolume(spec *corev1.PodSpec) {
 	spec.Volumes = slices.DeleteFunc(spec.Volumes, func(v corev1.Volume) bool {
 		return strings.HasPrefix(v.Name, javaExtensionVolumePrefix)
 	})
-	// Extension images are deliberately image-volume-only in this POC. They
-	// remain separate from the SDK payload image and are mounted read-only.
+	// Extension images require image-volume mode and remain separate from the
+	// SDK payload image, mounted read-only.
 	if pm.Cfg.InjectionMode == config.InjectionModeImage && pm.CanInstrument(svc.InstrumentableJava) {
 		for i, image := range pm.javaExtensionImages() {
 			name := javaExtensionVolumeName(i)

@@ -124,7 +124,7 @@ See [`values.yaml`](./values.yaml) for the full list. Common knobs:
 | `metrics.enabled` / `metrics.port` | `true` / `8080` | Plain-HTTP Prometheus metrics, advertised via pod annotations (no Prometheus Operator required). |
 | `certManager.installHook.image.*` | `ghcr.io/grafana/k8s-injection-controller-helm-kubectl:<appVersion>` | Image (with `kubectl` + `helm`) used by the cert-manager install hook Pod (runs only when `webhook.certManager.mode=cert-manager` and cert-manager is absent). |
 
-### Java extension image volumes (POC)
+### Java extension image volumes
 
 Configure Java extension images either as a controller-wide default in
 `sdkConfig.javaExtensionImages`, or per Beyla rule using the existing generic
@@ -149,8 +149,9 @@ the mounted content between Pod recreations and weaken reproducibility.
 If a reference is empty or invalid, the controller skips that extension and
 logs an error. If a valid image cannot be resolved or pulled, Kubernetes
 retries volume resolution and the Pod's containers do not start until it
-succeeds; inspect Pod events/reason for pull or runtime errors. This POC does
-not fall back to an init container for extension images on older clusters.
+succeeds; inspect Pod events/reason for pull or runtime errors. Extension
+images require Kubernetes 1.35+ and do not fall back to an init container on
+older clusters.
 
 ## Clusters where the API server cannot reach pod IPs
 
