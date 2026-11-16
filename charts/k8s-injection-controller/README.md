@@ -140,6 +140,17 @@ directly by the workload. This reserved `config.env` entry is a
 controller-side convention, not a typed Beyla schema field; a future upstream
 Beyla field could replace it without changing the mutation behavior.
 
+The controller tracks its extension volumes and mounts so existing customer
+volumes, mounts, and paths are preserved. A literal
+`OTEL_INJECTOR_JAVAAGENT_EXTENSIONS` value is merged with generated paths and
+deduplicated; the workload's `OTEL_JAVAAGENT_EXTENSIONS` is left unchanged for
+the upstream injector to append per process. If an existing name or mount
+collides ambiguously, or the input uses `ValueFrom` and cannot be merged, the
+controller warns and skips the Java image mutation rather than overwriting the
+workload configuration. When the controller uses `init_container` mode
+(including `auto` mode on older clusters), configured extension images produce
+an admission warning and are skipped; ordinary SDK injection can still proceed.
+
 Image volumes use the same image-pull credentials as container images: node
 credentials, the workload ServiceAccount's `imagePullSecrets`, and Pod
 `imagePullSecrets`. Ensure the workload has permission to pull every private

@@ -18,6 +18,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"github.com/grafana/beyla-k8s-injector/internal/podinfo"
 	"github.com/grafana/beyla-k8s-injector/internal/registry"
@@ -59,10 +61,13 @@ var podlog = logf.Log.WithName("pod-webhook")
 // records a match log line and does not mutate (useful when no SDK config
 // has been provided).
 func SetupPodWebhookWithManager(mgr ctrl.Manager, reg *registry.Registry, reader client.Reader, mutator *PodMutator, recorder RequestRecorder) error {
-	return ctrl.NewWebhookManagedBy(mgr, &corev1.Pod{}).
-		WithDefaulter(&PodCustomDefaulter{Registry: reg, Reader: reader, Mutator: mutator, Metrics: recorder}).
-		Complete()
+	defaulter := &PodCustomDefaulter{Registry: reg, Reader: reader, Mutator: mutator, Metrics: recorder}
+	handler := admission.WithDefaulter[*corev1.Pod](mgr.GetScheme(), defaulter)
+	mgr.GetWebhookServer().Register(podWebhookPath, &webhook.Admission{Handler: newWarningAdmissionHandler(handler.Handler)})
+	return nil
 }
+
+const podWebhookPath = "/mutate--v1-pod"
 
 // failurePolicy=Ignore is deliberate: a broken injector must not block pod
 // creation cluster-wide. The controller's own namespace must also be excluded
@@ -108,7 +113,10 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	// overridden) SDK config and the matched rule, and both the config-skew check
 	// and the annotation we stamp need it.
 	mutator := *d.Mutator
-	mutator.Cfg = mutator.Cfg.WithConfigMapOverrides(cmCfg).WithRuleOverrides(rule.Config)
+	mutator.Cfg = mutator.Cfg.WithConfigMapOverrides(cmCfg).WithJavaExtensionOverrides(rule.Config)
+	if len(mutator.Cfg.JavaExtensionImages) > 0 && mutator.Cfg.InjectionMode != config.InjectionModeImage {
+		addAdmissionWarnings(ctx, obj, []string{"Java extension images will not be injected: image injection mode (Kubernetes 1.35+) is required"})
+	}
 
 	if mutator.Cfg.ImageVersion == "" {
 		podlog.Info("pod matches but no SDK config loaded; skipping injection",
@@ -144,6 +152,8 @@ func (d *PodCustomDefaulter) Default(ctx context.Context, obj *corev1.Pod) error
 	for i := range obj.Spec.Containers {
 		mutator.instrumentContainer(&obj.ObjectMeta, &obj.Spec.Containers[i], rule.Config.Env, spanMetrics)
 	}
+	warnings := mutator.reconcileJavaExtensions(&obj.ObjectMeta, &obj.Spec, rule.Config.Env)
+	addAdmissionWarnings(ctx, obj, warnings)
 	// Init containers are intentionally left uninstrumented.
 	// Add the copy init container if we are running on k8s older than 1.35.
 	// If InjectionModeImage is used, this is a no-op.

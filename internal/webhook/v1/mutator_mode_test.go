@@ -31,6 +31,9 @@ func TestJavaExtensionImagesAreMountedInImageMode(t *testing.T) {
 	pm.mountVolume(spec)
 	meta := &metav1.ObjectMeta{}
 	pm.instrumentContainer(meta, &spec.Containers[0], nil, false)
+	if warnings := pm.reconcileJavaExtensions(meta, spec, nil); len(warnings) > 0 {
+		t.Fatalf("reconciling Java extensions: %v", warnings)
+	}
 
 	if len(spec.Volumes) != 3 {
 		t.Fatalf("volumes = %d, want SDK plus 2 extension image volumes", len(spec.Volumes))
@@ -56,6 +59,9 @@ func TestJavaExtensionImagesAreMountedInImageMode(t *testing.T) {
 	// Mutation should be idempotent and retain an extension path configured by
 	// the pod author.
 	pm.instrumentContainer(meta, &spec.Containers[0], nil, false)
+	if warnings := pm.reconcileJavaExtensions(meta, spec, nil); len(warnings) > 0 {
+		t.Fatalf("reconciling Java extensions after reinstrumentation: %v", warnings)
+	}
 	if got := testEnvValue(spec.Containers[0].Env, injectorJavaExtensionsEnv); got != javaExtensionsMountRoot+"/0/extensions,"+javaExtensionsMountRoot+"/1/extensions" {
 		t.Fatalf("%s after reinstrumentation = %q", injectorJavaExtensionsEnv, got)
 	}
@@ -73,7 +79,11 @@ func TestJavaExtensionImagesHaveNoInitContainerFallback(t *testing.T) {
 
 	pm.mountVolume(spec)
 	pm.addCopyInitContainerIfNeeded(spec)
-	pm.instrumentContainer(&metav1.ObjectMeta{}, &spec.Containers[0], nil, false)
+	meta := &metav1.ObjectMeta{}
+	pm.instrumentContainer(meta, &spec.Containers[0], nil, false)
+	if warnings := pm.reconcileJavaExtensions(meta, spec, nil); len(warnings) > 0 {
+		t.Fatalf("reconciling Java extensions: %v", warnings)
+	}
 
 	if len(spec.Volumes) != 1 || spec.Volumes[0].Name != injectVolumeName || spec.Volumes[0].Image != nil {
 		t.Fatalf("volumes = %+v, want only the SDK emptyDir volume", spec.Volumes)
@@ -103,8 +113,12 @@ func TestJavaExtensionImagesRequireEnabledJavaInstrumentation(t *testing.T) {
 			pm.Cfg.EnabledSDKs = []bservices.InstrumentableType{{InstrumentableType: sdk}}
 			pm.Cfg.JavaExtensionImages = []string{"example.test/team/java-ext:v1"}
 			spec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}}
+			meta := &metav1.ObjectMeta{}
 			pm.mountVolume(spec)
-			pm.instrumentContainer(&metav1.ObjectMeta{}, &spec.Containers[0], nil, false)
+			pm.instrumentContainer(meta, &spec.Containers[0], nil, false)
+			if warnings := pm.reconcileJavaExtensions(meta, spec, nil); len(warnings) > 0 {
+				t.Fatalf("reconciling Java extensions: %v", warnings)
+			}
 
 			if slices.ContainsFunc(spec.Volumes, func(v corev1.Volume) bool { return v.Image != nil && v.Name != injectVolumeName }) {
 				t.Fatalf("unexpected extension image volume for %s: %+v", tc.name, spec.Volumes)
@@ -125,8 +139,12 @@ func TestJavaExtensionImagesIgnoreEmptyAndInvalidReferences(t *testing.T) {
 	pm.Cfg.EnabledSDKs = []bservices.InstrumentableType{{InstrumentableType: java}}
 	pm.Cfg.JavaExtensionImages = []string{"", "   ", "not an image", "example.test/team/valid:v1"}
 	spec := &corev1.PodSpec{Containers: []corev1.Container{{Name: "app"}}}
+	meta := &metav1.ObjectMeta{}
 	pm.mountVolume(spec)
-	pm.instrumentContainer(&metav1.ObjectMeta{}, &spec.Containers[0], nil, false)
+	pm.instrumentContainer(meta, &spec.Containers[0], nil, false)
+	if warnings := pm.reconcileJavaExtensions(meta, spec, nil); len(warnings) > 0 {
+		t.Fatalf("reconciling Java extensions: %v", warnings)
+	}
 
 	if len(spec.Volumes) != 2 || spec.Volumes[1].Image.Reference != "example.test/team/valid:v1" {
 		t.Fatalf("volumes = %+v, want SDK image and only the valid extension image", spec.Volumes)
@@ -148,10 +166,16 @@ func TestJavaExtensionImageListChangeReplacesPriorMutation(t *testing.T) {
 	meta := &metav1.ObjectMeta{}
 	pm.mountVolume(spec)
 	pm.instrumentContainer(meta, &spec.Containers[0], nil, false)
+	if warnings := pm.reconcileJavaExtensions(meta, spec, nil); len(warnings) > 0 {
+		t.Fatalf("reconciling Java extensions: %v", warnings)
+	}
 
 	pm.Cfg.JavaExtensionImages = []string{"example.test/team/new:v2"}
 	pm.mountVolume(spec)
 	pm.instrumentContainer(meta, &spec.Containers[0], nil, false)
+	if warnings := pm.reconcileJavaExtensions(meta, spec, nil); len(warnings) > 0 {
+		t.Fatalf("reconciling changed Java extensions: %v", warnings)
+	}
 
 	if len(spec.Volumes) != 2 || spec.Volumes[1].Image.Reference != "example.test/team/new:v2" {
 		t.Fatalf("volumes after reinjection = %+v, want replaced extension image", spec.Volumes)
@@ -161,6 +185,69 @@ func TestJavaExtensionImageListChangeReplacesPriorMutation(t *testing.T) {
 	}
 	if len(spec.Containers[0].VolumeMounts) != 2 {
 		t.Fatalf("volume mounts after reinjection = %+v, want SDK and one extension mount", spec.Containers[0].VolumeMounts)
+	}
+}
+
+func TestReconcileJavaExtensionVolumeHelper(t *testing.T) {
+	foreign := corev1.Volume{Name: "foreign", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}}
+	spec := &corev1.PodSpec{Volumes: []corev1.Volume{foreign}}
+	state := javaExtensionState{}
+	images := []string{"example.test/team/ext:v1"}
+
+	if !reconcileJavaExtensionVolumes(spec, images, &state) {
+		t.Fatal("expected extension volume to be added")
+	}
+	if len(spec.Volumes) != 2 || spec.Volumes[0].Name != foreign.Name || spec.Volumes[0].EmptyDir == nil {
+		t.Fatalf("foreign volume was not preserved: %+v", spec.Volumes)
+	}
+	volume := spec.Volumes[1]
+	if volume.Name != javaExtensionVolumeName(0) || volume.Image == nil || volume.Image.Reference != images[0] || volume.Image.PullPolicy != corev1.PullIfNotPresent {
+		t.Fatalf("extension volume = %+v, want image source with PullIfNotPresent for %q", volume, images[0])
+	}
+	if len(state.Volumes) != 1 || state.Volumes[0].Name != volume.Name {
+		t.Fatalf("tracked volumes = %+v, want added extension volume", state.Volumes)
+	}
+
+	collision := &corev1.PodSpec{Volumes: []corev1.Volume{{Name: javaExtensionVolumeName(0)}}}
+	if reconcileJavaExtensionVolumes(collision, images, &javaExtensionState{}) {
+		t.Fatal("expected exact extension volume-name collision to fail")
+	}
+}
+
+func TestReconcileJavaExtensionContainer(t *testing.T) {
+	container := &corev1.Container{
+		Name:         "app",
+		VolumeMounts: []corev1.VolumeMount{{Name: "custom", MountPath: "/custom"}},
+		Env: []corev1.EnvVar{
+			{Name: javaAgentExtensionsEnv, Value: "/custom/extensions"},
+			{Name: injectorJavaExtensionsEnv, Value: "/existing,/from-rule"},
+		},
+	}
+	ruleEnv := []corev1.EnvVar{{Name: injectorJavaExtensionsEnv, Value: "/from-rule,/rule-only"}}
+	images := []string{"example.test/team/ext:v1", "example.test/team/other:v2"}
+	state := javaExtensionState{}
+
+	if !reconcileJavaExtensionContainer(container, images, ruleEnv, &state) {
+		t.Fatal("expected extension mounts and paths to be reconciled")
+	}
+	if len(container.VolumeMounts) != 3 || container.VolumeMounts[0].Name != "custom" || container.VolumeMounts[0].MountPath != "/custom" {
+		t.Fatalf("custom mount was not preserved: %+v", container.VolumeMounts)
+	}
+	for i := range images {
+		mount := container.VolumeMounts[i+1]
+		if mount.Name != javaExtensionVolumeName(i) || !mount.ReadOnly {
+			t.Fatalf("extension mount %d = %+v, want named read-only mount", i, mount)
+		}
+	}
+	if got := testEnvValue(container.Env, javaAgentExtensionsEnv); got != "/custom/extensions" {
+		t.Fatalf("%s = %q, want custom agent extension path unchanged", javaAgentExtensionsEnv, got)
+	}
+	want := "/existing,/from-rule,/rule-only," + javaExtensionsMountRoot + "/0/extensions," + javaExtensionsMountRoot + "/1/extensions"
+	if got := testEnvValue(container.Env, injectorJavaExtensionsEnv); got != want {
+		t.Fatalf("%s = %q, want deduplicated paths %q", injectorJavaExtensionsEnv, got, want)
+	}
+	if len(state.Mounts) != 2 {
+		t.Fatalf("tracked mounts = %+v, want one per extension image", state.Mounts)
 	}
 }
 

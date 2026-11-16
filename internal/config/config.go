@@ -153,10 +153,10 @@ func (s SDKInject) WithConfigMapOverrides(cfg configmap.InjectConfig) SDKInject 
 	return out
 }
 
-// WithRuleOverrides applies Java extension image references supplied through
+// WithJavaExtensionOverrides applies Java extension image references supplied through
 // the matched Beyla rule's existing config.env path. An explicitly present,
 // empty value disables controller-wide extension images for that rule.
-func (s SDKInject) WithRuleOverrides(rule configmap.RuleConfig) SDKInject {
+func (s SDKInject) WithJavaExtensionOverrides(rule configmap.RuleConfig) SDKInject {
 	out := s
 	for _, env := range rule.Env {
 		if env.Name != JavaExtensionImagesEnv {

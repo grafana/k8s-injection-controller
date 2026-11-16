@@ -52,21 +52,30 @@ func TestWithConfigMapOverrides(t *testing.T) {
 	})
 }
 
-func TestWithRuleOverrides(t *testing.T) {
+func TestWithJavaExtensionOverrides(t *testing.T) {
 	base := SDKInject{JavaExtensionImages: []string{"registry.example/default:v1"}}
 	t.Run("rule images replace defaults in order", func(t *testing.T) {
-		got := base.WithRuleOverrides(configmap.RuleConfig{Env: []corev1.EnvVar{{
+		got := base.WithJavaExtensionOverrides(configmap.RuleConfig{Env: []corev1.EnvVar{{
 			Name: JavaExtensionImagesEnv, Value: " registry.example/first:v1, ,registry.example/second:v2 ",
 		}}})
 		assert.Equal(t, []string{"registry.example/first:v1", "registry.example/second:v2"}, got.JavaExtensionImages)
 		assert.Equal(t, []string{"registry.example/default:v1"}, base.JavaExtensionImages)
 	})
 	t.Run("explicit empty value disables defaults", func(t *testing.T) {
-		got := base.WithRuleOverrides(configmap.RuleConfig{Env: []corev1.EnvVar{{Name: JavaExtensionImagesEnv}}})
+		got := base.WithJavaExtensionOverrides(configmap.RuleConfig{Env: []corev1.EnvVar{{Name: JavaExtensionImagesEnv}}})
 		assert.Empty(t, got.JavaExtensionImages)
 	})
+	t.Run("last matching env value wins", func(t *testing.T) {
+		rule := configmap.RuleConfig{Env: []corev1.EnvVar{
+			{Name: JavaExtensionImagesEnv, Value: "registry.example/first:v1"},
+			{Name: JavaExtensionImagesEnv, Value: "registry.example/last:v2"},
+		}}
+		got := base.WithJavaExtensionOverrides(rule)
+		assert.Equal(t, []string{"registry.example/last:v2"}, got.JavaExtensionImages)
+		assert.Equal(t, []string{"registry.example/default:v1"}, base.JavaExtensionImages)
+	})
 	t.Run("unrelated env leaves defaults", func(t *testing.T) {
-		got := base.WithRuleOverrides(configmap.RuleConfig{Env: []corev1.EnvVar{{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "http://collector"}}})
+		got := base.WithJavaExtensionOverrides(configmap.RuleConfig{Env: []corev1.EnvVar{{Name: "OTEL_EXPORTER_OTLP_ENDPOINT", Value: "http://collector"}}})
 		assert.Equal(t, base.JavaExtensionImages, got.JavaExtensionImages)
 	})
 }
