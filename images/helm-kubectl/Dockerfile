@@ -1,5 +1,5 @@
 # Built from source because Go's x509 fixes are compiled in; upstream helm/kubectl release binaries lag Go patch releases.
-FROM golang:1.26.11@sha256:7af425da11f4fc1a9308eb704369e3f6d1c44e35bac0f874a59ade3f20fdc07e AS builder
+FROM golang:1.26.11@sha256:f6946db66567acc1497655237e58f06ec3a57478a5e0d67fca29d2ffcf2ea136 AS builder
 
 ARG HELM_VERSION=v4.3.1
 ARG KUBECTL_VERSION=v1.37.1
