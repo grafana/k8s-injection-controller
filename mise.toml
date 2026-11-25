@@ -52,6 +52,12 @@ description = "Run the Kind e2e suite for both certificate modes"
 depends = ["manifests", "generate", "fmt", "vet"]
 run = ["CERT_MODE=cert-manager go test -tags=e2e ./test/e2e/... -v -ginkgo.v -timeout 30m", 'CERT_MODE=self-signed go test -tags=e2e ./test/e2e/... -v -ginkgo.v -ginkgo.focus-file="e2e_injection_test.go" -timeout 15m']
 
+[tasks.test-e2e-java-extension]
+description = "Run the Java extension image-volume e2e test"
+depends = ["manifests", "generate", "fmt", "vet"]
+env = { E2E_JAVA_EXTENSION_IMAGE = "true", JAVA_EXTENSION_IMAGE = "java-extension-app:dev", JAVA_EXTENSION_MARKER = "JAVA_EXTENSION_CUSTOMIZER_APPLIED", CERT_MODE = "cert-manager" }
+run = "go test -tags=e2e ./test/e2e/... -v -ginkgo.v -ginkgo.focus='Java extension image volume' -timeout 15m"
+
 [tasks.test-e2e-smoke]
 description = "Run the k8s-monitoring Helm integration smoke test"
 run = "go test -tags=e2esmoke ./test/smoke/... -v -ginkgo.v -timeout 40m"

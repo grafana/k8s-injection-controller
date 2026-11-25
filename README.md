@@ -38,6 +38,29 @@ It's meant to be used with Grafana Beyla and/or Grafana Alloy.
              value: http/protobuf
    ```
 
+   Java extension images can be configured controller-wide
+   (`java_extension_images` in `sdk-inject.yaml`, or `sdkConfig.javaExtensionImages`
+   in Helm) or per Beyla rule through its generic `config.env` list using
+   `OTEL_INJECTOR_JAVA_EXTENSION_IMAGES` (comma-separated OCI references; an
+   explicit empty value disables the controller default for that rule). Each
+   image must contain extension JARs under `/extensions`; it is mounted
+   read-only at a unique path and exposed through
+   `OTEL_INJECTOR_JAVAAGENT_EXTENSIONS` only for Java-enabled rules. The OTel
+   Injector appends these paths to `OTEL_JAVAAGENT_EXTENSIONS` at process
+   startup. The reserved env key is currently a controller-side
+   convention rather than a typed Beyla field. This requires Kubernetes 1.35+
+   with `ImageVolume` enabled and has no extension-image fallback on older
+   clusters. When the controller uses `init_container` mode (including `auto`
+   mode on older clusters), configured extension images produce an admission
+   warning and are skipped; ordinary SDK injection can still proceed.
+   Controller-managed extension volumes and mounts are tracked so existing customer volumes, mounts, and paths are preserved.
+   Literal `OTEL_INJECTOR_JAVAAGENT_EXTENSIONS` values are merged with generated
+   paths and deduplicated. The workload's `OTEL_JAVAAGENT_EXTENSIONS` value is
+   left unchanged for the upstream injector to append per process. If an
+   existing name or mount collides ambiguously, or the input uses `ValueFrom`
+   and cannot be merged, admission warns and skips the Java image mutation
+   rather than overwriting the workload configuration.
+
    The per-rule `config.env` is Beyla's: it derives the OTLP destination,
    exporters, sampler, and propagators from its own configuration and writes
    them here, so a single injector can fan pods out to different collectors.
