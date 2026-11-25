@@ -43,6 +43,12 @@ const (
 	injectVolumeName        = "otel-inject-instrumentation"
 	injectInitContainerName = "otel-sdk-inject"
 	internalMountPath       = "/__otel_sdk_auto_instrumentation__"
+	// Keep extension image volumes outside the SDK ImageVolume mount. The SDK
+	// image is read-only and runtimes cannot create nested mountpoint parents.
+	javaExtensionsMountRoot   = "/__otel_java_extensions__"
+	javaExtensionVolumePrefix = "otel-java-extension-"
+	javaAgentExtensionsEnv    = "OTEL_JAVAAGENT_EXTENSIONS"
+	injectorJavaExtensionsEnv = "OTEL_INJECTOR_JAVAAGENT_EXTENSIONS"
 
 	envVarLdPreloadName               = "LD_PRELOAD"
 	envVarLdPreloadValue              = internalMountPath + "/dist/injector/libotelinject.so"
@@ -156,6 +162,26 @@ func (pm *PodMutator) mountVolume(spec *corev1.PodSpec) {
 	}
 }
 
+func javaExtensionVolumeName(index int) string {
+	return fmt.Sprintf("%s%d", javaExtensionVolumePrefix, index)
+}
+
+func (pm *PodMutator) javaExtensionImages() []string {
+	images := make([]string, 0, len(pm.Cfg.JavaExtensionImages))
+	for _, image := range pm.Cfg.JavaExtensionImages {
+		image = strings.TrimSpace(image)
+		if image == "" {
+			continue
+		}
+		if _, err := reference.Parse(image); err != nil {
+			logger.Error(err, "skipping invalid Java extension image reference", "image", image)
+			continue
+		}
+		images = append(images, image)
+	}
+	return images
+}
+
 // addCopyInitContainerIfNeeded adds (or replaces, by name) the init container that
 // copies the SDK payload from the SDK image into the shared ephemeral volume.
 func (pm *PodMutator) addCopyInitContainerIfNeeded(spec *corev1.PodSpec) {
@@ -192,6 +218,16 @@ func (pm *PodMutator) addCopyInitContainerIfNeeded(spec *corev1.PodSpec) {
 func (pm *PodMutator) instrumentContainer(meta *metav1.ObjectMeta, c *corev1.Container, ruleEnv []corev1.EnvVar, spanMetricsSkip bool) {
 	pm.addMount(c)
 	pm.addEnvVars(meta, c, ruleEnv, spanMetricsSkip)
+}
+
+// ruleEnvironmentForSDK removes extension configuration handled by the
+// Java-extension reconciler. Filter a clone because rule configuration is
+// shared, and preserve workload environment variables with the same names.
+func ruleEnvironmentForSDK(ruleEnv []corev1.EnvVar) []corev1.EnvVar {
+	filtered := slices.Clone(ruleEnv)
+	return slices.DeleteFunc(filtered, func(env corev1.EnvVar) bool {
+		return env.Name == config.JavaExtensionImagesEnv || env.Name == injectorJavaExtensionsEnv
+	})
 }
 
 func (pm *PodMutator) addMount(c *corev1.Container) {
@@ -275,7 +311,7 @@ func (pm *PodMutator) addEnvVars(meta *metav1.ObjectMeta, c *corev1.Container, r
 
 	// Rule env vars are applied first (lowest precedence) so fixed injector
 	// vars below can always override them.
-	applyEnvVars(c, ruleEnv)
+	applyEnvVars(c, ruleEnvironmentForSDK(ruleEnv))
 	setEnvVar(c, envVarLdPreloadName, envVarLdPreloadValue)
 	setEnvVar(c, envOtelInjectorConfigFileName, envOtelInjectorConfigFileValue)
 	setEnvVar(c, envOtelSemConvStabilityName, "http")
