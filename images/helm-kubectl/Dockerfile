@@ -1,5 +1,5 @@
 # Built from source because Go's x509 fixes are compiled in; upstream helm/kubectl release binaries lag Go patch releases.
-FROM golang:1.26.10@sha256:670bb5aa5349ae03b8516764718486f4f16399134bdc9acd0c46a23f043ab05c AS builder
+FROM golang:1.26.11@sha256:6e59e17a20f13c102e49d82dffab66d41cffe6c266b225d82794328aea859ab5 AS builder
 
 ARG HELM_VERSION=v4.3.1
 ARG KUBECTL_VERSION=v1.37.1
@@ -22,7 +22,7 @@ RUN v="${KUBECTL_VERSION#v}"; major="${v%%.*}"; minor="${v#*.}"; minor="${minor%
     done; \
     go build -trimpath -ldflags="${ldflags}" -o /out/kubectl ./cmd/kubectl
 
-FROM alpine:3.24@sha256:be2656061b536c1883c4034790e21d0a09c5aaaf51968b89368a3c0371ea2c9a
+FROM alpine:3.24@sha256:f59abe656b692d901e184be3445e084786602108599d2a51d229c0f5a48c71bf
 # 20261020 is the first bundle without emSign ECC Root CA - G3 (CVE-2026-111943).
 RUN apk add --no-cache 'ca-certificates-bundle>=20261020-r0'
 COPY --from=builder /out/helm /out/kubectl /usr/local/bin/
